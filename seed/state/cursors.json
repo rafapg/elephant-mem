@@ -1,0 +1,9 @@
+{
+  "channels": {},
+  "config": {
+    "timezone": "-05:00",
+    "gcal_lag_hours": 3,
+    "gcal_lookback_hours": 48,
+    "backfill_window_start": null
+  }
+}

@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Time-first digest over the bundle — the "am I missing anything?" engine.
+
+Unlike `query` (entity-first), this filters facts and open-loops by a TIME
+WINDOW plus optional channel / tag / entity, reading only frontmatter (cheap —
+no bodies, no embeddings). It answers things like:
+
+  "everything relevant to me in Slack in the last 2 days"
+  python3 scripts/briefing.py --days 2 --channel slack --entity jane-doe
+
+  "what was decided in the team's meetings last week"
+  python3 scripts/briefing.py --since 2026-06-16 --until 2026-06-22 \\
+      --channel meeting --tag decision
+
+Time is filtered on `occurred` (when it happened), falling back to `created`
+(ingestion date) when a file has no `occurred`. Channel is resolved by joining a
+fact to its `sources` and reading each source's `channel`.
+"""
+import argparse
+import datetime
+import os
+import re
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BUNDLE = os.path.join(ROOT, "knowledge")
+RESERVED = {"index.md", "log.md", "open-loops.md"}
+FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+INLINE_LIST = re.compile(r"^\[(.*)\]$")
+DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+try:
+    import yaml  # type: ignore
+except ImportError:
+    yaml = None
+
+
+def parse_fm(block):
+    if yaml is not None:
+        try:
+            d = yaml.safe_load(block) or {}
+            if isinstance(d, dict):
+                return d
+        except Exception:
+            pass
+    d = {}
+    for ln in block.splitlines():
+        if not ln or ln[0] in " \t#" or ":" not in ln:
+            continue
+        k, _, v = ln.partition(":")
+        k, v = k.strip(), v.strip()
+        m = INLINE_LIST.match(v)
+        d[k] = ([x.strip() for x in m.group(1).split(",") if x.strip()] if m.group(1).strip() else []) if m else v
+    return d
+
+
+def as_list(v):
+    if v is None:
+        return []
+    return [str(x).strip() for x in v] if isinstance(v, list) else ([str(v).strip()] if str(v).strip() else [])
+
+
+def to_date(v):
+    if not v:
+        return None
+    m = DATE.search(str(v))
+    return datetime.date.fromisoformat(m.group(0)) if m else None
+
+
+def load():
+    items = []
+    for dp, _d, files in os.walk(BUNDLE):
+        for f in files:
+            if not f.endswith(".md") or f in RESERVED:
+                continue
+            p = os.path.join(dp, f)
+            with open(p, encoding="utf-8") as fh:
+                m = FM.match(fh.read())
+            if not m:
+                continue
+            fm = parse_fm(m.group(1))
+            fm["_link"] = "/" + os.path.relpath(p, BUNDLE).replace(os.sep, "/")
+            items.append(fm)
+    return items
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--since")
+    ap.add_argument("--until")
+    ap.add_argument("--days", type=int, help="window = last N days (occurred >= today-N)")
+    ap.add_argument("--channel", help="substring match against the source channel")
+    ap.add_argument("--tag")
+    ap.add_argument("--entity", help="entity slug, e.g. jane-doe")
+    ap.add_argument("--kind", choices=["fact", "open-loop", "all"], default="all")
+    ap.add_argument("--include-superseded", action="store_true",
+                    help="include deprecated/superseded facts (marked as history); hidden by default")
+    ap.add_argument("--min-confidence", choices=["low", "medium", "high"], default="low",
+                    help="drop rows below this confidence (default low = show all)")
+    args = ap.parse_args()
+
+    CONF_RANK = {"low": 0, "medium": 1, "high": 2}
+    min_rank = CONF_RANK[args.min_confidence]
+
+    today = datetime.date.today()
+    until = to_date(args.until) or today
+    if args.days is not None:
+        since = today - datetime.timedelta(days=args.days)
+    else:
+        since = to_date(args.since) or datetime.date.min
+
+    items = load()
+    sources = {i["_link"]: i for i in items if i.get("type") == "source"}
+
+    def channel_of(fm):
+        chans = [sources.get(s, {}).get("channel", "") for s in as_list(fm.get("sources"))]
+        return [c for c in chans if c]
+
+    def event_date(fm):
+        return to_date(fm.get("occurred")) or to_date(fm.get("opened")) or to_date(fm.get("created"))
+
+    def is_history(fm):
+        return str(fm.get("status", "")).lower() in ("deprecated", "superseded")
+
+    facts, loops = [], []
+    hidden_superseded = 0
+    for fm in items:
+        t = fm.get("type")
+        if t not in ("fact", "open-loop"):
+            continue
+        if args.kind != "all" and t != args.kind:
+            continue
+        ed = event_date(fm)
+        if ed is None or not (since <= ed <= until):
+            continue
+        if args.tag and args.tag not in as_list(fm.get("tags")):
+            continue
+        if args.entity:
+            ents = as_list(fm.get("entities")) + as_list(fm.get("owner"))
+            if not any(e.endswith(f"/{args.entity}.md") for e in ents):
+                continue
+        if args.channel:
+            if not any(args.channel.lower() in c.lower() for c in channel_of(fm)):
+                continue
+        if t == "fact":
+            if is_history(fm) and not args.include_superseded:
+                hidden_superseded += 1
+                continue
+            conf = str(fm.get("confidence", "")).lower()
+            if CONF_RANK.get(conf, 0) < min_rank:
+                continue
+            facts.append((ed, fm))
+        else:
+            loops.append((ed, fm))
+
+    flt = []
+    if args.channel: flt.append(f"channel~{args.channel}")
+    if args.tag: flt.append(f"tag={args.tag}")
+    if args.entity: flt.append(f"entity={args.entity}")
+    print(f"# Briefing {since}..{until}" + (f"  [{', '.join(flt)}]" if flt else ""))
+    print(f"# {len(facts)} fact(s), {len(loops)} open-loop(s)\n")
+
+    CONF_SHORT = {"low": "low", "medium": "med", "high": "high"}
+
+    if args.kind != "open-loop":
+        print(f"## Facts ({len(facts)})")
+        for ed, fm in sorted(facts, key=lambda x: x[0], reverse=True):
+            ch = ",".join(channel_of(fm)) or "?"
+            conf = str(fm.get("confidence", "")).lower()
+            review = "needs-review" in as_list(fm.get("tags"))
+            hist = " [history]" if is_history(fm) else ""
+            mark = "⚠️ " if (conf == "low" or review) else ""
+            clabel = CONF_SHORT.get(conf, "?")
+            print(f"- {mark}{ed} [{clabel}]{hist} ({ch}) {fm.get('description','')}  {fm['_link']}")
+        if hidden_superseded and not args.include_superseded:
+            print(f"\n_({hidden_superseded} superseded/deprecated fact(s) hidden "
+                  f"— pass --include-superseded to show)_")
+        print()
+    if args.kind != "fact":
+        print(f"## Open loops ({len(loops)})")
+        for ed, fm in sorted(loops, key=lambda x: x[0], reverse=True):
+            print(f"- {ed} [{fm.get('status','open')}] {fm.get('description','')}  {fm['_link']}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

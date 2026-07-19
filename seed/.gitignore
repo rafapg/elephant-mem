@@ -1,0 +1,4 @@
+# elephant-mem bundle — ignore operational / machine-local artifacts
+state/phone/
+.cache/
+.DS_Store

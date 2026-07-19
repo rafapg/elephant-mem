@@ -1,0 +1,12 @@
+{
+  "name": "elephant-mem",
+  "description": "Local marketplace for the elephant-mem personal memory plugin.",
+  "owner": { "name": "rafapg" },
+  "plugins": [
+    {
+      "name": "elephant-mem",
+      "source": "./plugin",
+      "description": "Personal memory — OKF markdown knowledge bundle. Namespaced mode-skills for managing a local, private knowledge base."
+    }
+  ]
+}

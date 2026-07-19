@@ -1,0 +1,6 @@
+{
+  "name": "elephant-mem",
+  "description": "Personal memory — ingest, capture, retrieve, and maintain an OKF markdown knowledge bundle. A local, private second brain for Claude Code.",
+  "version": "0.1.0",
+  "author": { "name": "Rafael Girolineto" }
+}

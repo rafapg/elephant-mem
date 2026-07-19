@@ -1,0 +1,44 @@
+{
+  "owner": {
+    "name": "Jane Doe",
+    "slug": "jane-doe"
+  },
+  "knowledge_language": "en",
+  "conversation_language": "en",
+  "timezone": "-05:00",
+  "sources": {
+    "slack": {
+      "streams": {
+        "slack:all-public": {
+          "channel_types": "public_channel",
+          "deny": ["notif-*", "social-*"],
+          "exclude_bots": true,
+          "channel": "slack:all-public"
+        },
+        "slack:private": {
+          "channel_types": "private_channel",
+          "exclude_bots": true,
+          "channel": "slack:private"
+        },
+        "slack:social": {
+          "channel_types": "public_channel",
+          "allow": ["#eng-learning", "#industry-news"],
+          "channel": "slack:social"
+        },
+        "slack:dm": {
+          "channel_types": "im",
+          "skip_logistics": true,
+          "channel": "slack:dm"
+        }
+      },
+      "self_dm_channel_id": "U0EXAMPLE01",
+      "query_stopword": "the"
+    },
+    "calendar": {
+      "notes_doc_marker": "Meeting notes",
+      "gcal_lag_hours": 3,
+      "gcal_lookback_hours": 48,
+      "channel": "meeting"
+    }
+  }
+}
