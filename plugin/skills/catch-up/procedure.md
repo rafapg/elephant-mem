@@ -1,0 +1,150 @@
+# `catch-up`  (the scheduled routine)
+
+Load `../_shared/core.md` first (always) — it resolves `<bundle>`, reads
+`elephant.json` (owner, languages, timezone, **sources**), and states the
+invariants. This file is the `catch-up` procedure. It touches entities — also
+load `../_shared/entity-resolution.md`. Runs **unattended** — no recap, no
+review gate; it writes, validates, commits, and leaves a trail in `log.md`.
+Low-confidence items are still written but also **queued** to
+`state/needs-review.md`.
+
+## What drives it: `sources`
+
+Everything below is parameterised by `elephant.json` → `sources`. **Read that
+block first.** If it is absent or empty, `catch-up` has nothing to do — say so
+and stop. Otherwise, iterate exactly the sources it declares:
+
+- **`sources.slack.streams.<name>`** — each declared stream is independent and
+  has its **own cursor** in `state/cursors.json`. A stream carries
+  `channel_types` (`public_channel` | `private_channel` | `im`), an optional
+  `allow` allow-list, `deny` globs, `exclude_bots`, `skip_logistics`, and a
+  `channel` provenance value. Do not assume a fixed set of streams — sweep
+  whatever the config declares.
+- **`sources.calendar`** — `notes_doc_marker` (the title fragment of the
+  meeting-notes doc), `gcal_lag_hours`, `gcal_lookback_hours`, and a `channel`.
+- **Bring-your-own sources** — any other name under `sources.*` is handled
+  uniformly: read its cursor → sweep after it → extract with its hints → stamp
+  its `channel:` on provenance → advance its cursor.
+
+**Degradation:** a configured connector that is not available at run time
+(Slack / Calendar / Drive / a BYO MCP) → **skip that source with a one-line
+note and carry on**; never abort the whole run because one connector is absent.
+
+## State
+
+State lives in `state/` (outside the OKF bundle), managed by
+`scripts/state.py` (canonical = `cursors.json` + `processed-events.json`;
+`watermarks.md` is its rendering — never hand-edit). Two cursors per source:
+**live** (`live_cursor` — newest content ingested; read strictly after it) and
+**backfill_oldest** (how far back the day sweep reached). The `config` block in
+`cursors.json` holds `timezone`, `gcal_lag_hours`, `gcal_lookback_hours`, and
+`backfill_window_start` (the backfill floor). Policy: **forward first, backfill
+after.**
+
+## Procedure
+
+1. **Forward — Slack streams (each its own cursor).** For every
+   `sources.slack.streams.<name>` declared in config: `state.py after <name>` →
+   a Unix ts, then call `slack_search_public_and_private` with the `after=<ts>`
+   param (NOT the date-granular `on:` modifier), `response_format=detailed`
+   (the `concise` format mangles timestamps — the cursor needs the real
+   `Message_ts`), paginating fully. Apply the stream's own filters:
+   - Use the stream's `channel_types`.
+   - If the stream has an `allow` list, search **only** those channels (one
+     search per channel, or OR them, e.g. `in:#eng-learning`) — a curated
+     stream. Otherwise apply its `deny` globs (e.g. `notif-*`) to the result.
+   - If `exclude_bots`, drop bot messages.
+   - If `skip_logistics` (typical for a DM / `im` stream), apply skip-rules
+     **hard**: DMs are mostly logistics ("on my way", scheduling, one-word
+     acks) — keep only durable facts and commitments (e.g. someone asking the
+     owner to ship X → an open-loop), drop the rest. Read both directions so a
+     reply keeps its question for context; name the counterpart in the source
+     slug (`<stream>:<person>`). This is the **owner's** bundle, so the owner's
+     own DMs are in-scope signal, not an exception.
+   - Stamp the stream's `channel:` value on provenance.
+
+   Use the single **`sources.slack.query_stopword`** as the broad query so the
+   sweep returns everything in the window. **Use exactly one stopword.** A
+   multi-word query ANDs its terms and produces false "empty window" runs; one
+   high-frequency word in the workspace's dominant language (English `"the"`)
+   matches nearly every message. Because the cursor is a timestamp, you only
+   ever see messages newer than the last run — a partial day is never
+   re-deduped. Read threads for context as needed.
+
+2. **Forward — transcripts (`sources.calendar`).** List Calendar events whose
+   end-time is in `(live_cursor − lookback … now]` (lookback =
+   `gcal_lookback_hours`, to catch notes docs that weren't ready on an earlier
+   run). For each real meeting with an attached doc whose title contains
+   `notes_doc_marker`, check `state.py seen <fileId>`; if unseen and the doc is
+   ready (non-empty), read it via the Drive connector `read_file_content` (a
+   large doc lands in a tool-results file — read it in slices) and ingest it,
+   then `state.py mark <fileId>`. Skip empty/garbled docs (but still `mark` them
+   so they aren't retried forever). Transcripts are **primary**; Slack is
+   **secondary**.
+
+3. **Extract via subagents (large windows).** When the window holds multiple
+   meetings or a busy Slack span, fan out **extraction subagents** (one per
+   transcript + one per busy source span) that RETURN candidate specs and write
+   **nothing**; the main agent consolidates. This keeps disjoint writers off the
+   index and avoids races. A near-empty window can be done inline.
+
+4. **Consolidate (main agent only).** Run the `ingest` loop's core (see
+   `../ingest/procedure.md`): skip-rules → entity resolution → multi-dimension
+   dedup → cross-source corroboration + **source precedence** (transcripts >
+   Slack) → conflict handling → confidence → persist. **Merge** re-observed
+   facts (append the new source, bump `times_referenced`, corroborate) rather
+   than filing a duplicate; **close** open-loops a new source shows done (set
+   `status: done`, `closed`, `closed_by`).
+
+5. **Low-confidence → queue.** Any item you must guess on (uncertain
+   name/entity, ambiguous tool, weak single-mention signal): write it anyway
+   with `confidence: low` + tag `needs-review`, and append a line to
+   `state/needs-review.md` (`- [ ] <date> <path> — <the question>`). Do not
+   block the run.
+   **The `needs-review` tag and its queue line are ONE unit — never write one
+   without the other.** This holds for extraction subagents too: a subagent that
+   tags an item `needs-review` MUST return its queue line so the consolidator
+   appends it. Before committing (step 7), reconcile: every file carrying the
+   `needs-review` tag must have a matching line in `state/needs-review.md`
+   (`grep -rl '^tags:.*needs-review' knowledge/` vs the queue) — add any missing
+   line. A tagged-but-unqueued item is a silent orphan that never gets reviewed.
+
+6. **Rebuild + validate.** `python3 scripts/build-index.py` then
+   `python3 scripts/validate-okf.py` — both must pass. On failure: do NOT
+   advance cursors, do NOT commit; log the error and stop (next run retries the
+   same window).
+
+7. **Advance cursors + log + commit.** On success, `advance-live` **each source
+   that yielded content** to its own newest ingested `Message_ts` (one per Slack
+   stream that produced facts). Then `advance-live <calendar-cursor>
+   <now − gcal_lag_hours>` (the lag keeps just-ended meetings in the window next
+   run), and `set-last-run` on all. Advance a source **only** past content you
+   actually ingested. Append a `log.md` line (or a one-liner "catch-up: nothing
+   new" on an empty window). `git -C <bundle> add -A && git -C <bundle> commit`
+   (message `catch-up: <window> (+N facts, +M loops)`). **Never push.**
+
+8. **Backfill step (forward-first).** Only if forward found nothing new (gap
+   closed): walk **one older day across every source still above the floor** —
+   `state.py next-backfill <name>` for each configured source. For each that is
+   not `NONE`, ingest that one older day (Slack: full-day `on:YYYY-MM-DD` sweep
+   with that stream's filters; transcripts: that day's notes docs), then
+   `advance-backfill` it. One older day per idle run; stop each source at the
+   `backfill_window_start` floor. Sources seeded today backfill down to the
+   floor independently.
+
+**Outage / partial handling:** on an API error (e.g. a 429/529) or a transcript
+that won't load, capture what you can, leave the cursor where it is for the
+unfinished part, and log it — the next run resumes. Never advance a cursor past
+content you did not actually ingest.
+
+## Tail: update check
+
+At the very end (after the commit), run the once-per-week update nudge described
+in `../_shared/core.md` (state file `state/last-update-check.json`; skip if
+checked within 7 days; fetch the published `plugin.json`, compare `version`,
+show `claude plugin update elephant-mem@elephant-mem` if newer; always stamp
+`last_checked`, skip silently if offline). This is the only interactive-ish
+touch in the routine and it never updates anything itself.
+
+`state/` is operational — outside the OKF bundle, so `validate-okf.py` never
+touches it.

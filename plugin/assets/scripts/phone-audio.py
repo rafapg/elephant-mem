@@ -191,12 +191,13 @@ def cmd_transcribe(args):
     cmd = [
         wx, str(audio),
         "--model", args.model,
-        "--language", args.language,
         "--compute_type", args.compute_type,
         "--device", args.device,
         "--output_format", "all",
         "--output_dir", str(WORK),
     ]
+    if args.language:
+        cmd += ["--language", args.language]
     if args.diarize:
         # NB: token goes via env (HF_TOKEN), never as --hf_token — a CLI arg is
         # visible in `ps` and any command echo. huggingface_hub reads it from env.
@@ -255,7 +256,8 @@ def main():
     p_tr = sub.add_parser("transcribe", help="run WhisperX on one staged audio file")
     p_tr.add_argument("audio", help="path (or inbox filename) of the audio to transcribe")
     p_tr.add_argument("--model", default="large-v3")
-    p_tr.add_argument("--language", default="pt")
+    p_tr.add_argument("--language", default=None,
+                      help="spoken language of the recording (e.g. en, pt); omit to auto-detect")
     p_tr.add_argument("--device", default="cpu", help="cpu (pyannote breaks on mps)")
     p_tr.add_argument("--compute_type", default="int8", choices=["default", "float16", "float32", "int8"])
     p_tr.add_argument("--diarize", action="store_true", default=True)

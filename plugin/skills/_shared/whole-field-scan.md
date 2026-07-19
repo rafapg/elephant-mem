@@ -1,0 +1,28 @@
+# whole-field scan  (the recall escape hatch)   (obey **Retrieval trust** in `core.md`)
+
+Load `core.md` first (always). This file is the `whole-field scan` procedure —
+a **shared retrieval technique** referenced by `query`, `briefing`, and `expand`
+as their recall escape hatch, not a standalone mode. Obey **Retrieval trust** in
+`core.md`.
+
+Read-only, **whole-field** — complements entity-first `query` and time-first
+`briefing`. Not a default: reach for it only when neither has a good entry point.
+Its sweet spot is open-ended discovery ("is there *anything* about X?"),
+exhaustive sweeps ("everything that touches Y", "what am I forgetting about Z"),
+and cross-entity correlation (`expand`) where the connecting facts aren't linked
+to any entity you'd think to open. It is the antidote to entity-first's blind
+spot — it finds what isn't where you looked.
+
+**Delegate to a subagent — never load it into the main context.** A mature
+`knowledge/manifest.jsonl` can run tens of thousands of tokens (one compact
+line per active fact + open loop: `path`, `type`, `desc`, `entities`, `tags`,
+`occurred`, `confidence`, `status`). The subagent loads it, triages against the
+question (weighting by `confidence`/`status` per **Retrieval trust** above),
+deep-reads only the chosen `path`s, and returns the distilled answer **with
+provenance** — the manifest stays isolated in the subagent, never polluting
+the main conversation's budget.
+
+Because it's JSONL it degrades gracefully: pre-filter with `rg` (e.g.
+`rg '"strategy"' knowledge/manifest.jsonl`) to load only matching lines when an
+axis exists, or load the whole file when it doesn't. Regenerated every build, so
+always fresh — no bodies, no embeddings.
