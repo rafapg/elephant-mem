@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""phone-audio.py — acquire + transcribe voice recordings for elephant.
+"""phone-audio.py — acquire + transcribe voice recordings for elephant-mem.
 
-Deterministic half of the `elephant:from-phone-tts` mode. Two jobs:
+Deterministic half of the `elephant-mem:from-phone-tts` mode. Two jobs:
 
   pull        Drain the Tailscale (Taildrop) inbox into a local staging dir and
               report the audio files that arrived (name, duration, size, mtime).
-  transcribe  Run WhisperX locally (large-v3, pt, speaker-diarized, CPU/int8)
-              on one staged file and report where the transcript landed.
+  transcribe  Run WhisperX locally (large-v3, speaker-diarized, CPU/int8,
+              language auto-detected unless --language is given) on one staged
+              file and report where the transcript landed.
 
 The interactive parts — picking a file, mapping SPEAKER_xx -> real people,
 turning the transcript into facts — live in the SKILL, not here.
