@@ -1,0 +1,140 @@
+<div align="center">
+
+# elephant-mem
+
+*an elephant never forgets*
+
+![license](https://img.shields.io/badge/license-MIT-black?style=flat-square)
+![plugin](https://img.shields.io/badge/plugin-v0.1.0-black?style=flat-square)
+![claude code](https://img.shields.io/badge/claude--code-plugin-black?style=flat-square)
+
+</div>
+
+## what it is
+
+elephant-mem is a personal memory for Claude Code. It accumulates the **facts**,
+**people**, **decisions**, and **open loops** from your work sources into a
+private knowledge base you can query from any Claude Code session — "what do we
+know about Jane Doe", "what did we decide about the billing rewrite", "what's
+still open on my plate".
+
+Your knowledge lives as plain **markdown + git** in a bundle directory on your
+own machine. It is `cat`-readable, `git diff`-able, and never leaves disk. No
+database, no cloud, no embeddings — just files you can read, grep, and version.
+
+## how it works
+
+Three lanes, routed by lifetime, reached through entities:
+
+- **durable facts** — atomic, one claim per file, that stay true over time.
+- **open loops** — commitments and action items that eventually close.
+- **episodic sources** — the raw provenance every fact was extracted from.
+
+Entities (people, projects, tools, concepts) are the **navigation spine**: facts
+hang off them via backlinks, and retrieval walks the entity, not a flat list.
+
+```
+my-memory/                     # your bundle (private, git-versioned, off in $HOME)
+  knowledge/
+    facts/<slug>.md            # atomic durable facts
+    entities/<kind>/<slug>.md  # people | org | project | tool | concept | ...
+    tracking/loops/<slug>.md   # open loops
+    sources/<YYYY-MM>/...       # provenance, one file per source
+    index.md  log.md           # derived / episodic ledger
+  elephant.json                # owner, languages, timezone, sources
+  state/  scripts/  templates/
+```
+
+## install
+
+```
+claude plugin marketplace add rafapg/elephant-mem
+claude plugin install elephant-mem@elephant-mem --scope user
+```
+
+Then, in any Claude Code session:
+
+```
+/elephant-mem:init
+```
+
+`init` walks you through creating the bundle (default `~/elephant`), registers a
+machine-level pointer to it, seeds your owner entity, and makes the first commit.
+Under two minutes to a working bundle.
+
+## the modes
+
+Every mode is namespaced `elephant-mem:<mode>`.
+
+**Auto-invocable** — Claude reaches for these on its own when the conversation
+calls for it (you can also invoke them explicitly):
+
+| mode | what it does | invocation |
+|---|---|---|
+| `query` | recall what's known about a person / project / topic (entity-first) | `/elephant-mem:query <topic>` |
+| `briefing` | time-first digest — "what's relevant in the last N days" | `/elephant-mem:briefing` |
+| `capture` | save a durable decision reached in the current conversation | `/elephant-mem:capture` |
+| `start-day` | morning orientation: agenda + overnight digest + your open loops | `/elephant-mem:start-day` |
+| `end-day` | evening wrap: what happened, what's pending | `/elephant-mem:end-day` |
+
+**Explicit** — deliberate operations you invoke by name (they have side effects
+or run unattended):
+
+| mode | what it does | invocation |
+|---|---|---|
+| `init` | create and register a new bundle (the front door) | `/elephant-mem:init` |
+| `ingest` | extract facts from a URL / file / pasted text | `/elephant-mem:ingest <source>` |
+| `catch-up` | scheduled autonomous ingestion of everything new since last run | `/elephant-mem:catch-up` |
+| `push-start-day` | post the morning orientation to your Slack self-DM | `/elephant-mem:push-start-day` |
+| `from-phone-tts` | transcribe an offline voice recording and ingest it | `/elephant-mem:from-phone-tts` |
+| `maintain` | resolve conflicts, consolidate, decay, drift-check | `/elephant-mem:maintain` |
+| `review` | clear the low-confidence needs-review queue | `/elephant-mem:review` |
+| `expand` | propose derived facts, relations, and promotions | `/elephant-mem:expand` |
+| `update` | check for a newer release and re-sync bundle scripts/templates | `/elephant-mem:update` |
+
+## integrations
+
+The **core modes need zero connectors** — they operate on the local markdown
+bundle alone. Automatic ingestion (`catch-up`, `push-start-day`) is optional and
+driven by a `sources` block in `elephant.json`.
+
+Tested integrations, via claude.ai connectors (e.g. Claude Desktop): **Slack**,
+**Google Calendar**, **Google Drive**. Any MCP-backed source can be added with
+the same shape — see [`docs/integrations.md`](docs/integrations.md) for setup and
+the bring-your-own-source contract.
+
+## privacy
+
+- The bundle is **local and private**. It is created outside this repo, lives on
+  your machine, and is git-versioned with **local commits only — never pushed**.
+- This repo ships **mechanics only** — the plugin, scripts, and docs. It contains
+  no knowledge.
+- Never point the plugin at data you can't keep on disk. The bundle can hold
+  sensitive material (financials, personnel, private-channel content); treat it
+  accordingly and never publish it.
+
+## updating
+
+```
+/elephant-mem:update
+```
+
+Compares your installed plugin against the published `version` in
+[`plugin.json`](plugin/.claude-plugin/plugin.json), shows the update command if
+newer, and — after you update — re-syncs the bundle's copied scripts and
+templates. Read modes also nudge you at most once a week when a release is
+available; they never update anything on their own.
+
+## docs
+
+- [architecture](docs/architecture.md) — the OKF model, the three lanes, entity
+  retrieval, and why markdown + git (and no DB).
+- [configuration](docs/configuration.md) — the pointer file, `elephant.json`, and
+  operational state.
+- [integrations](docs/integrations.md) — Slack / Calendar / Drive setup,
+  scheduling the routine, and bring-your-own MCP sources.
+- [changelog](CHANGELOG.md).
+
+## license
+
+MIT — see [LICENSE](LICENSE).

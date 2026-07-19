@@ -108,13 +108,8 @@ Then generate the files that depend on the user's answers:
   ```
 - **`<bundle>/state/cursors.json`** — patch the copied file's `config.timezone`
   to the user's timezone (leave `channels` empty; `catch-up` fills it later).
-- **`<bundle>/.gitignore`**:
-  ```
-  __pycache__/
-  *.pyc
-  .DS_Store
-  .cache/
-  ```
+- **`<bundle>/.gitignore`** — copy `${CLAUDE_PLUGIN_ROOT}/assets/seed/.gitignore`
+  (covers `state/phone/`, `.cache/`, `__pycache__/`, OS noise).
 - **`<bundle>/knowledge/log.md`** — a reserved file (NO frontmatter), just a
   heading, e.g. `# Log\n`. The episodic ledger; modes append to it.
 
@@ -209,6 +204,8 @@ the bundle isn't empty and the shapes are visible. Tag every example
 Tell the user these are placeholders: `elephant-mem:capture` and
 `elephant-mem:ingest` add real knowledge, and the examples can be removed any time
 with `rg -l example-seed <bundle>/knowledge` (then delete + re-run `build-index`).
+That search also matches the derived `knowledge/manifest.jsonl` — don't delete
+it; it regenerates on the next `build-index.py` run.
 
 ## Stage 8 — Verify + first commit
 

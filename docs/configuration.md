@@ -161,9 +161,14 @@ touches it. Managed by `scripts/state.py`.
   `gcal_lookback_hours`, and `backfill_window_start` (the backfill horizon).
 - `state/watermarks.md` — human-readable rendering of `cursors.json`, regenerated
   by `state.py`. **Never hand-edit.**
+- `state/processed-events.json` — IDs of calendar events / source documents
+  already ingested, so re-observed items merge instead of duplicating. Managed
+  by `catch-up`.
 - `state/needs-review.md` — the low-confidence review queue.
 - `state/last-update-check.json` — throttles the weekly update nudge (see
   core.md).
+- `state/phone/` — diarized transcripts kept by `from-phone-tts` (git-ignored
+  in the bundle by default).
 
 ---
 

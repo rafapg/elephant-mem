@@ -2,3 +2,5 @@
 state/phone/
 .cache/
 .DS_Store
+__pycache__/
+*.pyc
