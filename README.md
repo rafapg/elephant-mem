@@ -48,12 +48,30 @@ my-memory/                     # your bundle (private, git-versioned, off in $HO
 
 ## install
 
+**Prerequisites** — have these on the machine first:
+
+- **Claude Code** (the CLI) — [install guide](https://docs.claude.com/en/docs/claude-code).
+- **git** — used to version your bundle.
+- **Python 3.10+** — the bundle scripts are stdlib-only, nothing to `pip install`.
+
+**1. Add the marketplace** (this repo hosts it):
+
 ```
 claude plugin marketplace add rafapg/elephant-mem
+```
+
+**2. Install the plugin** (user scope, so it's available in every project):
+
+```
 claude plugin install elephant-mem@elephant-mem --scope user
 ```
 
-Then, in any Claude Code session:
+The name is `<plugin>@<marketplace>` — here both are `elephant-mem`.
+
+**3. Verify** — run `/plugin` and confirm `elephant-mem` and its `elephant-mem:*`
+modes are listed.
+
+**4. Create your bundle** — in any Claude Code session:
 
 ```
 /elephant-mem:init
@@ -62,6 +80,10 @@ Then, in any Claude Code session:
 `init` walks you through creating the bundle (default `~/elephant`), registers a
 machine-level pointer to it, seeds your owner entity, and makes the first commit.
 Under two minutes to a working bundle.
+
+> **Windows** (no WSL needed): the commands are identical — they run in the Git
+> Bash shell Claude Code already uses. See [platforms](#platforms) for the Python
+> note.
 
 ## the modes
 
