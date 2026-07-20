@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""phone-audio.py — acquire + transcribe voice recordings for elephant-mem.
+"""ingest-audio.py — acquire + transcribe voice recordings for elephant-mem.
 
-Deterministic half of the `elephant-mem:from-phone-tts` mode. Two jobs:
+Deterministic half of the `elephant-mem:ingest-audio` mode. Two jobs:
 
   pull        Drain the Tailscale (Taildrop) inbox into a local staging dir and
               report the audio files that arrived (name, duration, size, mtime).
@@ -29,11 +29,41 @@ INBOX = BUNDLE / "state" / "phone" / "inbox"          # pulled audio (raw m4a)
 WORK = BUNDLE / "state" / "phone" / "work"            # whisperx output dir
 TRANSCRIPTS = BUNDLE / "state" / "phone" / "transcripts"  # kept transcripts
 
-# Where the Tailscale macOS (App Store) app drops received Taildrop files.
-# The GUI variant auto-saves to ~/Downloads instead of the CLI inbox, so we scan
-# it directly. Override with ELEPHANT_TAILDROP_DIR (e.g. if you point the app's
-# Taildrop directory at a dedicated folder).
-LANDING = Path(os.environ.get("ELEPHANT_TAILDROP_DIR", str(Path.home() / "Downloads")))
+# Where recordings land before transcription (e.g. the Tailscale macOS App
+# Store app drops received Taildrop files here; that GUI variant auto-saves to
+# ~/Downloads instead of the CLI inbox, so we scan it directly).
+#
+# Resolution order: ELEPHANT_TAILDROP_DIR env var (highest priority) ->
+# elephant.json's "audio.inbox_dir" key -> ~/Downloads (default).
+def _inbox_dir_from_config():
+    """Read the optional audio.inbox_dir key from elephant.json, expanduser'd.
+
+    Defensive by design: a missing file, a missing key, or malformed JSON must
+    never crash the script — all of those just fall through to the caller's
+    next option in the resolution order.
+    """
+    try:
+        with open(BUNDLE / "elephant.json") as f:
+            data = json.load(f)
+        inbox_dir = data.get("audio", {}).get("inbox_dir")
+        if inbox_dir:
+            return str(Path(inbox_dir).expanduser())
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_landing_dir():
+    env_dir = os.environ.get("ELEPHANT_TAILDROP_DIR")
+    if env_dir:
+        return Path(env_dir)
+    config_dir = _inbox_dir_from_config()
+    if config_dir:
+        return Path(config_dir)
+    return Path.home() / "Downloads"
+
+
+LANDING = _resolve_landing_dir()
 
 AUDIO_EXTS = {".m4a", ".mp3", ".wav", ".aac", ".caf", ".flac", ".ogg", ".mp4", ".m4v"}
 

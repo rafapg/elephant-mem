@@ -86,7 +86,7 @@ or run unattended):
 | `ingest` | extract facts from a URL / file / pasted text | `/elephant-mem:ingest <source>` |
 | `catch-up` | scheduled autonomous ingestion of everything new since last run | `/elephant-mem:catch-up` |
 | `push-start-day` | post the morning orientation to your Slack self-DM | `/elephant-mem:push-start-day` |
-| `from-phone-tts` | transcribe an offline voice recording and ingest it | `/elephant-mem:from-phone-tts` |
+| `ingest-audio` | transcribe a voice recording and ingest it | `/elephant-mem:ingest-audio` |
 | `maintain` | resolve conflicts, consolidate, decay, drift-check | `/elephant-mem:maintain` |
 | `review` | clear the low-confidence needs-review queue | `/elephant-mem:review` |
 | `expand` | propose derived facts, relations, and promotions | `/elephant-mem:expand` |
@@ -102,6 +102,15 @@ Tested integrations, via claude.ai connectors (e.g. Claude Desktop): **Slack**,
 **Google Calendar**, **Google Drive**. Any MCP-backed source can be added with
 the same shape — see [`docs/integrations.md`](docs/integrations.md) for setup and
 the bring-your-own-source contract.
+
+## platforms
+
+Tested on **macOS** and **Linux**. **Windows** is expected to work via Git
+Bash or WSL (Claude Code's own supported shells there) but is untested —
+reports welcome. Core scripts (`build-index.py`, `validate-okf.py`,
+`briefing.py`, `state.py`, etc.) are **Python 3 stdlib only**, no
+dependencies to install. The optional `ingest-audio` mode is the exception —
+see its own prerequisites in [`plugin/skills/ingest-audio/procedure.md`](plugin/skills/ingest-audio/procedure.md).
 
 ## privacy
 

@@ -170,7 +170,7 @@ The workflow after any write batch is fixed: run `build-index.py`, then
 | `briefing.py` | time-first digest (`--days` / `--since` / `--until` / `--channel` / `--tag` / `--entity` / `--kind`) |
 | `state.py` | catch-up cursor bookkeeping (advance live/backfill, mark seen ids, render watermarks) |
 | `snapshot-drift.py` | flag `snapshot` rollups whose underlying facts became newer than the snapshot's last-tended date |
-| `phone-audio.py` | pull a transferred voice recording and transcribe it locally (WhisperX, diarized) for `from-phone-tts` |
+| `ingest-audio.py` | pull a transferred voice recording and transcribe it locally (WhisperX, diarized) for `ingest-audio` |
 
 ## Why git
 

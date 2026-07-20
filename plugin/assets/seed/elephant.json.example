@@ -31,7 +31,6 @@
           "channel": "slack:dm"
         }
       },
-      "self_dm_channel_id": "U0EXAMPLE01",
       "query_stopword": "the"
     },
     "calendar": {
@@ -40,5 +39,8 @@
       "gcal_lookback_hours": 48,
       "channel": "meeting"
     }
+  },
+  "delivery": {
+    "start_day": { "via": "slack", "channel_id": "U0EXAMPLE01" }
   }
 }

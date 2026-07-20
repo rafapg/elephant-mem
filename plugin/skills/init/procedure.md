@@ -165,8 +165,6 @@ facts it produces. Also collect:
   dominant language (English `"the"`, Portuguese `"de"`, Spanish `"de"`). Explain
   the one-word rule: a multi-word query ANDs its terms and produces false "empty
   window" runs, so use a single word that appears in nearly every message.
-- **`self_dm_channel_id`** (optional) — the owner's own Slack user id, the
-  destination for `push-start-day`'s morning message.
 
 If the user wants **Calendar** (meeting transcripts), write `sources.calendar`:
 
@@ -178,6 +176,22 @@ If the user wants **Calendar** (meeting transcripts), write `sources.calendar`:
 **Bring-your-own:** mention that any MCP source can be added later under `sources`
 with the same shape (a name, a `channel:` value, a cursor entry). See
 `docs/configuration.md`.
+
+If the user configured **Slack** and wants `push-start-day`, also collect
+**delivery** (a separate, top-level block — `sources` is inbound,
+`delivery` is outbound): ask for the destination channel id (usually the
+owner's own Slack user id, so a self-DM) and write it as
+`delivery.start_day`:
+
+```json
+"delivery": {
+  "start_day": { "via": "slack", "channel_id": "<channel_id>" }
+}
+```
+
+Explain that `"slack"` is the only implemented `via` transport in `0.1.0`. If
+the user skips this or doesn't set up Slack, omit `delivery` entirely —
+`push-start-day` explains it has nowhere to post and stops, which is fine.
 
 ## Stage 7 — Seed knowledge
 

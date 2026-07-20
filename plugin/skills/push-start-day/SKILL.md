@@ -21,11 +21,15 @@ effect is one Slack message.
 
 ## Destination and preconditions
 
-The message goes to `sources.slack.self_dm_channel_id` from `elephant.json`
-(the owner's own Slack `user_id` — posting to yourself lands in your self-DM).
-If that key is unset, there is nowhere to post — **explain and stop**; this mode
-has nothing else to do. Likewise, if the Slack connector isn't available, say so
-and stop (there is nothing to write to the bundle either way).
+The message goes to `delivery.start_day.channel_id` from `elephant.json`,
+typically the owner's own Slack `user_id` (posting to yourself lands in your
+self-DM). If `delivery` is absent or `delivery.start_day` is unset, there is
+nowhere to post — **explain and stop**; this mode has nothing else to do. If
+`delivery.start_day.via` is anything other than `"slack"`, say that transport
+isn't implemented in `0.1.0` yet and point to the bring-your-own-source guide
+in `docs/integrations.md`, then stop. Likewise, if the Slack connector isn't
+available, say so and stop (there is nothing to write to the bundle either
+way).
 
 All conversational output is rendered in the bundle's `conversation_language`
 (the example block headers below are English defaults; use the configured
@@ -59,7 +63,7 @@ plus the owner's projects/team.
    empty, say so in one line rather than omitting it silently.
 
 3. **Post to Slack.** `slack_send_message` with
-   `channel_id: <sources.slack.self_dm_channel_id>`. On send failure, report the
+   `channel_id: <delivery.start_day.channel_id>`. On send failure, report the
    error and stop; do not retry blindly.
 
 4. **Done.** Return the message link. No `log.md` entry, no commit — this mode
@@ -83,4 +87,4 @@ the bundle is local-only.
   simply means no push that day — there is no state to fast-forward, the
   synthesis is always "today".
 - To change the destination (e.g. a dedicated private channel instead of the
-  self-DM), set a different `channel_id` in `sources.slack.self_dm_channel_id`.
+  self-DM), set a different `channel_id` in `delivery.start_day`.

@@ -70,7 +70,6 @@ data). Fully annotated example with **fictional** data:
           "channel": "slack:dm"
         }
       },
-      "self_dm_channel_id": "U0EXAMPLE01",
       "query_stopword": "the"
     },
     "calendar": {
@@ -79,6 +78,9 @@ data). Fully annotated example with **fictional** data:
       "gcal_lookback_hours": 48,
       "channel": "meeting"
     }
+  },
+  "delivery": {
+    "start_day": { "via": "slack", "channel_id": "U0EXAMPLE01" }
   }
 }
 ```
@@ -118,8 +120,6 @@ and say so. Each source is optional and independent.
     only durable facts and commitments.
   - `channel` — the `channel:` value stamped on provenance frontmatter of facts
     from this stream.
-- `self_dm_channel_id` — the owner's own Slack user_id, used by `push-start-day`
-  as the destination for the morning message (posting to yourself = your self-DM).
 - `query_stopword` — a single high-frequency word in the workspace's dominant
   language, used as the broad search query so a sweep returns everything in the
   window. **Use exactly one stopword** — multi-word queries AND their terms and
@@ -147,6 +147,34 @@ needs. Register a matching cursor entry in `state/cursors.json` (see below) so t
 forward/backfill routine tracks it. The plugin's `catch-up` treats every
 configured source uniformly: read its cursor → sweep after it → extract → advance.
 
+**`delivery`** (optional) — where **outbound** messages go, as opposed to
+`sources` (which is always inbound). Each key names something the plugin can
+push out; `0.1.0` defines one:
+
+- `delivery.start_day` — the destination for `push-start-day`'s morning
+  message: `{ "via": "slack", "channel_id": "<id>" }`.
+  - `via` — the delivery transport. `"slack"` is the only transport
+    implemented in `0.1.0`. Any other value is accepted in config but
+    `push-start-day` will say it isn't implemented yet and point you at the
+    bring-your-own-source guide in [integrations.md](integrations.md) instead
+    of silently doing nothing.
+  - `channel_id` — for `via: "slack"`, the destination channel id. This is
+    usually **your own Slack user id**, so posting there lands in your
+    self-DM — but it can be any channel id (e.g. a dedicated private channel)
+    if you'd rather it post somewhere else.
+  - If `delivery` is absent, or `delivery.start_day` is unset, `push-start-day`
+    has nowhere to post — it explains that and stops (same as today).
+
+**`audio`** (optional) — settings for the `ingest-audio` mode.
+
+- `audio.inbox_dir` — where transferred recordings land before transcription
+  (e.g. a Taildrop/AirDrop/synced-drive destination folder). Resolution order:
+  the `ELEPHANT_TAILDROP_DIR` environment variable (highest priority, useful
+  for a one-off override) → this key, expanded from `~` → `~/Downloads`
+  (default). A missing or malformed `elephant.json` is not an error here —
+  `scripts/ingest-audio.py` just falls through to the next option in the
+  order above.
+
 ---
 
 ## 3. Operational state — `<bundle>/state/`
@@ -167,8 +195,8 @@ touches it. Managed by `scripts/state.py`.
 - `state/needs-review.md` — the low-confidence review queue.
 - `state/last-update-check.json` — throttles the weekly update nudge (see
   core.md).
-- `state/phone/` — diarized transcripts kept by `from-phone-tts` (git-ignored
-  in the bundle by default).
+- `state/phone/` — the audio inbox and diarized transcripts kept by
+  `ingest-audio` (git-ignored in the bundle by default).
 
 ---
 

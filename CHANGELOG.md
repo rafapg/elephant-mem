@@ -19,15 +19,15 @@ automatic ingestion from your work sources.
   `ingest`, `maintain`, `expand`, `review`, `start-day`, `end-day`.
 - **Automatic ingestion (optional, sources-driven)** — `catch-up` (scheduled,
   autonomous forward ingestion over timestamp cursors), `push-start-day` (post the
-  morning orientation to Slack), and `from-phone-tts` (locally transcribe an
-  offline voice recording and ingest it).
+  morning orientation to Slack), and `ingest-audio` (locally transcribe a voice
+  recording and ingest it).
 - **`update` mode** — check for a newer release and re-sync the bundle's copied
   scripts and templates from the installed plugin.
 - **OKF v0.1 bundle format** — three lanes (durable facts / open loops / episodic
   sources), entity-centric retrieval with backlinks, source precedence with fact
   merging, and the snapshot rollup rule.
 - **Scripts** — `build-index.py`, `validate-okf.py`, `rename-entity.py`,
-  `briefing.py`, `state.py`, `snapshot-drift.py`, `phone-audio.py`.
+  `briefing.py`, `state.py`, `snapshot-drift.py`, `ingest-audio.py`.
 - **Tested integrations** — Slack, Google Calendar, and Google Drive via claude.ai
   connectors, plus a bring-your-own-MCP-source contract.
 - **Documentation** — README, architecture, configuration, and integrations

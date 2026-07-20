@@ -55,7 +55,6 @@ under `sources.slack.streams`. A useful starting preset is four streams:
       "channel": "slack:dm"
     }
   },
-  "self_dm_channel_id": "U0EXAMPLE01",
   "query_stopword": "the"
 }
 ```
@@ -85,12 +84,24 @@ stopword only matches messages containing *both* — which most messages don't,
 producing false **"empty window"** runs where real content is silently skipped.
 One word, chosen so it's present in almost every message, is the whole trick.
 
-### self-DM for `push-start-day`
+### delivery: self-DM for `push-start-day`
 
-`sources.slack.self_dm_channel_id` is **your own Slack user id**. `push-start-day`
-posts the morning orientation there — posting a message to yourself lands in your
-self-DM, so the briefing shows up as a Slack message instead of terminal output.
-Leave it out if you don't use `push-start-day`.
+Outbound delivery is configured separately from inbound `sources`, under a
+top-level `delivery` block:
+
+```json
+"delivery": {
+  "start_day": { "via": "slack", "channel_id": "U0EXAMPLE01" }
+}
+```
+
+`delivery.start_day.channel_id` is typically **your own Slack user id** —
+`push-start-day` posts the morning orientation there, and posting a message to
+yourself lands in your self-DM, so the briefing shows up as a Slack message
+instead of terminal output. It can also be any other channel id if you'd
+rather it post elsewhere. `via: "slack"` is the only transport implemented in
+`0.1.0`; see [configuration.md](configuration.md) for the full field
+reference. Leave `delivery` out entirely if you don't use `push-start-day`.
 
 ## Google Calendar + Google Drive
 

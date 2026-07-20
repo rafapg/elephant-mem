@@ -1,24 +1,39 @@
-# `from-phone-tts`
+# `ingest-audio`
 
-Load `../_shared/core.md` first (always). This file is the `from-phone-tts`
+Load `../_shared/core.md` first (always). This file is the `ingest-audio`
 procedure. It resolves who-said-what and touches entities — also load
 `../_shared/entity-resolution.md`.
 
-**What this mode is:** acquire an offline voice recording from a device (a
-phone, a standalone recorder — anything that produces an audio file),
-transcribe it locally with speaker diarization, then hand the transcript to
-the normal ingest flow. The deterministic parts (drain the landing dir, run
-WhisperX) are in `scripts/phone-audio.py`; the judgment parts (which
-recording, who is each speaker, what's a durable fact) are here.
+**What this mode is:** a three-step pipeline — **audio → diarized transcript
+→ ingest**. Acquire a recording (from a phone, a standalone recorder —
+anything that produces an audio file), transcribe it locally with speaker
+diarization, then hand the transcript to the normal ingest flow. The
+deterministic parts (drain the landing dir, run WhisperX) are in
+`scripts/ingest-audio.py`; the judgment parts (which recording, who is each
+speaker, what's a durable fact) are here.
 
-**Transfer mechanism is your choice.** The steps below illustrate one option
-— Tailscale's file-sharing feature, Taildrop — because it needs no cloud
+**Acquisition route is your choice — the pipeline doesn't care how the file
+got here.** The steps below illustrate one option — a phone recording sent
+via Tailscale's file-sharing feature, Taildrop — because it needs no cloud
 account and works offline on a private network. It is not a requirement:
 AirDrop into a watched folder, a synced drive, or a USB copy all work
-identically from step 2 onward. Point `scripts/phone-audio.py pull` at
-wherever your files land via the `ELEPHANT_TAILDROP_DIR` env var (default
-`~/Downloads`) — the name is a nod to the example transfer mechanism, not a
-hard dependency on Tailscale.
+identically from step 2 onward. Point `scripts/ingest-audio.py pull` at
+wherever your files land — resolved in this order: the `ELEPHANT_TAILDROP_DIR`
+environment variable (highest priority) → the `audio.inbox_dir` key in
+`elephant.json` (see `docs/configuration.md`) → `~/Downloads` (default). The
+env var name is a nod to the example acquisition route, not a hard dependency
+on Tailscale.
+
+**This mode is optional; nothing else in the plugin depends on it.** It also
+has the heaviest install of anything here — plan for it before reaching for
+this mode:
+- WhisperX pulls in **PyTorch and ctranslate2**, a multi-gigabyte download on
+  first install.
+- Diarization needs a **Hugging Face token** and accepting the
+  **pyannote license** (see Prereqs below) — it will not run without both.
+- **CPU `int8` inference works on both x86 and ARM (including Apple
+  Silicon)**, but it is **slow** — expect roughly 0.5–1× realtime, i.e. a
+  30-minute recording takes 15–30+ minutes to transcribe.
 
 **Prereqs** (fail fast with a clear message, in the bundle's
 `conversation_language`, if missing):
@@ -30,7 +45,7 @@ hard dependency on Tailscale.
   token wherever you keep other secrets (a sourced `.env`/`.secrets` file, your
   shell profile, a password manager's env-inject) — the only requirement is
   that it's an environment variable by the time the transcribe step runs.
-- A way for the recording to reach this machine (see transfer mechanism,
+- A way for the recording to reach this machine (see acquisition route,
   above) and, for the Taildrop example, Tailscale running on both ends.
 
 ## Procedure
@@ -39,13 +54,14 @@ hard dependency on Tailscale.
    recording — e.g., for the Taildrop example: *Voice Memos → Share →
    Tailscale → `<this machine's device name>`*. Then drain the landing dir:
    ```bash
-   python3 scripts/phone-audio.py pull            # add --wait to block for an arrival
+   python3 scripts/ingest-audio.py pull            # add --wait to block for an arrival
    ```
-   This lists candidate audio (from the landing dir set by
-   `ELEPHANT_TAILDROP_DIR`, plus the CLI's own inbox). Note: some Taildrop
-   clients (e.g. the macOS App Store Tailscale app) save straight to a folder
-   like `~/Downloads` rather than into the CLI's queue — `pull` scans the
-   landing dir for that reason, so it works whichever client saved the file.
+   This lists candidate audio (from the resolved landing dir — see the
+   `ELEPHANT_TAILDROP_DIR` / `audio.inbox_dir` / `~/Downloads` precedence
+   above — plus the CLI's own inbox). Note: some Taildrop clients (e.g. the
+   macOS App Store Tailscale app) save straight to a folder like
+   `~/Downloads` rather than into the CLI's queue — `pull` scans the landing
+   dir for that reason, so it works whichever client saved the file.
 
 2. **Pick.** Present the candidates (name, duration, size, when it arrived),
    newest first, in a batch. Let the user choose one (or several). If nothing
@@ -54,7 +70,7 @@ hard dependency on Tailscale.
 
 3. **Transcribe.** For each chosen file:
    ```bash
-   python3 scripts/phone-audio.py transcribe "<path>" --language <lang> [--speakers N]
+   python3 scripts/ingest-audio.py transcribe "<path>" --language <lang> [--speakers N]
    ```
    Set `--language` to the recording's actual spoken language (an ISO code
    WhisperX accepts, e.g. `en`, `pt`, `es`) — it does not need to match the
@@ -95,8 +111,8 @@ hard dependency on Tailscale.
      - `channel: meeting`
      - `resource:` the transcript's provenance, e.g.
        `taildrop://<original-audio-filename>` (or the URI shape matching
-       whichever transfer mechanism was actually used — the audio itself is
-       deleted, see retention), plus a note that it was an offline recording
+       whichever acquisition route was actually used — the audio itself is
+       deleted, see retention), plus a note that it was a recording
        transcribed locally by WhisperX (diarized).
      - `occurred:` the confirmed meeting date.
      - a concise summary written in `knowledge_language` — a pointer, not a
