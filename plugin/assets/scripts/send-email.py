@@ -40,6 +40,14 @@ import sys
 from email.message import EmailMessage
 from pathlib import Path
 
+# Windows consoles default to a legacy codepage (cp1252); force UTF-8 on the
+# standard streams so printing non-ASCII content (emoji, accented names)
+# doesn't raise UnicodeEncodeError. No-op on POSIX / when already UTF-8.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 DEFAULT_CONFIG = "~/.config/elephant-mem/config.json"
 
 

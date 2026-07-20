@@ -29,6 +29,14 @@ import os
 import re
 import sys
 
+# Windows consoles default to a legacy codepage (cp1252); force UTF-8 on the
+# standard streams so printing non-ASCII content (emoji, accented names)
+# doesn't raise UnicodeEncodeError. No-op on POSIX / when already UTF-8.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUNDLE = os.path.join(ROOT, "knowledge")
 RESERVED = {"index.md", "log.md", "open-loops.md"}
