@@ -7,32 +7,28 @@ description: >
   bundle's conversation_language with provenance (cited fact + source files).
 ---
 
+<!-- Path resolution: pass the worker BOTH absolute paths, built from
+     ${CLAUDE_PLUGIN_ROOT} (the plugin's own convention, see init/update
+     skills) — this resolves regardless of the main agent's or the
+     subagent's cwd: procedure.md at
+     ${CLAUDE_PLUGIN_ROOT}/skills/query/procedure.md and core.md at
+     ${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md. If CLAUDE_PLUGIN_ROOT is
+     unset, ask the user where the plugin is installed rather than guessing. -->
+
 # elephant-mem:query
 
-Read-only, entity-centric retrieval from the elephant-mem knowledge bundle.
+This skill runs in a subagent to keep the main context clean — do NOT read the
+bundle or `core.md` yourself.
 
-**Load `../_shared/core.md` first** (the shared contract; it resolves `<bundle>`
-and `elephant.json`). For entity work, also `../_shared/entity-resolution.md`.
-Obey **Retrieval trust** in `../_shared/core.md`. The recall escape hatch is the
-**whole-field scan** — see `../_shared/whole-field-scan.md`.
-
-## Procedure
-
-Read-only, **entity-centric** (this is what keeps retrieval cheap as `facts/`
-grows huge). (1) Read the thin `<bundle>/knowledge/index.md` router and
-`<bundle>/knowledge/entities/index.md` catalog. (2) Map the question to
-entities/tags; open those entity hubs and follow their backlinks to the
-relevant facts. Use `rg` over `knowledge/facts` only as a fallback when no
-entity matches. (3) Load the bodies of only those facts. (4) Answer in the
-bundle's `conversation_language` (from `elephant.json`) **with provenance** —
-cite the fact files and their `sources`. Never enumerate the whole `facts/`
-dir. Do not write anything (no churn on reads).
-
-> **Recall escape hatch:** when no entity matches and the `rg` fallback is too
-> noisy, don't reach for vectors — use the **whole-field scan** (see
-> `../_shared/whole-field-scan.md`). The `manifest.jsonl` triage surface keeps
-> recall cheap far past the point where a flat `rg` degrades. A vector index
-> only earns its keep once even the manifest no longer fits a subagent's context
-> (years out at current growth) — and even then it's a disposable derived
-> accelerator over fact `description`+body, never the source of truth;
-> `index.md` stays for human navigation.
+1. Spawn a subagent with the Agent tool: `subagent_type: "elephant-worker"`,
+   `model: "sonnet"`. Give it this prompt: "Run the elephant-mem query
+   procedure. First load `${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md`
+   (resolve `${CLAUDE_PLUGIN_ROOT}` from the environment), then open and
+   follow the procedure at `${CLAUDE_PLUGIN_ROOT}/skills/query/procedure.md`.
+   The user's question is: `<the user's verbatim question/topic>`. Do every
+   bundle read in your own context. Return ONLY the final user-facing answer
+   in the bundle's `conversation_language`, with provenance exactly as the
+   procedure requires."
+   <!-- Effort: medium intended. The Agent tool has no reasoning-effort/thinking
+        param today, so the worker inherits the session's effort setting. -->
+2. Relay the subagent's final message to the user verbatim. Add nothing.

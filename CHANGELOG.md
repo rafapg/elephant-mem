@@ -4,6 +4,31 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.2] - 2026-07-20
+
+Context-minimization refactor of the model-invocable read modes: each now runs
+its heavy bundle reads and synthesis in a disposable subagent, so the main
+agent's context only receives the distilled answer.
+
+### Changed
+
+- **`query`, `briefing`, `start-day`, `end-day`** — each `SKILL.md` is now a thin
+  launcher that spawns a subagent and relays its final answer verbatim; the full
+  step-by-step procedure moved into a sibling `procedure.md` loaded only inside
+  that subagent. `_shared/core.md` and the other shared docs no longer load into
+  the main context on every invocation. Behavior (provenance, conversation
+  language, whole-field-scan escape hatch, read-only guarantees, end-day's
+  interactive capture tail) is preserved. `capture` is unchanged.
+
+### Added
+
+- **`elephant-worker` agent** (`plugin/agents/elephant-worker.md`) — generic
+  worker that runs a given `procedure.md` end-to-end in an isolated context
+  (default model `sonnet`, overridable per call) and returns only the
+  user-facing answer.
+
+[0.1.0-beta.2]: https://github.com/rafapg/elephant-mem/releases/tag/v0.1.0-beta.2
+
 ## [0.1.0-beta.1] - 2026-07-19
 
 Public beta — mechanics complete and CI-tested on Linux/macOS/Windows;
