@@ -163,7 +163,7 @@ push out; `0.1.0` defines one:
     self-DM — but it can be any channel id (e.g. a dedicated private channel)
     if you'd rather it post somewhere else.
   - If `delivery` is absent, or `delivery.start_day` is unset, `push-start-day`
-    has nowhere to post — it explains that and stops (same as today).
+    has nowhere to post — it explains that and stops.
 
 **`audio`** (optional) — settings for the `ingest-audio` mode.
 
