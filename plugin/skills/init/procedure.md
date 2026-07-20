@@ -177,11 +177,14 @@ If the user wants **Calendar** (meeting transcripts), write `sources.calendar`:
 with the same shape (a name, a `channel:` value, a cursor entry). See
 `docs/configuration.md`.
 
-If the user configured **Slack** and wants `push-start-day`, also collect
-**delivery** (a separate, top-level block — `sources` is inbound,
-`delivery` is outbound): ask for the destination channel id (usually the
-owner's own Slack user id, so a self-DM) and write it as
-`delivery.start_day`:
+If the user wants `push-start-day`, also collect **delivery** (a separate,
+top-level block — `sources` is inbound, `delivery` is outbound). Ask
+(AskUserQuestion) which transport: **Slack self-DM** / **email (SMTP)** /
+**skip**.
+
+**Slack self-DM** (needs `sources.slack` configured above): ask for the
+destination channel id (usually the owner's own Slack user id, so a self-DM)
+and write:
 
 ```json
 "delivery": {
@@ -189,9 +192,56 @@ owner's own Slack user id, so a self-DM) and write it as
 }
 ```
 
-Explain that `"slack"` is the only implemented `via` transport in `0.1.0`. If
-the user skips this or doesn't set up Slack, omit `delivery` entirely —
-`push-start-day` explains it has nowhere to post and stops, which is fine.
+**Email (SMTP)** — needs no MCP connector at all; `push-start-day` sends
+directly via `scripts/send-email.py`. Collect two things:
+
+1. **Bundle-side `to` address** — the recipient, written into
+   `elephant.json`:
+   ```json
+   "delivery": {
+     "start_day": { "via": "smtp", "to": "jane@example.com" }
+   }
+   ```
+2. **Machine-side `smtp` block** — walk the user through the sending server,
+   and write it into the **pointer file**
+   (`~/.config/elephant-mem/config.json`), **merging** with the existing
+   `bundle_path` rather than clobbering it:
+   - `host`, `port` (e.g. `smtp.gmail.com`, `587`)
+   - `username` (the SMTP auth user, usually same as `from`)
+   - `from` (the sender address)
+   - `password_env` — **recommended**: the name of an environment variable
+     holding the password (e.g. `ELEPHANT_SMTP_PASSWORD`). Tell the user to
+     export it in their shell profile (or wherever the scheduled task's
+     environment is set) — the pointer file itself then holds no secret.
+     Mention that Gmail requires an **app password** (needs 2FA enabled),
+     generated at https://myaccount.google.com/apppasswords.
+   - Alternative: an inline `password` field (simpler, but plaintext on disk —
+     if used, `chmod 600 ~/.config/elephant-mem/config.json`).
+
+   Resulting pointer file:
+   ```json
+   {
+     "bundle_path": "<bundle>",
+     "smtp": {
+       "host": "smtp.gmail.com",
+       "port": 587,
+       "username": "jane@example.com",
+       "from": "jane@example.com",
+       "password_env": "ELEPHANT_SMTP_PASSWORD"
+     }
+   }
+   ```
+
+   Offer a test: run `python3 <bundle>/scripts/send-email.py --config
+   ~/.config/elephant-mem/config.json --to <to> --subject "elephant-mem test"
+   --body-file <a small temp file> --dry-run` to confirm the config resolves
+   (host/port/from/password source) without sending anything. If the user
+   wants, follow up with a real send (drop `--dry-run`) to confirm delivery
+   end-to-end.
+
+Explain that `"slack"` and `"smtp"` are both implemented `via` transports in
+`0.1.0`. If the user **skips**, omit `delivery` entirely — `push-start-day`
+explains it has nowhere to post and stops, which is fine.
 
 ## Stage 7 — Seed knowledge
 

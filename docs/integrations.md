@@ -99,9 +99,79 @@ top-level `delivery` block:
 `push-start-day` posts the morning orientation there, and posting a message to
 yourself lands in your self-DM, so the briefing shows up as a Slack message
 instead of terminal output. It can also be any other channel id if you'd
-rather it post elsewhere. `via: "slack"` is the only transport implemented in
-`0.1.0`; see [configuration.md](configuration.md) for the full field
-reference. Leave `delivery` out entirely if you don't use `push-start-day`.
+rather it post elsewhere. `via: "slack"` and `via: "smtp"` (below) are both
+implemented in `0.1.0`; see [configuration.md](configuration.md) for the full
+field reference. Leave `delivery` out entirely if you don't use
+`push-start-day`.
+
+## Email delivery (SMTP)
+
+The `via: "smtp"` transport for `delivery.start_day` sends the morning
+orientation as a plain-text email instead of (or as an alternative to) a Slack
+post. It works with **any** SMTP provider — Gmail, a company mail server,
+Fastmail, SES SMTP, etc. — and needs **no MCP connector**, since
+`plugin/assets/scripts/send-email.py` talks to the SMTP server directly with
+Python's stdlib `smtplib`.
+
+Configuration is split, same as the pointer/bundle split everywhere else in
+elephant-mem:
+
+- **Bundle side** (`elephant.json`, travels with the bundle) — just the
+  recipient:
+  ```json
+  "delivery": {
+    "start_day": { "via": "smtp", "to": "jane@example.com" }
+  }
+  ```
+- **Machine side** (`~/.config/elephant-mem/config.json`, the pointer file,
+  never travels) — the sending server and credentials, under an `smtp` block:
+  ```json
+  {
+    "bundle_path": "/Users/jane/notes/my-memory",
+    "smtp": {
+      "host": "smtp.gmail.com",
+      "port": 587,
+      "username": "jane@example.com",
+      "from": "jane@example.com",
+      "password_env": "ELEPHANT_SMTP_PASSWORD"
+    }
+  }
+  ```
+
+### worked example — Gmail
+
+1. Enable 2-factor authentication on the Google account (required for app
+   passwords).
+2. Generate an app password at
+   https://myaccount.google.com/apppasswords — a 16-character password scoped
+   to this one use, separate from the account password.
+3. Export it where the scheduled task's environment picks it up:
+   ```bash
+   export ELEPHANT_SMTP_PASSWORD="xxxx xxxx xxxx xxxx"
+   ```
+4. Pointer file `smtp` block: `host: smtp.gmail.com`, `port: 587`, `username`
+   and `from` = the Gmail address, `password_env: ELEPHANT_SMTP_PASSWORD`.
+5. Test without sending anything:
+   ```bash
+   python3 <bundle>/scripts/send-email.py \
+     --to jane@example.com --subject "test" --body-file <a text file> \
+     --dry-run
+   ```
+   This validates the config and prints a summary (host, port, from, to,
+   subject, body length, password source) without connecting. Drop
+   `--dry-run` to send for real.
+
+Any other provider follows the same shape — just point `host`/`port` at that
+provider's SMTP endpoint and use its credentials.
+
+### why SMTP and not the Gmail MCP connector
+
+The claude.ai **Gmail** connector is read/draft-only — it can search, read,
+and create drafts, but has no send tool. That's fine for triaging inbox
+content, but it can't deliver an autonomous push. SMTP is the direct,
+connector-free path to actually sending mail, which is why `push-start-day`'s
+email transport goes straight to `send-email.py` instead of through Gmail's
+MCP tools.
 
 ## Google Calendar + Google Drive
 

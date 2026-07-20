@@ -28,6 +28,43 @@ only required key is `bundle_path` (absolute).
 If this file is missing or unreadable, modes stop and ask the user to run
 `elephant-mem:init`. A mode never guesses a bundle path.
 
+### Optional `smtp` block
+
+For the `via: "smtp"` email delivery transport (see `delivery.start_day`
+below), the pointer file may also carry an `smtp` block — server + credentials
+are machine-local, so a bundle can be moved or synced to another machine
+without carrying secrets with it:
+
+```json
+{
+  "bundle_path": "/Users/jane/notes/my-memory",
+  "smtp": {
+    "host": "smtp.gmail.com",
+    "port": 587,
+    "username": "jane@example.com",
+    "from": "jane@example.com",
+    "password_env": "ELEPHANT_SMTP_PASSWORD"
+  }
+}
+```
+
+- `host`, `port` — the SMTP server. Port `465` connects over implicit TLS;
+  any other port (e.g. `587`) uses plain SMTP + STARTTLS.
+- `username` — the SMTP auth username (usually the same as `from`).
+- `from` — the sender address on outgoing mail.
+- `password_env` — the name of an **environment variable** holding the SMTP
+  password/app-password. **Preferred**: the secret never touches disk in the
+  pointer file itself; export it in your shell profile (or wherever the
+  scheduled task's environment is configured).
+- `password` — an alternative: the password inline, in plaintext, in the
+  pointer file. Simpler to set up but means a secret lives on disk — if you
+  use this, `chmod 600 ~/.config/elephant-mem/config.json` (the same model as
+  `.netrc` or `msmtp` config files). If both `password_env` and `password` are
+  present, `password_env` wins.
+
+`plugin/assets/scripts/send-email.py` reads this block; see
+[integrations.md](integrations.md#email-delivery-smtp) for a worked example.
+
 ---
 
 ## 2. Bundle config — `<bundle>/elephant.json`
@@ -149,19 +186,24 @@ configured source uniformly: read its cursor → sweep after it → extract → 
 
 **`delivery`** (optional) — where **outbound** messages go, as opposed to
 `sources` (which is always inbound). Each key names something the plugin can
-push out; `0.1.0` defines one:
+push out; `0.1.0` defines one, with two supported transports:
 
 - `delivery.start_day` — the destination for `push-start-day`'s morning
-  message: `{ "via": "slack", "channel_id": "<id>" }`.
-  - `via` — the delivery transport. `"slack"` is the only transport
+  message. Two shapes, chosen by `via`:
+  - `{ "via": "slack", "channel_id": "<id>" }` — `channel_id` is usually
+    **your own Slack user id**, so posting there lands in your self-DM — but
+    it can be any channel id (e.g. a dedicated private channel) if you'd
+    rather it post somewhere else.
+  - `{ "via": "smtp", "to": "jane@example.com" }` — `to` is the recipient
+    address; the sending server + credentials come from the pointer file's
+    `smtp` block (above), not from this bundle-side config. This transport
+    needs no MCP connector at all — it sends directly via
+    `scripts/send-email.py`.
+  - `via` — the delivery transport. `"slack"` and `"smtp"` are both
     implemented in `0.1.0`. Any other value is accepted in config but
     `push-start-day` will say it isn't implemented yet and point you at the
     bring-your-own-source guide in [integrations.md](integrations.md) instead
     of silently doing nothing.
-  - `channel_id` — for `via: "slack"`, the destination channel id. This is
-    usually **your own Slack user id**, so posting there lands in your
-    self-DM — but it can be any channel id (e.g. a dedicated private channel)
-    if you'd rather it post somewhere else.
   - If `delivery` is absent, or `delivery.start_day` is unset, `push-start-day`
     has nowhere to post — it explains that and stops.
 
