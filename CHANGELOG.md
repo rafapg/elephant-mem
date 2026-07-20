@@ -4,7 +4,10 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - 2026-07-19
+## [0.1.0-beta.1] - 2026-07-19
+
+Public beta — mechanics complete and CI-tested on Linux/macOS/Windows;
+promoted to 0.1.0 after cross-platform manual testing of the guided modes.
 
 Initial release. elephant-mem is a personal memory for Claude Code: a private,
 local, git-versioned knowledge bundle of durable facts, open loops, and episodic
@@ -37,4 +40,4 @@ automatic ingestion from your work sources.
 - **Documentation** — README, architecture, configuration, and integrations
   guides.
 
-[0.1.0]: https://github.com/rafapg/elephant-mem/releases/tag/v0.1.0
+[0.1.0-beta.1]: https://github.com/rafapg/elephant-mem/releases/tag/v0.1.0-beta.1
