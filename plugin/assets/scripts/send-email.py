@@ -53,7 +53,7 @@ def load_pointer(path):
     if not p.exists():
         fail(f"pointer file not found: {p}")
     try:
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         fail(f"pointer file is not valid JSON ({p}): {e}")
 
@@ -148,7 +148,7 @@ def main(argv):
         body_path = Path(args.body_file)
         if not body_path.exists():
             fail(f"body file not found: {body_path}")
-        body = body_path.read_text()
+        body = body_path.read_text(encoding="utf-8")
 
     pointer = load_pointer(args.config)
     smtp_cfg = load_smtp_config(pointer)

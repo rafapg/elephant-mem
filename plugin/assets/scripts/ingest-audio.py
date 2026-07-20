@@ -43,7 +43,7 @@ def _inbox_dir_from_config():
     next option in the resolution order.
     """
     try:
-        with open(BUNDLE / "elephant.json") as f:
+        with open(BUNDLE / "elephant.json", encoding="utf-8") as f:
             data = json.load(f)
         inbox_dir = data.get("audio", {}).get("inbox_dir")
         if inbox_dir:
@@ -108,7 +108,7 @@ def ffprobe_duration(path):
     try:
         out = subprocess.run(
             [ffprobe, "-v", "quiet", "-print_format", "json", "-show_format", str(path)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
         data = json.loads(out.stdout or "{}")
         dur = data.get("format", {}).get("duration")

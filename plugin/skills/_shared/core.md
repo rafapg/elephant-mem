@@ -111,7 +111,9 @@ A `snapshot` fact is a **point-in-time editorial rollup**:
   surrounding context (this keeps it embedding-ready for later).
 - After any write batch: run `python3 scripts/build-index.py` then
   `python3 scripts/validate-okf.py` (from `<bundle>`). Both must pass before you
-  commit.
+  commit. (`python3` throughout this plugin means the bundle's Python 3
+  interpreter — on Windows, substitute `python` or `py -3` if `python3` isn't on
+  PATH.)
 - `index.md`, `entities/index.md`, `tracking/open-loops.md`, and entity/source
   backlinks are **derived** — never hand-edit; regenerate them.
 - Reserved (no frontmatter): `index.md`, `log.md`, `open-loops.md`.

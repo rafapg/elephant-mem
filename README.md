@@ -105,12 +105,18 @@ the bring-your-own-source contract.
 
 ## platforms
 
-Tested on **macOS** and **Linux**. **Windows** is expected to work via Git
-Bash or WSL (Claude Code's own supported shells there) but is untested —
-reports welcome. Core scripts (`build-index.py`, `validate-okf.py`,
-`briefing.py`, `state.py`, etc.) are **Python 3 stdlib only**, no
-dependencies to install. The optional `ingest-audio` mode is the exception —
-see its own prerequisites in [`plugin/skills/ingest-audio/procedure.md`](plugin/skills/ingest-audio/procedure.md).
+Tested on **macOS** and **Linux**. **Native Windows is supported — no WSL
+required**: Claude Code on Windows already requires Git for Windows, and its
+bundled Git Bash is the shell every command here runs in. You need Python
+3.10+ (from python.org or the Microsoft Store); all bundle scripts read and
+write files with explicit UTF-8 encoding, so non-ASCII content in your
+knowledge is handled the same way on every platform. Core scripts
+(`build-index.py`, `validate-okf.py`, `briefing.py`, `state.py`, etc.) are
+**Python 3 stdlib only**, no dependencies to install. Windows support is
+**community-tested — reports welcome** (the maintainer develops on macOS).
+The exception is the optional `ingest-audio` mode: WhisperX is not supported
+(and not recommended) on Windows — see its own prerequisites in
+[`plugin/skills/ingest-audio/procedure.md`](plugin/skills/ingest-audio/procedure.md).
 
 ## privacy
 

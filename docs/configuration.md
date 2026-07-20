@@ -28,6 +28,10 @@ only required key is `bundle_path` (absolute).
 If this file is missing or unreadable, modes stop and ask the user to run
 `elephant-mem:init`. A mode never guesses a bundle path.
 
+On Windows, `~` expands to `C:\Users\<name>\.config\elephant-mem\config.json`
+rather than the more idiomatic `%APPDATA%` — that's intentional, so the
+pointer path resolves the same way (via `expanduser`) on every platform.
+
 ### Optional `smtp` block
 
 For the `via: "smtp"` email delivery transport (see `delivery.start_day`
@@ -59,8 +63,9 @@ without carrying secrets with it:
 - `password` — an alternative: the password inline, in plaintext, in the
   pointer file. Simpler to set up but means a secret lives on disk — if you
   use this, `chmod 600 ~/.config/elephant-mem/config.json` (the same model as
-  `.netrc` or `msmtp` config files). If both `password_env` and `password` are
-  present, `password_env` wins.
+  `.netrc` or `msmtp` config files; on Windows, restrict the file via its
+  Properties → Security tab or `icacls`). If both `password_env` and
+  `password` are present, `password_env` wins.
 
 `plugin/assets/scripts/send-email.py` reads this block; see
 [integrations.md](integrations.md#email-delivery-smtp) for a worked example.

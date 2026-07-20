@@ -18,6 +18,20 @@ where the plugin is installed rather than guessing.
 
 ---
 
+## Stage 0 — Pre-flight (environment check)
+
+Before anything else, confirm the machine has what `init` needs:
+
+- **Python 3.10+**: try `python3 --version`, then `python --version`, then
+  `py -3 --version` (in that order — `python3` often isn't on PATH on
+  Windows). Remember whichever spelling succeeds and use it for every
+  `python3 scripts/...` command for the rest of this session. If none report a
+  working 3.10+ interpreter, stop and tell the user to install Python (from
+  python.org or the Microsoft Store) before continuing.
+- **Git**: `git --version`. On Windows this doubles as confirming Git for
+  Windows is installed (it ships Git Bash, the shell Claude Code requires
+  there). If missing, stop and point the user to https://git-scm.com/downloads.
+
 ## Stage 1 — Orientation
 
 Give a short (≈10 lines) plain-language intro, then continue. Cover:
@@ -216,7 +230,11 @@ directly via `scripts/send-email.py`. Collect two things:
      Mention that Gmail requires an **app password** (needs 2FA enabled),
      generated at https://myaccount.google.com/apppasswords.
    - Alternative: an inline `password` field (simpler, but plaintext on disk —
-     if used, `chmod 600 ~/.config/elephant-mem/config.json`).
+     if used, `chmod 600 ~/.config/elephant-mem/config.json` (macOS/Linux); on
+     Windows, restrict the file instead via its Properties → Security tab, or
+     `icacls ~/.config/elephant-mem/config.json /inheritance:r /grant:r "$env:USERNAME:F"`
+     in PowerShell — `chmod` in Git Bash does not enforce real ACLs on an NTFS
+     file).
 
    Resulting pointer file:
    ```json
