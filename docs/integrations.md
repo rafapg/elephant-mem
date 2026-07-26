@@ -278,13 +278,24 @@ source block:
 }
 ```
 
-Register its cursor in `state/cursors.json` so the routine tracks it:
+Register its cursor with `scripts/state.py` — no manual JSON editing needed, it
+bootstraps the channel entry for you:
 
-```json
-"channels": {
-  "linear": { "live_cursor": null, "backfill_oldest": null }
-}
+```bash
+python3 scripts/state.py advance-live linear 2026-07-26T00:00:00-03:00
 ```
+
+This creates the `linear` entry in `state/cursors.json` (if it doesn't exist
+yet) and sets its `live_cursor` to the given timestamp, so the very first
+`catch-up` run sweeps forward from that point instead of pulling the source's
+entire history.
+
+Leaving the channel unregistered entirely — or setting `live_cursor: null` by
+hand — is also supported and won't break anything: `state.py after linear`
+then returns Unix epoch `0` (with a warning), and `next-backfill` starts its
+day-by-day sweep from today. That's a deliberate "first run backfills
+everything" mode; only rely on it if you actually want a full historical
+sweep, since it can mean a much larger first run.
 
 Now `catch-up` sweeps Linear alongside Slack and Calendar: durable facts (a
 project's scope changed, an owner was reassigned) become `type: fact` files
@@ -294,3 +305,28 @@ loops. `briefing --channel linear` then filters to just that source.
 The same pattern fits an **email** source, a ticketing system, a docs tool — any
 MCP-backed connector. If you build a tested recipe for one, **PRs adding
 integration recipes are welcome.**
+
+### typed cursors — beyond timestamps
+
+`live_cursor` is usually a bare ISO datetime string (the `date` type, implicit
+for backward compatibility). Some sources aren't naturally date-based — e.g. a
+docs-repo source you want to re-sweep only when its `HEAD` commit changes, not
+on a schedule. For that, store a **typed** cursor instead:
+
+```bash
+python3 scripts/state.py advance-live docs-repo abc1234 --type commit
+```
+
+This stores `{"type": "commit", "value": "abc1234"}` as `live_cursor`. A
+`commit` cursor supports get and equality, but deliberately **not** date
+arithmetic — running `state.py after docs-repo` on it is a clear error, not a
+crash, since "Unix ts of a commit hash" isn't a meaningful operation:
+
+```bash
+# get the current value (works for either cursor type)
+python3 scripts/state.py live-cursor docs-repo
+
+# no-op gate: skip the sweep unless HEAD moved
+python3 scripts/state.py cursor-eq docs-repo "$(git -C /path/to/repo rev-parse HEAD)" \
+  && echo "unchanged, skip" || python3 scripts/state.py advance-live docs-repo "$(git -C /path/to/repo rev-parse HEAD)" --type commit
+```
