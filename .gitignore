@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .DS_Store
 .cache/
+
+# Planning docs quote the private bundle (calibration/performance judgments
+# about named colleagues). This repo is public — never publish them.
+.planning/
+
+docs/convergence-analysis-*.md
