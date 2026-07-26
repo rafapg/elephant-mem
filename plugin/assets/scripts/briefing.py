@@ -18,6 +18,7 @@ fact to its `sources` and reading each source's `channel`.
 """
 import argparse
 import datetime
+import json
 import os
 import re
 import sys
@@ -33,6 +34,7 @@ if hasattr(sys.stderr, "reconfigure"):
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUNDLE = os.path.join(ROOT, "knowledge")
 RESERVED = {"index.md", "log.md", "open-loops.md"}
+ARCHIVE_SUFFIX = ".facts-archive.md"  # regenerated hub shard — no frontmatter, not a fact/open-loop
 FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 INLINE_LIST = re.compile(r"^\[(.*)\]$")
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -43,6 +45,33 @@ except ImportError:
     yaml = None
 
 
+def load_vocab():
+    path = os.path.join(ROOT, "vocab.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+VOCAB = load_vocab()
+
+
+def vocab_set(key, default):
+    if VOCAB and isinstance(VOCAB.get(key), list):
+        return set(str(x) for x in VOCAB[key])
+    return set(default)
+
+
+# Kept byte-identical to the hardcoded values this replaced when vocab.json is
+# absent, so bundles without it behave exactly as before.
+TRACKED_TYPES = vocab_set("type", ["entity", "fact", "open-loop", "source"]) - {"entity", "source"}
+FACT_HISTORY_STATUS = vocab_set("fact_status", ["active", "superseded", "deprecated"]) - {"active"}
+
+
 def parse_fm(block):
     if yaml is not None:
         try:
@@ -51,12 +80,34 @@ def parse_fm(block):
                 return d
         except Exception:
             pass
+    # Minimal fallback parser (no PyYAML installed): handles scalars, inline
+    # lists (`key: [a, b]`) and block-sequence lists (`key:` then `  - item`).
+    # Nested mappings (e.g. `relations:`) are NOT supported and resolve to "".
     d = {}
-    for ln in block.splitlines():
+    lines = block.splitlines()
+    i, n = 0, len(lines)
+    while i < n:
+        ln = lines[i]
+        i += 1
         if not ln or ln[0] in " \t#" or ":" not in ln:
             continue
         k, _, v = ln.partition(":")
         k, v = k.strip(), v.strip()
+        if not v:
+            items = []
+            while i < n:
+                nxt = lines[i]
+                stripped = nxt.strip()
+                if not stripped:
+                    i += 1
+                    continue
+                if nxt[0] in " \t" and stripped.startswith("- "):
+                    items.append(stripped[2:].strip())
+                    i += 1
+                    continue
+                break
+            d[k] = items if items else ""
+            continue
         m = INLINE_LIST.match(v)
         d[k] = ([x.strip() for x in m.group(1).split(",") if x.strip()] if m.group(1).strip() else []) if m else v
     return d
@@ -79,7 +130,7 @@ def load():
     items = []
     for dp, _d, files in os.walk(BUNDLE):
         for f in files:
-            if not f.endswith(".md") or f in RESERVED:
+            if not f.endswith(".md") or f in RESERVED or f.endswith(ARCHIVE_SUFFIX):
                 continue
             p = os.path.join(dp, f)
             with open(p, encoding="utf-8") as fh:
@@ -128,13 +179,13 @@ def main():
         return to_date(fm.get("occurred")) or to_date(fm.get("opened")) or to_date(fm.get("created"))
 
     def is_history(fm):
-        return str(fm.get("status", "")).lower() in ("deprecated", "superseded")
+        return str(fm.get("status", "")).lower() in FACT_HISTORY_STATUS
 
     facts, loops = [], []
     hidden_superseded = 0
     for fm in items:
         t = fm.get("type")
-        if t not in ("fact", "open-loop"):
+        if t not in TRACKED_TYPES:
             continue
         if args.kind != "all" and t != args.kind:
             continue

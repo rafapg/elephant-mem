@@ -1,0 +1,8 @@
+{
+  "type": ["entity", "fact", "open-loop", "source"],
+  "kind": ["person", "org", "project", "tool", "concept", "event", "team", "place", "repo"],
+  "confidence": ["low", "medium", "high"],
+  "fact_status": ["active", "superseded", "deprecated"],
+  "loop_status": ["open", "done", "dropped", "expired"],
+  "source-kind": ["article", "conversation", "document", "note", "email", "video", "other"]
+}
