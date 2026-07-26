@@ -19,3 +19,5 @@ jobs:
         with:
           python-version: "3.10"
       - run: python tests/smoke.py
+      - run: python tests/test_state.py
+      - run: python tests/test_index.py

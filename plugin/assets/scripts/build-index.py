@@ -41,6 +41,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUNDLE = os.path.join(ROOT, "knowledge")
 RESERVED = {"index.md", "log.md", "open-loops.md"}
 RECENT_N = 12
+# Regenerated hub-sharding shard: never a first-class OKF type, so it carries
+# no frontmatter and is excluded from concept-scanning / validate-okf.py's
+# frontmatter rule (mirrors RESERVED, but by suffix since the basename varies
+# per entity/source).
+ARCHIVE_SUFFIX = ".facts-archive.md"
+HUB_MAX_FACTS_DEFAULT = 50
 
 FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 INLINE_LIST = re.compile(r"^\[(.*)\]$")
@@ -52,6 +58,48 @@ except ImportError:
     yaml = None
 
 
+def load_json_config(name):
+    """Defensively read a JSON config file at the bundle root. Missing file,
+    missing keys, or malformed JSON all fall through to None — callers apply
+    their own default (mirrors ingest-audio.py's elephant.json reader)."""
+    path = os.path.join(ROOT, name)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+VOCAB = load_json_config("vocab.json")
+
+
+def vocab_set(key, default):
+    """Controlled-vocabulary values for `key`, from vocab.json when present
+    and well-formed, else `default` — kept byte-identical to the hardcoded
+    behavior this replaced so bundles without vocab.json are unaffected."""
+    if VOCAB and isinstance(VOCAB.get(key), list):
+        return set(str(x) for x in VOCAB[key])
+    return set(default)
+
+
+def hub_max_facts():
+    cfg = load_json_config("elephant.json") or {}
+    v = cfg.get("index", {}).get("hub_max_facts") if isinstance(cfg.get("index"), dict) else None
+    return v if isinstance(v, int) and v > 0 else HUB_MAX_FACTS_DEFAULT
+
+
+# fact_status / loop_status default lists mirror the exact values the old
+# hardcoded HISTORY_STATUS / active() sets covered — see vocab.json for the
+# full controlled vocabulary (adds "expired" for loops, used by decay).
+FACT_STATUS = vocab_set("fact_status", ["active", "superseded", "deprecated"])
+LOOP_STATUS = vocab_set("loop_status", ["open", "done", "dropped"])
+FACT_HISTORY_STATUS = FACT_STATUS - {"active"}
+LOOP_HISTORY_STATUS = LOOP_STATUS - {"open"}
+
+
 def parse_fm(block):
     if yaml is not None:
         try:
@@ -60,12 +108,38 @@ def parse_fm(block):
                 return data
         except Exception:
             pass
+    # Minimal fallback parser (no PyYAML installed): handles scalars, inline
+    # lists (`key: [a, b]`) and block-sequence lists:
+    #   key:
+    #     - a
+    #     - b
+    # Nested mappings (e.g. `relations:`) are NOT supported here and resolve to
+    # "" — same as before this fallback grew block-sequence support.
     data = {}
-    for line in block.splitlines():
+    lines = block.splitlines()
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        i += 1
         if not line or line[0] in " \t#" or ":" not in line:
             continue
         key, _, val = line.partition(":")
         key, val = key.strip(), val.strip()
+        if not val:
+            items = []
+            while i < n:
+                nxt = lines[i]
+                stripped = nxt.strip()
+                if not stripped:
+                    i += 1
+                    continue
+                if nxt[0] in " \t" and stripped.startswith("- "):
+                    items.append(stripped[2:].strip())
+                    i += 1
+                    continue
+                break
+            data[key] = items if items else ""
+            continue
         m = INLINE_LIST.match(val)
         if m:
             inner = m.group(1).strip()
@@ -111,7 +185,7 @@ def write(rel, lines):
 def main():
     concepts = []
     for path in md_files(BUNDLE):
-        if os.path.basename(path) in RESERVED:
+        if os.path.basename(path) in RESERVED or path.endswith(ARCHIVE_SUFFIX):
             continue
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
@@ -133,7 +207,7 @@ def main():
         })
 
     def active(items):
-        return [c for c in items if c["status"] not in ("deprecated", "superseded")]
+        return [c for c in items if c["status"] not in FACT_HISTORY_STATUS]
 
     entities = [c for c in concepts if c["type"] == "entity"]
     facts = [c for c in concepts if c["type"] == "fact"]
@@ -200,7 +274,11 @@ def main():
 
     # 4. backlinks into entity & source files — trust-aware (see SKILL "Retrieval trust")
     fact_by_link = {c["link"]: c for c in facts}
-    HISTORY_STATUS = {"deprecated", "superseded", "done", "dropped"}
+    HISTORY_STATUS = FACT_HISTORY_STATUS | LOOP_HISTORY_STATUS
+    HUB_MAX_FACTS = hub_max_facts()
+
+    def occ(c):
+        return str(c["fm"].get("occurred") or c["fm"].get("opened") or c["updated"] or "")
 
     def is_history(r):
         st = str(r["fm"].get("status", "")).lower()
@@ -226,35 +304,97 @@ def main():
             break
         return item
 
+    def archive_path_for(entity_path):
+        d = os.path.dirname(entity_path)
+        base = os.path.basename(entity_path)[:-len(".md")]
+        return os.path.join(d, base + ARCHIVE_SUFFIX)
+
+    def write_archive(path, hub_title, hub_link, overflow_active, hist_refs):
+        """Sibling shard for a hub past HUB_MAX_FACTS: no frontmatter (see
+        ARCHIVE_SUFFIX) — plain markdown, regenerated wholesale every build."""
+        lines = [
+            f"# Archived facts — {hub_title}",
+            "",
+            f"Older / superseded facts referencing [{hub_title}]({hub_link}), sharded out of its "
+            "inline auto-facts block by `scripts/build-index.py` (hub too large). "
+            "Regenerated every build — do not edit by hand.",
+            "",
+        ]
+        if overflow_active:
+            lines += ["## Related facts (older)", ""]
+            lines += [marked(r) for r in overflow_active]
+            lines += [""]
+        if hist_refs:
+            lines += ["## Superseded / deprecated (history)", ""]
+            lines += [history_line(r) for r in hist_refs]
+            lines += [""]
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines).rstrip() + "\n")
+
     backlinks = {}
     for c in facts + loops:
         for tgt in as_list(c["fm"].get("entities")) + as_list(c["fm"].get("sources")) + as_list(c["fm"].get("owner")):
             backlinks.setdefault(tgt, []).append(c)
+
+    injected = []
+    archives_written = set()
     for c in entities + sources:
         refs = sorted(backlinks.get(c["link"], []), key=lambda x: x["link"])
         active_refs = [r for r in refs if not is_history(r)]
         history_refs = [r for r in refs if is_history(r)]
+
+        sharded = len(active_refs) > HUB_MAX_FACTS
+        if sharded:
+            active_sorted = sorted(active_refs, key=occ, reverse=True)
+            inline_active = active_sorted[:HUB_MAX_FACTS]
+            overflow_active = active_sorted[HUB_MAX_FACTS:]
+        else:
+            inline_active = active_refs
+            overflow_active = []
+
         block = ["<!-- BEGIN auto-facts -->",
                  "<!-- Regenerated by scripts/build-index.py — do not edit by hand. -->"]
-        if active_refs:
+        if inline_active:
             block += ["", "## Related facts", ""]
-            block += [marked(r) for r in active_refs]
+            block += [marked(r) for r in inline_active]
             block += [""]
-        if history_refs:
+        if not sharded and history_refs:
             block += ["", "### Superseded / deprecated (history)", ""]
             block += [history_line(r) for r in history_refs]
             block += [""]
+        if sharded:
+            archive_path = archive_path_for(c["path"])
+            archive_link = bundle_link(archive_path)
+            moved = len(overflow_active) + len(history_refs)
+            block += ["", f"→ {moved} older/superseded facts: [archive]({archive_link})", ""]
+            write_archive(archive_path, c["title"], c["link"], overflow_active, history_refs)
+            archives_written.add(archive_path)
         block.append("<!-- END auto-facts -->")
+
         with open(c["path"], encoding="utf-8") as fh:
             text = fh.read()
         if AUTO.search(text):
+            new_text = AUTO.sub("\n".join(block), text)
+        else:
+            # No auto-facts marker yet (file created outside the template) —
+            # append it so backlinks stop being silently dropped.
+            sep = "" if text.endswith("\n") else "\n"
+            new_text = text + sep + "\n" + "\n".join(block) + "\n"
+            injected.append(c["link"])
+        if new_text != text:
             with open(c["path"], "w", encoding="utf-8") as fh:
-                fh.write(AUTO.sub("\n".join(block), text))
+                fh.write(new_text)
+
+    for label in injected:
+        print(f"Injected auto-facts marker: {label}")
+
+    # Idempotent archive cleanup: remove shards from a prior build that this
+    # run didn't (re)write (hub shrank below HUB_MAX_FACTS, or was renamed/removed).
+    for path in md_files(BUNDLE):
+        if path.endswith(ARCHIVE_SUFFIX) and path not in archives_written:
+            os.remove(path)
 
     # 5. manifest.jsonl — ultra-slim triage surface (active facts + open loops)
-    def occ(c):
-        return str(c["fm"].get("occurred") or c["fm"].get("opened") or c["updated"] or "")
-
     manifest = []
     for c in sorted(active(facts) + open_loops, key=occ, reverse=True):
         manifest.append(json.dumps({
