@@ -1,5 +1,6 @@
 # elephant-mem bundle — ignore operational / machine-local artifacts
 state/phone/
+state/consumption-log.jsonl
 .cache/
 .DS_Store
 __pycache__/

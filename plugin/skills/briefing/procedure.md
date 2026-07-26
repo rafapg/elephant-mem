@@ -27,3 +27,14 @@ Then load bodies only for the few items the user drills into. If a filter
 returns suspiciously little (e.g. one `decision` when a meeting clearly had
 more), say so — it usually means inconsistent tagging upstream, a `maintain`
 fix.
+
+**Sharded hubs:** if you open an entity/source hub while drilling into a
+result and its auto-facts block ends with `→ N older/superseded facts:
+[archive](...)` (build-index.py's hub sharding), follow that link only when
+the user's question needs history beyond the window/inline block — not by
+default.
+
+**Consumption log.** After the digest is finalized, append one line to
+`state/consumption-log.jsonl` per `../_shared/core.md`'s Consumption log
+section (`mode: "briefing"`). Best-effort — never let a logging failure
+change or delay the digest.

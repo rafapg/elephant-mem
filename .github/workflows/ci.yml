@@ -21,3 +21,4 @@ jobs:
       - run: python tests/smoke.py
       - run: python tests/test_state.py
       - run: python tests/test_index.py
+      - run: python tests/test_decay.py
