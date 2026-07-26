@@ -143,6 +143,30 @@ Provenance carries **trust**, not just source. Before answering, every read mode
   `--entity <owner.slug>` (from `elephant.json`) plus the owner's projects/team.
   Capture keeps everything; retrieval is where the owner's frame is applied.
 
+## Consumption log (read modes, best-effort telemetry)
+
+At the very end of answering — after the final user-facing answer is decided,
+never before — a read mode that has adopted this (currently `query` and
+`briefing`; see their procedures) appends **one** JSON line to
+`<bundle>/state/consumption-log.jsonl`:
+
+```json
+{"ts": "<ISO datetime>", "mode": "query", "entities": ["<slug>", "..."], "facts_cited": ["<bundle-absolute path>", "..."]}
+```
+
+- `mode` — the read mode's name (`"query"` or `"briefing"`).
+- `entities` — the entity slugs the answer was actually about (best guess is
+  fine — this is telemetry, not a citation).
+- `facts_cited` — the bundle-absolute paths of the fact/open-loop files the
+  final answer actually cited.
+- **This is best-effort telemetry, not OKF knowledge.** `state/` is outside
+  the OKF bundle (`validate-okf.py` never touches it — same standing as
+  `state/cursors.json`). A logging failure (missing `state/` dir, a write
+  error) must never fail the read or change the answer: append, swallow any
+  exception, move on silently.
+- `state/consumption-log.jsonl` is git-ignored (see the bundle's `.gitignore`)
+  — a read must never generate git churn.
+
 ## Optional connectors (automatic ingestion degrades gracefully)
 
 Core knowledge modes (`query`, `briefing`, `capture`, `ingest`, `maintain`,
