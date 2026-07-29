@@ -21,6 +21,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Force UTF-8 stdio: Windows consoles default to cp1252, which can't encode the
+# non-ASCII characters (→, —, …) used in check labels — printing them would
+# raise UnicodeEncodeError and fail the suite. Mirrors the bundle scripts.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUN_HOOKS_SCRIPT = REPO_ROOT / "plugin" / "assets" / "scripts" / "run-hooks.py"
 
@@ -133,10 +141,15 @@ def _run(root):
     record("ELEPHANT_EVENT = post_ingest", len(parts) == 4 and parts[2] == "post_ingest", line)
     record("ELEPHANT_TRIGGER = ingest", len(parts) == 4 and parts[3] == "ingest", line)
 
-    # 5. A string command (not a list) is shell-split and runs.
+    # 5. A string command (not a list) is shell-split (POSIX rules) and runs.
+    #    Use forward-slash paths (accepted on Windows too) since backslashes are
+    #    shlex escape characters — this is the documented contract for strings.
     b = new_bundle(root, "string-cmd")
     marker = b / "ran.txt"
-    cmd = f'"{sys.executable}" "{b / "scripts" / "probe.py"}" "{marker}" strcmd'
+    exe = sys.executable.replace("\\", "/")
+    probe = str(b / "scripts" / "probe.py").replace("\\", "/")
+    mk = str(marker).replace("\\", "/")
+    cmd = f'"{exe}" "{probe}" "{mk}" strcmd'
     write_config(b, {"post_ingest": [{"name": "s", "run": cmd}]})
     r = run_hooks(b, "post_ingest")
     ran = marker.exists() and "strcmd" in marker.read_text(encoding="utf-8")

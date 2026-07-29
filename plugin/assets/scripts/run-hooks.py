@@ -38,9 +38,11 @@ Config shape in elephant.json:
 `hooks` is a MAP of event name -> list of entries, so new events
 (post_maintain, ...) can be added without breaking the schema. Each entry:
   run      required. The command as a list argv (["python3", "x.py", "build"] —
-           preferred, no quoting pitfalls) OR a string ("python3 x.py build",
-           split with shell-like rules). NOT a shell pipeline; wrap in
-           `bash -c "..."` yourself if you need one.
+           preferred, no quoting pitfalls, portable) OR a string ("python3 x.py
+           build", split with POSIX shell rules). NOT a shell pipeline; wrap in
+           `bash -c "..."` yourself if you need one. In a string on Windows,
+           write paths with forward slashes (backslashes are shlex escapes) — or
+           use the list form and never think about it.
   name     optional label used in logs (default "(unnamed)").
   timeout  optional per-hook timeout in seconds (default 120).
   enabled  optional bool; set false to keep an entry registered but dormant.
@@ -127,14 +129,20 @@ def append_log(bundle, fields):
 
 
 def resolve_argv(cmd):
-    """Turn a hook `run` value into an argv list, or None if unusable."""
+    """Turn a hook `run` value into an argv list, or None if unusable.
+
+    A list is used verbatim — the robust, cross-platform form `--register`
+    writes, and what you should prefer. A string is split with POSIX rules
+    (shlex default): quotes group arguments so paths with spaces work. On
+    Windows, write paths in a string command with forward slashes (the OS
+    accepts them) — backslashes are shlex escape characters and would be eaten.
+    When in doubt, use the list form and this never matters."""
     if isinstance(cmd, list):
         argv = [str(x) for x in cmd]
         return argv or None
     if isinstance(cmd, str):
         try:
-            # posix=False on Windows keeps backslash paths intact.
-            argv = shlex.split(cmd, posix=(os.name != "nt"))
+            argv = shlex.split(cmd)
         except ValueError:
             return None
         return argv or None

@@ -242,9 +242,12 @@ the schema.
   subscriber sees final, committed state. (It is NOT fired on every internal
   `build-index.py` rebuild — e.g. `maintain`'s many rebuilds stay silent.)
 - Each entry: **`run`** (required) — the command, either an argv **list**
-  (`["python3", "x.py", "build"]`, preferred — no quoting pitfalls) or a
-  **string** (`"python3 x.py build"`, shell-split). It is a program + args, not a
-  shell pipeline; wrap in `bash -c "…"` yourself if you need one. **`name`**
+  (`["python3", "x.py", "build"]`, preferred — no quoting pitfalls, portable) or
+  a **string** (`"python3 x.py build"`, split with POSIX shell rules). It is a
+  program + args, not a shell pipeline; wrap in `bash -c "…"` yourself if you
+  need one. In a **string** on Windows, write paths with forward slashes (the OS
+  accepts them; backslashes are shlex escapes) — or just use the list form,
+  which `--register` writes and which never has this caveat. **`name`**
   (optional) — a label for logs. **`timeout`** (optional, default 120s).
   **`enabled`** (optional) — set `false` to keep an entry registered but dormant.
 - Every hook runs with `ELEPHANT_BUNDLE` (absolute bundle path), `ELEPHANT_EVENT`
