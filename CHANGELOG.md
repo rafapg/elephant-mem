@@ -4,6 +4,34 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.3] - 2026-07-29
+
+Turns elephant-mem into a small platform: ingestion now emits a lifecycle event
+that other plugins can subscribe to, instead of reactors having to reach into
+the bundle's internals. The first intended subscriber is a human-navigable wiki
+generator, shipped separately.
+
+### Added
+
+- **`post_ingest` lifecycle hook** — after a `capture`, `ingest`, or `catch-up`
+  cycle commits, the mode fires `scripts/run-hooks.py post_ingest`, which runs
+  the subscriber commands declared in `elephant.json`'s `hooks.post_ingest`
+  array. Hooks receive `ELEPHANT_BUNDLE` / `ELEPHANT_EVENT` / `ELEPHANT_TRIGGER`
+  in their environment and run only after the derived surfaces are regenerated
+  and the commit has landed. `hooks` is a map keyed by event name, leaving room
+  for future events. See [docs/configuration.md](docs/configuration.md#field-reference).
+- **`scripts/run-hooks.py`** — best-effort, isolated runner: a hook that fails,
+  times out, or is malformed is logged to `state/hooks.log` and skipped, and one
+  failing hook never stops the next — a subscriber can never break an ingestion.
+  Pure stdlib. Covered by `tests/test_hooks.py` (19 checks).
+
+### Changed
+
+- **`capture`, `ingest`, `catch-up`** — each now fires the `post_ingest` event as
+  the final step after its commit. `catch-up` skips it on an empty window.
+
+[0.1.0-beta.3]: https://github.com/rafapg/elephant-mem/releases/tag/v0.1.0-beta.3
+
 ## [0.1.0-beta.2] - 2026-07-20
 
 Context-minimization refactor of the model-invocable read modes: each now runs

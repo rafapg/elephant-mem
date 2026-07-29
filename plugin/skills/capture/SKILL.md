@@ -33,7 +33,10 @@ through). Default autonomous; same machinery as `ingest`, but:
    `open-loop` when it implies follow-up. Same skip-rules; a decision that merely
    restates an existing fact MERGEs (bump `times_referenced`), never duplicates.
 3. **Resolve entities, dedup, persist** as `ingest`: write the fact(s), then
-   `build-index` → `validate` → local commit.
+   `build-index` → `validate` → local commit. After the commit lands, fire the
+   lifecycle event: `python3 scripts/run-hooks.py post_ingest --trigger capture`.
+   Best-effort — this is where subscribers (e.g. the wiki generator) regenerate;
+   a hook failure never affects the capture.
 4. Recap in the bundle's `conversation_language`: what was filed, where, any
    open-loop opened.
 
