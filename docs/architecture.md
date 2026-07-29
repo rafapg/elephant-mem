@@ -156,6 +156,18 @@ must exit 0 before any commit:
   — and resolve to real files.
 - Episodic files are month-partitioned under `sources/<YYYY-MM>/`.
 - One self-contained claim per fact file.
+- Every frontmatter scalar is **YAML-safe** — free-text values (`description`,
+  `title`) are quoted, with inner `"` escaped as `\"`.
+
+That last one carries more weight than it looks. Frontmatter is written by a
+language model, so an unsafe free-text scalar is inevitable, and each way it
+breaks is silent: a `: ` or an unescaped inner `"` makes the whole block
+unparseable (the entity hub's backlinks regenerate **empty**), while a ` #`
+parses fine and **truncates** the value at the hash with no error at all. The
+invariant therefore lives in a check rather than in a convention — quoting the
+templates reduces how often it fires, but only validation makes it non-silent.
+`validate-okf.py --fix` repairs existing violations in place, preserving inner
+quotes; see `config.md` → "Frontmatter must be YAML-safe".
 
 The workflow after any write batch is fixed: run `build-index.py`, then
 `validate-okf.py`, both must pass, then commit.
@@ -165,7 +177,7 @@ The workflow after any write batch is fixed: run `build-index.py`, then
 | script | what it does |
 |---|---|
 | `build-index.py` | regenerate the index, entity catalog, open-loops board, and all backlink blocks |
-| `validate-okf.py` | enforce the OKF + elephant-mem invariants (run before every commit) |
+| `validate-okf.py` | enforce the OKF + elephant-mem invariants (run before every commit); `--fix` repairs unsafe frontmatter scalars in place |
 | `rename-entity.py` | fix a mangled entity name — moves the file, rewrites links, keeps the old spelling as an alias |
 | `briefing.py` | time-first digest (`--days` / `--since` / `--until` / `--channel` / `--tag` / `--entity` / `--kind`) |
 | `state.py` | catch-up cursor bookkeeping (advance live/backfill, mark seen ids, render watermarks) |
