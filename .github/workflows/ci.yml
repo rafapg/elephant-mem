@@ -12,15 +12,28 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        # The scripts ship TWO frontmatter parsers: PyYAML when it's installed,
+        # a hand-rolled fallback when it isn't. Until this dimension existed CI
+        # only ever ran the fallback (setup-python installs no PyYAML), so the
+        # PyYAML path — the one most bundles actually use — was never exercised.
+        # That gap is how three unsafe-frontmatter failure modes stayed invisible.
+        pyyaml: [true, false]
     runs-on: ${{ matrix.os }}
+    name: smoke (${{ matrix.os }}, pyyaml=${{ matrix.pyyaml }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+      - if: matrix.pyyaml
+        run: python -m pip install pyyaml
       - run: python tests/smoke.py
       - run: python tests/test_state.py
       - run: python tests/test_index.py
       - run: python tests/test_decay.py
       - run: python tests/test_hooks.py
       - run: python tests/test_wiki.py
+      - run: python tests/test_frontmatter.py
+      # The shipped seed bundle must satisfy the same rules it asks users to
+      # satisfy — including rule 5, which a seed template once violated itself.
+      - run: python plugin/assets/scripts/validate-okf.py

@@ -76,9 +76,22 @@ FACT_HISTORY_STATUS = vocab_set("fact_status", ["active", "superseded", "depreca
 
 
 def unquote(s):
-    """Strip matching outer quotes from a fallback-parsed value — see the fuller
-    rationale on build-index.py's unquote(). Not a YAML unescaper."""
-    return s[1:-1] if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'" else s
+    """Unwrap a quoted scalar and undo `\\"` / `\\\\` / `''` — see the fuller
+    rationale on build-index.py's unquote(). Deliberately not a YAML unescaper."""
+    if not (len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'"):
+        return s
+    inner, quote = s[1:-1], s[0]
+    if quote == "'":
+        return inner.replace("''", "'")
+    out, i, n = [], 0, len(inner)
+    while i < n:
+        if inner[i] == "\\" and i + 1 < n and inner[i + 1] in '"\\':
+            out.append(inner[i + 1])
+            i += 2
+            continue
+        out.append(inner[i])
+        i += 1
+    return "".join(out)
 
 
 def parse_fm(block, path=None):

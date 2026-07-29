@@ -106,15 +106,34 @@ LOOP_HISTORY_STATUS = LOOP_STATUS - {"open"}
 
 
 def unquote(s):
-    """Strip matching outer quotes from a value the fallback parser read.
+    """Unwrap a quoted scalar the fallback parser read, undoing the two escapes
+    that quoting a free-text value actually produces.
 
-    That parser is lexical, so without this a quoted bundle link stays wrapped in
-    literal quotes (`"'/entities/person/x.md'"`) and never matches its target —
-    which is how a single unsafe scalar empties an entity hub's auto-facts block.
-    Not a YAML unescaper: inner `''` / `\\"` escapes are left alone. Degrading
-    less badly is the point; validate-okf.py rule 5 is what actually prevents it.
+    Without the unwrapping, a quoted bundle link stays wrapped in literal quotes
+    (`"'/entities/person/x.md'"`) and never matches its target — which is how a
+    single unsafe scalar empties an entity hub's auto-facts block. Without the
+    unescaping, a description written the way `validate-okf.py --fix` writes it
+    (`"she said \\"ship it\\""`) renders with visible backslashes everywhere
+    PyYAML is absent — and --fix is now the main producer of those escapes.
+
+    Deliberately minimal, not a YAML unescaper: `\\"` and `\\\\` inside double
+    quotes, `''` inside single quotes. Any other backslash sequence (`\\n`, `\\t`)
+    is passed through untouched rather than guessed at.
     """
-    return s[1:-1] if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'" else s
+    if not (len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'"):
+        return s
+    inner, quote = s[1:-1], s[0]
+    if quote == "'":
+        return inner.replace("''", "'")
+    out, i, n = [], 0, len(inner)
+    while i < n:
+        if inner[i] == "\\" and i + 1 < n and inner[i + 1] in '"\\':
+            out.append(inner[i + 1])
+            i += 2
+            continue
+        out.append(inner[i])
+        i += 1
+    return "".join(out)
 
 
 def parse_fm(block, path=None):
