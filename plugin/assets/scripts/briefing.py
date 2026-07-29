@@ -43,6 +43,9 @@ try:
     import yaml  # type: ignore
 except ImportError:
     yaml = None
+    YAML_MISSING = True  # see build-index.py: distinct from a caller forcing None
+else:
+    YAML_MISSING = False
 
 
 def load_vocab():
@@ -72,14 +75,22 @@ TRACKED_TYPES = vocab_set("type", ["entity", "fact", "open-loop", "source"]) - {
 FACT_HISTORY_STATUS = vocab_set("fact_status", ["active", "superseded", "deprecated"]) - {"active"}
 
 
-def parse_fm(block):
+def unquote(s):
+    """Strip matching outer quotes from a fallback-parsed value — see the fuller
+    rationale on build-index.py's unquote(). Not a YAML unescaper."""
+    return s[1:-1] if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'" else s
+
+
+def parse_fm(block, path=None):
     if yaml is not None:
         try:
             d = yaml.safe_load(block) or {}
             if isinstance(d, dict):
                 return d
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"WARNING: {path or '<frontmatter>'}: frontmatter is not valid YAML "
+                  f"({exc.__class__.__name__}); falling back to the naive parser. "
+                  "Run `validate-okf.py` to localize it.", file=sys.stderr)
     # Minimal fallback parser (no PyYAML installed): handles scalars, inline
     # lists (`key: [a, b]`) and block-sequence lists (`key:` then `  - item`).
     # Nested mappings (e.g. `relations:`) are NOT supported and resolve to "".
@@ -102,14 +113,15 @@ def parse_fm(block):
                     i += 1
                     continue
                 if nxt[0] in " \t" and stripped.startswith("- "):
-                    items.append(stripped[2:].strip())
+                    items.append(unquote(stripped[2:].strip()))
                     i += 1
                     continue
                 break
             d[k] = items if items else ""
             continue
         m = INLINE_LIST.match(v)
-        d[k] = ([x.strip() for x in m.group(1).split(",") if x.strip()] if m.group(1).strip() else []) if m else v
+        d[k] = ([unquote(x.strip()) for x in m.group(1).split(",") if x.strip()]
+                if m.group(1).strip() else []) if m else unquote(v)
     return d
 
 
@@ -127,6 +139,10 @@ def to_date(v):
 
 
 def load():
+    if YAML_MISSING:
+        print("WARNING: PyYAML is not installed — parsing frontmatter with the naive "
+              "fallback parser for every file. Install it (`pip install pyyaml`) for "
+              "exact parsing.", file=sys.stderr)
     items = []
     for dp, _d, files in os.walk(BUNDLE):
         for f in files:
@@ -137,8 +153,9 @@ def load():
                 m = FM.match(fh.read())
             if not m:
                 continue
-            fm = parse_fm(m.group(1))
-            fm["_link"] = "/" + os.path.relpath(p, BUNDLE).replace(os.sep, "/")
+            link = "/" + os.path.relpath(p, BUNDLE).replace(os.sep, "/")
+            fm = parse_fm(m.group(1), link)
+            fm["_link"] = link
             items.append(fm)
     return items
 
