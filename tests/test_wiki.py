@@ -21,6 +21,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Force UTF-8 stdio: Windows consoles default to cp1252, which can't encode the
+# non-ASCII characters (→, —, …) used in check labels — printing them would
+# raise UnicodeEncodeError and fail the suite. Mirrors the bundle scripts.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WIKI = REPO_ROOT / "elephant-wiki" / "assets" / "scripts" / "wiki.py"
 BUILD_INDEX = REPO_ROOT / "plugin" / "assets" / "scripts" / "build-index.py"
