@@ -1,9 +1,13 @@
 ---
 type: source
-description: <what this source is, in one sentence>
-resource: <URI or local path to the original>
+# QUOTED free-text scalars — keep the quotes and escape every inner `"` as `\"`
+# (or wrap in single quotes instead). Unquoted, a `: ` breaks the whole block and
+# a ` #` silently truncates the value. `resource`/`channel` are quoted because
+# both routinely carry a colon (a URI scheme, `slack:#channel`).
+description: "<what this source is, in one sentence>"
+resource: "<URI or local path to the original>"
 source-kind: article  # article | conversation | document | note | email | video | other
-channel:              # precise origin: slack:#channel | meeting | email | gdoc | ...
+channel: ""           # precise origin, e.g. "slack:#channel", "meeting", "email", "gdoc"
 occurred: 2026-06-24  # when the event/thread/message happened (ISO; ≠ ingested)
 ingested: 2026-06-24
 tags: []

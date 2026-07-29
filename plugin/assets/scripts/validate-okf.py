@@ -82,6 +82,14 @@ SOURCE_KIND_KEY = re.compile(r"^source-kind:\s*(\S.*?)\s*$", re.MULTILINE)
 KEY_LINE = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_.-]*):(?:\s(.*))?$")
 BLOCK_SCALAR = re.compile(r"^[|>][+-]?\d*$")
 
+# Free-text scalars: prose written by the model, where a `#` is CONTENT (a Slack
+# channel, an issue number) and a trailing YAML comment is never intended. Every
+# other field holds a bare token (enum, date, link) that our own templates
+# document with a trailing comment — `kind: concept  # person | org | ...` — so
+# for those the comment is stripped before checking, or the rules below would
+# flag every template-derived file and the check would be worthless noise.
+FREETEXT_KEYS = {"description", "title"}
+
 UNSAFE_HINT = {
     "unquoted-colon": "unquoted value contains `: ` — breaks the whole frontmatter block",
     "unquoted-hash": "unquoted value contains ` #` — silently truncated as a YAML comment",
@@ -130,14 +138,20 @@ def _closing_quote(v):
     return -1
 
 
-def classify_value(raw):
+def classify_value(raw, freetext):
     """Classify the text after `key:`. Returns one of:
       None                  — safe, or out of scope (flow collection, empty)
       "block-scalar"        — `|`/`>` header; caller must skip the indented body
       (kind, fixable_value) — an unsafe scalar; fixable_value is the text the
                               author meant, or None when it can't be inferred.
+
+    `freetext` selects how ` #` is read: as content on a prose field (so it must
+    be quoted), or as a documenting comment on a bare-token field (so it is
+    stripped before checking). See FREETEXT_KEYS.
     """
     v = raw.strip()
+    if not freetext:
+        v = v.split(" #", 1)[0].rstrip()
     if not v:
         return None
     if BLOCK_SCALAR.match(v):
@@ -176,7 +190,7 @@ def unsafe_frontmatter(block):
         if not m:
             continue
         indent, key, raw = m.group(1), m.group(2), m.group(3) or ""
-        verdict = classify_value(raw)
+        verdict = classify_value(raw, key in FREETEXT_KEYS)
         if verdict is None:
             continue
         if verdict == "block-scalar":

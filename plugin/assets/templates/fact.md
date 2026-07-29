@@ -1,6 +1,9 @@
 ---
 type: fact
-description: <the atomic claim — one self-contained sentence; feeds the index>
+# QUOTED free-text scalar — keep the quotes and escape every inner `"` as `\"`
+# (or wrap in single quotes instead). Unquoted, a `: ` breaks the whole block and
+# a ` #` silently truncates the value. Both are routine in a real description.
+description: "<the atomic claim — one self-contained sentence; feeds the index>"
 entities: []          # bundle-absolute links, e.g. [/entities/person/foo.md]
 relations:
   supersedes: []
