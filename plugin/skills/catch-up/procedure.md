@@ -121,7 +121,11 @@ after.**
    run), and `set-last-run` on all. Advance a source **only** past content you
    actually ingested. Append a `log.md` line (or a one-liner "catch-up: nothing
    new" on an empty window). `git -C <bundle> add -A && git -C <bundle> commit`
-   (message `catch-up: <window> (+N facts, +M loops)`). **Never push.**
+   (message `catch-up: <window> (+N facts, +M loops)`). **Never push.** After
+   the commit lands, fire the lifecycle event: `python3 scripts/run-hooks.py
+   post_ingest --trigger catch-up`. Best-effort — subscribers (e.g. the wiki
+   generator) regenerate here; a hook failure never fails the run. Skip it on an
+   empty "nothing new" window (nothing changed to react to).
 
 8. **Backfill step (forward-first).** Only if forward found nothing new (gap
    closed): walk **one older day across every source still above the floor** —

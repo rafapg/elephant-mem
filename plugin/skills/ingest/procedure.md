@@ -69,7 +69,10 @@ It touches entities — also load `../_shared/entity-resolution.md`.
    `validate-okf.py`. Append one dated line per created/updated fact (and any
    flags) to `knowledge/log.md` (newest first). `git add -A && git commit` with
    a message like `ingest: <source slug> (+N facts, ~M updated)`. **Local
-   commit only — never push.**
+   commit only — never push.** After the commit lands, fire the lifecycle
+   event: `python3 scripts/run-hooks.py post_ingest --trigger ingest`.
+   Best-effort — subscribers (e.g. the wiki generator) regenerate here; a hook
+   failure never fails the ingest.
 9. **Recap (interactive ingests only).** When the ingest was user-requested (not
    an automated routine), close with a short recap in the bundle's
    `conversation_language`: one paragraph naming the source and the headline,

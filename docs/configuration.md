@@ -222,6 +222,41 @@ push out; `0.1.0` defines one, with two supported transports:
   `scripts/ingest-audio.py` just falls through to the next option in the
   order above.
 
+**`hooks`** (optional) — lifecycle extension points. elephant-mem emits events
+at well-defined moments; any plugin can subscribe by adding a command here,
+without the ingestion modes ever knowing about it. `hooks` is a **map** of event
+name → list of subscriber entries, so new events can be added without breaking
+the schema.
+
+```json
+"hooks": {
+  "post_ingest": [
+    { "name": "wiki", "run": ["/usr/bin/python3", "/abs/path/wiki.py", "build"] }
+  ]
+}
+```
+
+- **`post_ingest`** — the only event today. Fired **once** at the end of a
+  `capture`, `ingest`, or `catch-up` cycle, *after* the derived surfaces
+  (`manifest.jsonl`, backlinks) are regenerated and the commit has landed. So a
+  subscriber sees final, committed state. (It is NOT fired on every internal
+  `build-index.py` rebuild — e.g. `maintain`'s many rebuilds stay silent.)
+- Each entry: **`run`** (required) — the command, either an argv **list**
+  (`["python3", "x.py", "build"]`, preferred — no quoting pitfalls) or a
+  **string** (`"python3 x.py build"`, shell-split). It is a program + args, not a
+  shell pipeline; wrap in `bash -c "…"` yourself if you need one. **`name`**
+  (optional) — a label for logs. **`timeout`** (optional, default 120s).
+  **`enabled`** (optional) — set `false` to keep an entry registered but dormant.
+- Every hook runs with `ELEPHANT_BUNDLE` (absolute bundle path), `ELEPHANT_EVENT`
+  (the event name), and `ELEPHANT_TRIGGER` (`capture` | `ingest` | `catch-up`)
+  in its environment.
+- Hooks are **best-effort and isolated**: a hook that fails, times out, or is
+  malformed is logged to `state/hooks.log` and skipped — it never breaks the
+  ingestion, and one failing hook never stops the next. The runner
+  (`scripts/run-hooks.py`) always exits 0 when the event was processed.
+- Subscribers register themselves (see e.g. `elephant-wiki`'s `--register`);
+  you rarely hand-edit this block.
+
 ---
 
 ## 3. Operational state — `<bundle>/state/`
@@ -242,6 +277,9 @@ touches it. Managed by `scripts/state.py`.
 - `state/needs-review.md` — the low-confidence review queue.
 - `state/last-update-check.json` — throttles the weekly update nudge (see
   core.md).
+- `state/hooks.log` — append-only trace of `post_ingest` hook runs (one
+  tab-separated line per hook: timestamp, event, name, outcome). Best-effort
+  debug aid for unattended runs; safe to delete.
 - `state/phone/` — the audio inbox and diarized transcripts kept by
   `ingest-audio` (git-ignored in the bundle by default).
 
