@@ -23,3 +23,4 @@ jobs:
       - run: python tests/test_index.py
       - run: python tests/test_decay.py
       - run: python tests/test_hooks.py
+      - run: python tests/test_wiki.py

@@ -7,6 +7,11 @@
       "name": "elephant-mem",
       "source": "./plugin",
       "description": "Personal memory — OKF markdown knowledge bundle. Namespaced mode-skills for managing a local, private knowledge base."
+    },
+    {
+      "name": "elephant-wiki",
+      "source": "./elephant-wiki",
+      "description": "Human-navigable wiki for an elephant-mem bundle — a local, zero-server static site over your markdown knowledge, kept current via the post_ingest hook."
     }
   ]
 }
