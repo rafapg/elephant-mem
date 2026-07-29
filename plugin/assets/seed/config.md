@@ -64,3 +64,39 @@ scripts/                     # validate-okf.py, build-index.py, state.py, briefi
 
 Use ISO 8601 (`YYYY-MM-DD`). Stamp `created`/`updated`/`timestamp` on writes,
 interpreting the local day in the bundle's configured `timezone`.
+
+## Frontmatter must be YAML-safe
+
+**Always quote free-text scalars** (`description`, `title`) and **escape every
+inner `"` as `\"`** — or wrap the value in single quotes instead. Both halves
+matter: quoting without escaping just trades one failure for another.
+
+```yaml
+description: "Angelo asked for help: the export was failing"
+description: "Angelo asked for help in #suporte-produto"
+description: "Thayane took the informal role of \"Chief Legal Officer\""
+description: 'Thayane took the informal role of "Chief Legal Officer"'
+```
+
+Unquoted, three things go wrong — none of which used to announce itself:
+
+| In the value | What YAML does | What you see |
+|---|---|---|
+| `: ` (colon-space) | raises; the **whole block** is unparsed | entity hub's `## Related facts` regenerates **empty** |
+| ` #` (space-hash) | parses, treats the rest as a comment | description silently **truncated** mid-sentence |
+| unescaped inner `"` | raises; same as `: ` | backlinks **empty**, but the value *is* quoted |
+
+All three are routine in real prose: a colon before an explanation, a Slack
+channel mention, a quoted job title or something someone actually said. Since a
+model writes this frontmatter, the invariant is enforced by a check rather than
+by convention — `scripts/validate-okf.py` fails on all three and reports the
+line; `validate-okf.py --fix` repairs them in place, preserving inner quotes.
+Run it after any batch ingestion, and before trusting a regenerated hub.
+
+A `#` with no space before it (`(#9-channel)`, `https://x#frag`) is not a
+comment and is safe. Trailing comments on enum/date fields
+(`kind: concept  # person | org | ...`) are fine — that is what the templates do.
+
+Install **PyYAML** (`pip install pyyaml`) in the environment that runs the
+scripts. Without it they fall back to a lenient hand-rolled parser that cannot
+read nested mappings (`relations:`); they now warn instead of degrading quietly.
