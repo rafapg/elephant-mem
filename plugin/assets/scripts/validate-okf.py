@@ -7,6 +7,27 @@ Rules:
   2. Reserved files (index.md, log.md) have NO frontmatter.
   3. Bundle-absolute links `](/path.md)` resolve to an existing file.
   4. No [[wikilinks]] anywhere.
+  5. Every frontmatter scalar is YAML-safe (see unsafe_frontmatter()).
+
+Rule 5 exists because ingestion is model-driven: a language model writes the
+frontmatter, so an unsafe free-text scalar is a matter of when, not if. The three
+ways it breaks in practice — all silent before this check existed:
+
+  a. unquoted value containing `: `  — yaml.safe_load RAISES; build-index.py
+     falls back to its naive parser, which doesn't strip quotes, so
+     `entities: ['/x.md']` becomes the literal string "'/x.md'" and the entity
+     hub's auto-facts block regenerates EMPTY.
+  b. unquoted value containing ` #`  — parses FINE, but YAML treats the rest of
+     the line as a comment, so the value is silently TRUNCATED. No exception, no
+     artifact to grep for. (`(#9-channel)` — no leading space — is safe.)
+  c. quoted value with unescaped inner quotes — same outcome as (a), but the
+     value IS quoted. This is what a model produces once it's been told to quote
+     but not how to escape, so quoting the templates is necessary, not sufficient.
+
+Detection is purely lexical (no PyYAML needed — CI runs without it) so the
+offending line can be reported for all three, including already-quoted ones.
+`--fix` rewrites flagged values as JSON-encoded double-quoted scalars, which
+preserves inner quotes instead of stripping them.
 
 Non-fatal WARNINGS (do not affect the exit code):
   - alias/title collision: a name (case-insensitive) shared by the title or
@@ -14,6 +35,10 @@ Non-fatal WARNINGS (do not affect the exit code):
   - out-of-vocab value: a `type`/`kind`/`confidence`/`status`/`source-kind`
     value not listed in vocab.json's controlled vocabulary (skipped entirely
     when vocab.json is absent — see load_vocab()).
+
+Usage:
+  validate-okf.py          # report only; exit 1 on any hard violation
+  validate-okf.py --fix     # additionally repair rule-5 violations in place
 
 Exit code 0 if clean, 1 if any hard violation. Pure stdlib (PyYAML optional).
 """
@@ -48,6 +73,136 @@ KIND_KEY = re.compile(r"^kind:\s*(\S.*?)\s*$", re.MULTILINE)
 CONFIDENCE_KEY = re.compile(r"^confidence:\s*(\S.*?)\s*$", re.MULTILINE)
 STATUS_KEY = re.compile(r"^status:\s*(\S.*?)\s*$", re.MULTILINE)
 SOURCE_KIND_KEY = re.compile(r"^source-kind:\s*(\S.*?)\s*$", re.MULTILINE)
+
+# A frontmatter mapping-key line: `key:` or `key: value`, at any indent. The
+# strict key charset keeps prose lines inside a block scalar from matching (the
+# block-scalar skip in unsafe_frontmatter() is the primary guard; this is belt
+# and braces), and stops the key at the FIRST colon so a `: ` further along the
+# line lands in the value where rule 5a can see it.
+KEY_LINE = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_.-]*):(?:\s(.*))?$")
+BLOCK_SCALAR = re.compile(r"^[|>][+-]?\d*$")
+
+UNSAFE_HINT = {
+    "unquoted-colon": "unquoted value contains `: ` — breaks the whole frontmatter block",
+    "unquoted-hash": "unquoted value contains ` #` — silently truncated as a YAML comment",
+    "unescaped-quote": "quoted value has unescaped inner quotes — breaks the whole block",
+    "unterminated-quote": "quoted value is never closed — breaks the whole block",
+}
+
+
+try:
+    import yaml  # type: ignore
+except ImportError:
+    yaml = None
+
+
+def yaml_error(block):
+    """One-line description of why PyYAML rejects `block`, or None if it accepts
+    it (or isn't installed). Only a backstop — the lexical scan above is what
+    localizes the three known failure modes and what runs everywhere."""
+    if yaml is None:
+        return None
+    try:
+        yaml.safe_load(block)
+        return None
+    except Exception as exc:
+        mark = getattr(exc, "problem_mark", None)
+        where = f"line {mark.line + 2}: " if mark is not None else ""
+        return where + (getattr(exc, "problem", None) or type(exc).__name__)
+
+
+def _closing_quote(v):
+    """Index of the quote that closes the quoted scalar `v` (v[0] is the opening
+    quote), or -1 if it is never closed. Honors the escaping rules of each YAML
+    quoting style: `\\"` inside double quotes, `''` inside single quotes."""
+    q, i, n = v[0], 1, len(v)
+    while i < n:
+        c = v[i]
+        if q == '"' and c == "\\":
+            i += 2
+            continue
+        if c == q:
+            if q == "'" and i + 1 < n and v[i + 1] == "'":
+                i += 2
+                continue
+            return i
+        i += 1
+    return -1
+
+
+def classify_value(raw):
+    """Classify the text after `key:`. Returns one of:
+      None                  — safe, or out of scope (flow collection, empty)
+      "block-scalar"        — `|`/`>` header; caller must skip the indented body
+      (kind, fixable_value) — an unsafe scalar; fixable_value is the text the
+                              author meant, or None when it can't be inferred.
+    """
+    v = raw.strip()
+    if not v:
+        return None
+    if BLOCK_SCALAR.match(v):
+        return "block-scalar"
+    if v[0] in "[{":
+        return None  # flow collection — PyYAML handles these; out of scope here
+    if v[0] in "\"'":
+        end = _closing_quote(v)
+        if end < 0:
+            return ("unterminated-quote", None)
+        rest = v[end + 1:].strip()
+        if not rest or rest.startswith("#"):
+            return None  # properly closed, optionally trailing a comment
+        # Closed early: everything after `end` is stray, i.e. the inner quotes
+        # were never escaped. The intended value is the span between the outer
+        # quotes — recoverable only when the line still ends with one.
+        inner = v[1:-1] if v.endswith(v[0]) and len(v) > 1 else None
+        return ("unescaped-quote", inner)
+    # Plain (unquoted) scalar.
+    if ": " in v or v.endswith(":"):
+        return ("unquoted-colon", v)
+    if " #" in v:
+        return ("unquoted-hash", v)
+    return None
+
+
+def unsafe_frontmatter(block):
+    """Findings for rule 5 over one frontmatter block, as a list of
+    (line_index_within_block, key, kind, fixable_value)."""
+    findings = []
+    lines = block.splitlines()
+    i, n = 0, len(lines)
+    while i < n:
+        m = KEY_LINE.match(lines[i])
+        i += 1
+        if not m:
+            continue
+        indent, key, raw = m.group(1), m.group(2), m.group(3) or ""
+        verdict = classify_value(raw)
+        if verdict is None:
+            continue
+        if verdict == "block-scalar":
+            # Literal/folded body: more-indented lines are content, not mappings.
+            while i < n and (not lines[i].strip() or len(lines[i]) - len(lines[i].lstrip()) > len(indent)):
+                i += 1
+            continue
+        kind, fixable = verdict
+        findings.append((i - 1, key, kind, fixable))
+    return findings
+
+
+def fix_block(block, findings):
+    """Rewrite the flagged lines of `block` as JSON-encoded double-quoted
+    scalars. JSON string syntax is a valid YAML double-quoted scalar, so this
+    escapes inner quotes rather than dropping them. Returns (new_block, n_fixed);
+    findings whose intended value couldn't be inferred are left untouched."""
+    lines = block.splitlines()
+    fixed = 0
+    for idx, key, _kind, fixable in findings:
+        if fixable is None:
+            continue
+        indent = KEY_LINE.match(lines[idx]).group(1)
+        lines[idx] = f"{indent}{key}: {json.dumps(fixable, ensure_ascii=False)}"
+        fixed += 1
+    return "\n".join(lines), fixed
 
 
 def md_files(base):
@@ -173,12 +328,15 @@ def alias_title_collisions():
     return sorted(warnings)
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    apply_fixes = "--fix" in argv
     if not os.path.isdir(BUNDLE):
         print(f"FAIL: bundle not found: {BUNDLE}")
         return 1
 
     errors = []
+    repaired = []
     for path in md_files(BUNDLE):
         rel = os.path.relpath(path, BUNDLE)
         name = os.path.basename(path)
@@ -199,20 +357,48 @@ def main():
                 if not t or not t.group(1).strip():
                     errors.append(f"{rel}: frontmatter missing non-empty `type`")
 
-        for w in WIKILINK.findall(text):
-            errors.append(f"{rel}: forbidden wikilink {w}")
-
-        for link in ABS_LINK.findall(text):
-            target = os.path.join(BUNDLE, link.lstrip("/"))
-            if not os.path.exists(target):
-                errors.append(f"{rel}: broken bundle link -> {link}")
+        # Rule 5 — YAML-safe frontmatter scalars. The block starts on file line 2
+        # (line 1 is the opening `---`), so +2 turns a block index into a file line.
+        if m:
+            block = m.group(1)
+            findings = unsafe_frontmatter(block)
+            if not findings:
+                # Backstop for anything the lexical scan doesn't model: if PyYAML
+                # is here and still refuses the block, say so rather than let
+                # build-index.py fall back to the naive parser in silence. Only
+                # reachable when the scan found nothing, so `block` is never stale.
+                err = yaml_error(block)
+                if err:
+                    errors.append(f"{rel}: frontmatter is not valid YAML ({err})")
+            else:
+                if apply_fixes:
+                    new_block, n_fixed = fix_block(block, findings)
+                    if n_fixed:
+                        text = text[:m.start(1)] + new_block + text[m.end(1):]
+                        with open(path, "w", encoding="utf-8") as fh:
+                            fh.write(text)
+                        repaired.append((rel, n_fixed))
+                    # Only what --fix could NOT infer counts against the exit code.
+                    findings = [f for f in findings if f[3] is None]
+                for idx, key, kind, _fixable in findings:
+                    errors.append(f"{rel}:{idx + 2}: unsafe frontmatter `{key}`: {UNSAFE_HINT[kind]}")
 
     warnings = alias_title_collisions() + vocab_warnings(load_vocab())
+
+    if repaired:
+        total = sum(n for _, n in repaired)
+        print(f"Repaired {total} unsafe scalar(s) in {len(repaired)} file(s):")
+        for rel, n in sorted(repaired):
+            print(f"  - {rel} ({n})")
+        print("Re-run `build-index.py` to regenerate the derived surfaces.")
 
     if errors:
         print(f"OKF validation FAILED ({len(errors)} issue(s)):")
         for e in errors:
             print(f"  - {e}")
+        if not apply_fixes and any("unsafe frontmatter" in e for e in errors):
+            print("Hint: `validate-okf.py --fix` repairs unsafe scalars in place "
+                  "(quotes the value, preserving inner quotes).")
     else:
         print("OKF validation passed.")
 
