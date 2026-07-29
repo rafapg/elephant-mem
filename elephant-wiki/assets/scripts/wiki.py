@@ -200,7 +200,9 @@ def read_fm_and_body(path, parse_fm):
     m = FM_RE.match(txt)
     if not m:
         return {}, txt
-    return parse_fm(m.group(1)) or {}, txt[m.end():]
+    # Pass `path` so build-index.py's parse_fm can name the file when a block is
+    # unparseable, instead of warning about an anonymous "<frontmatter>".
+    return parse_fm(m.group(1), path) or {}, txt[m.end():]
 
 
 def bundle_id(kroot, path):
