@@ -1,8 +1,11 @@
 ---
 type: entity
 kind: concept         # person | org | project | tool | concept | event | place
-title: <display name, e.g. "Jane Doe">
-description: <one sentence: who/what this is>
+# Free-text scalars below are QUOTED — keep the quotes. Inside double quotes,
+# escape every inner `"` as `\"` (or wrap in single quotes instead). Unquoted,
+# a `: ` breaks the whole block and a ` #` silently truncates the value.
+title: "<display name, e.g. Jane Doe>"
+description: "<one sentence — who or what this is>"
 aliases: []           # other names/spellings used for this entity (entity resolution)
 tags: []
 created: 2026-06-24

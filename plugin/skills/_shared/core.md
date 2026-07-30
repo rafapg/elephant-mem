@@ -103,6 +103,15 @@ A `snapshot` fact is a **point-in-time editorial rollup**:
   (see Languages above).
 - Non-reserved `.md` files MUST have frontmatter with a non-empty `type`.
   Reserved files (`index.md`, `log.md`, `open-loops.md`) have **no** frontmatter.
+- **Quote every free-text frontmatter scalar** (`description`, `title`) and
+  **escape inner `"` as `\"`** — or single-quote the value instead:
+  `description: "Angelo asked for help: the export was failing"`. Unquoted, a
+  `: ` or an unescaped inner `"` makes the whole block unparseable (the entity
+  hub's backlinks regenerate empty) and a ` #` silently truncates the value at
+  the hash. All three are ordinary prose — a colon before an explanation, a
+  quoted job title, a `#channel` mention — so quote by default rather than
+  judging case by case. `validate-okf.py` fails on all three and `--fix`
+  repairs them; see `config.md` → "Frontmatter must be YAML-safe".
 - Links are **bundle-absolute markdown** (`[x](/entities/person/foo.md)`),
   resolving from `knowledge/`. **No `[[wikilinks]]`** — ever.
 - **Pointers, not copies.** Never paste large source content into a fact; link to

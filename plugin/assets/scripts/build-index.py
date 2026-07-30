@@ -56,6 +56,11 @@ try:
     import yaml  # type: ignore
 except ImportError:
     yaml = None
+    # Distinct from `yaml = None` set by a caller (tests force it to exercise the
+    # fallback on purpose): only a genuinely missing install warrants the warning.
+    YAML_MISSING = True
+else:
+    YAML_MISSING = False
 
 
 def load_json_config(name):
@@ -100,14 +105,50 @@ FACT_HISTORY_STATUS = FACT_STATUS - {"active"}
 LOOP_HISTORY_STATUS = LOOP_STATUS - {"open"}
 
 
-def parse_fm(block):
+def unquote(s):
+    """Unwrap a quoted scalar the fallback parser read, undoing the two escapes
+    that quoting a free-text value actually produces.
+
+    Without the unwrapping, a quoted bundle link stays wrapped in literal quotes
+    (`"'/entities/person/x.md'"`) and never matches its target — which is how a
+    single unsafe scalar empties an entity hub's auto-facts block. Without the
+    unescaping, a description written the way `validate-okf.py --fix` writes it
+    (`"she said \\"ship it\\""`) renders with visible backslashes everywhere
+    PyYAML is absent — and --fix is now the main producer of those escapes.
+
+    Deliberately minimal, not a YAML unescaper: `\\"` and `\\\\` inside double
+    quotes, `''` inside single quotes. Any other backslash sequence (`\\n`, `\\t`)
+    is passed through untouched rather than guessed at.
+    """
+    if not (len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'"):
+        return s
+    inner, quote = s[1:-1], s[0]
+    if quote == "'":
+        return inner.replace("''", "'")
+    out, i, n = [], 0, len(inner)
+    while i < n:
+        if inner[i] == "\\" and i + 1 < n and inner[i + 1] in '"\\':
+            out.append(inner[i + 1])
+            i += 2
+            continue
+        out.append(inner[i])
+        i += 1
+    return "".join(out)
+
+
+def parse_fm(block, path=None):
     if yaml is not None:
         try:
             data = yaml.safe_load(block) or {}
             if isinstance(data, dict):
                 return data
-        except Exception:
-            pass
+        except Exception as exc:
+            # Never silent: a raising block means this file's links and
+            # description are about to be misread by the fallback parser.
+            where = path or "<frontmatter>"
+            print(f"WARNING: {where}: frontmatter is not valid YAML ({exc.__class__.__name__}); "
+                  "falling back to the naive parser. Run `validate-okf.py` to localize it.",
+                  file=sys.stderr)
     # Minimal fallback parser (no PyYAML installed): handles scalars, inline
     # lists (`key: [a, b]`) and block-sequence lists:
     #   key:
@@ -134,7 +175,7 @@ def parse_fm(block):
                     i += 1
                     continue
                 if nxt[0] in " \t" and stripped.startswith("- "):
-                    items.append(stripped[2:].strip())
+                    items.append(unquote(stripped[2:].strip()))
                     i += 1
                     continue
                 break
@@ -143,9 +184,9 @@ def parse_fm(block):
         m = INLINE_LIST.match(val)
         if m:
             inner = m.group(1).strip()
-            data[key] = [x.strip() for x in inner.split(",") if x.strip()] if inner else []
+            data[key] = [unquote(x.strip()) for x in inner.split(",") if x.strip()] if inner else []
         else:
-            data[key] = val
+            data[key] = unquote(val)
     return data
 
 
@@ -183,6 +224,14 @@ def write(rel, lines):
 
 
 def main():
+    if YAML_MISSING:
+        # Without PyYAML EVERY file goes through the naive parser, so the damage
+        # from an unsafe scalar is bundle-wide rather than per-file. Warn instead
+        # of hard-failing: the fallback is a supported path (see tests/test_index.py).
+        print("WARNING: PyYAML is not installed — parsing frontmatter with the naive "
+              "fallback parser for every file, which cannot read nested mappings and "
+              "is quote-lenient. Install it (`pip install pyyaml`) for exact parsing.",
+              file=sys.stderr)
     concepts = []
     for path in md_files(BUNDLE):
         if os.path.basename(path) in RESERVED or path.endswith(ARCHIVE_SUFFIX):
@@ -192,7 +241,7 @@ def main():
         m = FM.match(text)
         if not m:
             continue
-        fm = parse_fm(m.group(1))
+        fm = parse_fm(m.group(1), bundle_link(path))
         title = fm.get("title") or fm.get("description") or os.path.basename(path)[:-3]
         concepts.append({
             "type": str(fm.get("type", "untyped")),

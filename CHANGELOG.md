@@ -4,6 +4,86 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Fixes a class of silent frontmatter corruption reported against
+`0.1.0-beta.2`. Ingestion is model-driven — the `ingest` skill mirrors the
+shape of `templates/*.md` — so an unsafe free-text scalar was a matter of when,
+not if. Three failure modes followed, and **`validate-okf.py` caught none of
+them**: it checked `type:` with a regex and never parsed YAML, so a bundle could
+accumulate corrupted files for weeks while every check reported clean. One
+reported bundle had 52 of 53 `person` hubs with empty auto-facts blocks and
+~140 files with truncated descriptions before anyone noticed.
+
+### Upgrading
+
+Existing bundles will now **fail** `validate-okf.py` where they silently passed.
+That is the fix working. To remediate:
+
+```sh
+python3 scripts/validate-okf.py --fix   # repairs unsafe scalars in place
+python3 scripts/build-index.py          # regenerate hubs, index, manifest
+python3 scripts/validate-okf.py         # confirm clean
+```
+
+`--fix` preserves the value verbatim, including inner quotes and `#channel`
+mentions. Review the diff before committing. Also `pip install pyyaml` if it
+isn't present — without it every file takes a lenient fallback parser, which
+widens the damage from per-file to bundle-wide.
+
+### Fixed
+
+- **`validate-okf.py` now fails on unsafe frontmatter scalars** (new rule 5),
+  reporting the offending line and which of the three modes it is:
+  an unquoted value containing `: ` (raises — the whole block is unparsed and
+  the entity hub's `## Related facts` regenerates **empty**); an unquoted value
+  containing ` #` (parses fine, value **silently truncated** at the hash — no
+  exception, nothing in the manifest to grep for); and a quoted value with
+  unescaped inner quotes (same as the first, but the value *is* quoted — what a
+  model writes once told to quote but not to escape). Detection is purely
+  lexical, so it needs no PyYAML and can localize already-quoted lines.
+  `--fix` repairs all three in place. This is the fix that holds: the others
+  reduce how often the bug fires, but only a check makes it non-silent.
+- **Silent degradation in `build-index.py` / `briefing.py`** — a missing PyYAML
+  and an unparseable block both switched parsers with no output at all. Both now
+  warn on stderr, naming the file. Not a hard failure: the fallback is a
+  supported path that CI exercises.
+- **The fallback parser no longer mangles quoted values** — it didn't strip
+  quotes, so `entities: ['/x.md']` became the literal `"'/x.md'"`, matched no
+  entity, and emptied the hub. It now unwraps quotes and undoes `\"` / `\\` /
+  `''`, so it reads back what `--fix` writes instead of rendering visible
+  backslashes.
+- **`assets/templates/entity.md` shipped a broken placeholder** —
+  `description: <one sentence: who/what this is>` contains `: `, so every bundle
+  created with `elephant-mem:init` already had a file that raises in
+  `safe_load` before the user typed anything.
+
+### Changed
+
+- **Templates quote their free-text scalars** (`description`, `title`, plus
+  `resource`/`channel`, which routinely carry a colon) and state the escaping
+  rule next to them. Telling a model to quote without telling it to escape is
+  what converts failure mode 1 into failure mode 3 — one bundle saw exactly
+  that: 24 newly-broken files in a single day's catch-up after a
+  "quote your descriptions" convention was added.
+- **The rule is documented where writers read it** — as an invariant in
+  `_shared/core.md` (loaded by `ingest` while it writes frontmatter) and in full
+  in `assets/seed/config.md`.
+- **CI runs both parser paths** (`pyyaml=[true, false]`). It previously ran only
+  the fallback, so the PyYAML path most bundles actually use was never
+  exercised. CI also validates the shipped seed bundle, so a seed template
+  can't violate the rule it asks users to follow.
+
+### Added
+
+- **`tests/test_frontmatter.py`** — 63 checks covering the three modes, the safe
+  shapes that must *not* be flagged (trailing comments on enum fields, quoted
+  colons, `(#9-channel)`), template safety, `--fix` fidelity, and the
+  end-to-end effect on hub backlinks and manifest descriptions.
+
+Reported with a full diagnosis and suggested fixes by a plugin user, including
+the observation that quoting the templates is necessary but not sufficient.
+
 ## [0.1.0-beta.4] - 2026-07-30
 
 Windows fixes for the `post_ingest` hook path shipped in beta.3. CI's

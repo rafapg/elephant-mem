@@ -1,6 +1,9 @@
 ---
 type: open-loop
-description: <the action / commitment, one sentence>
+# QUOTED free-text scalar — keep the quotes and escape every inner `"` as `\"`
+# (or wrap in single quotes instead). Unquoted, a `: ` breaks the whole block and
+# a ` #` silently truncates the value.
+description: "<the action / commitment, one sentence>"
 owner: []             # bundle-absolute entity links of who owns it
 status: open          # open | done | dropped
 entities: []          # other entities this loop concerns
