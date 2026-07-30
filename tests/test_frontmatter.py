@@ -172,6 +172,16 @@ def auto_facts_block(bundle, rel=ENTITY_LINK.lstrip("/")):
     return m.group(1) if m else ""
 
 
+def slashed(text):
+    """Normalize path separators in captured output before matching.
+
+    validate-okf.py reports file positions via os.path.relpath, so a finding
+    reads `facts/m1.md:3` on POSIX and `facts\\m1.md:3` on Windows — as rules
+    1-4 have always done. The assertion is about *which line* is reported, not
+    about the separator, so normalize rather than hardcode either form."""
+    return text.replace("\\", "/")
+
+
 # The three modes, exactly as a model writes them.
 MODE1 = "description: Angelo asked for help: the export was failing"
 MODE2 = "description: Angelo asked for help in #suporte-produto about the export"
@@ -192,10 +202,11 @@ def test_three_modes_fail_validation(root):
     record("validate-okf.py exits nonzero when frontmatter is unsafe (it passed before rule 5)",
            r.returncode == 1, r.stdout + r.stderr)
 
+    out = slashed(r.stdout)
     for rel, kind in (("m1", "`: `"), ("m2", "` #`"), ("m3", "unescaped inner quotes")):
         record(f"{rel}: reported on line 3 with the right diagnosis ({kind})",
-               f"facts/{rel}.md:3: unsafe frontmatter `description`" in r.stdout
-               and kind in r.stdout,
+               f"facts/{rel}.md:3: unsafe frontmatter `description`" in out
+               and kind in out,
                r.stdout)
 
     record("the failure output points at --fix",
