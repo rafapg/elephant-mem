@@ -4,6 +4,28 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.4] - 2026-07-30
+
+Windows fixes for the `post_ingest` hook path shipped in beta.3. CI's
+`smoke (windows-latest)` had regressed while Linux/macOS stayed green.
+
+### Fixed
+
+- **`run-hooks.py` string commands on Windows** — a `hooks.post_ingest` entry
+  whose `run` is a **string** was split with `shlex.split(posix=False)` on
+  Windows, which keeps the surrounding quotes inside each token, so a quoted
+  path became `"…python.exe"` and the hook failed to start (`WinError 2`). Now
+  split with POSIX rules on every platform; a string command on Windows should
+  use forward-slash paths, or the **list** form (which `--register` writes — so
+  the wiki hook was never affected). See
+  [docs/configuration.md](docs/configuration.md#field-reference).
+- **Test suites on Windows** — `tests/test_hooks.py` and `tests/test_wiki.py`
+  print check labels containing non-ASCII (`→`); on Windows's cp1252 console
+  `print()` raised `UnicodeEncodeError`. They now force UTF-8 stdio like the
+  bundle scripts. CI is green on Linux/macOS/Windows again.
+
+[0.1.0-beta.4]: https://github.com/rafapg/elephant-mem/releases/tag/v0.1.0-beta.4
+
 ## [0.1.0-beta.3] - 2026-07-29
 
 Turns elephant-mem into a small platform: ingestion now emits a lifecycle event
