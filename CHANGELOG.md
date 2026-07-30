@@ -4,7 +4,7 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0-beta.5] - 2026-07-30
 
 Fixes a class of silent frontmatter corruption reported against
 `0.1.0-beta.2`. Ingestion is model-driven — the `ingest` skill mirrors the
@@ -81,8 +81,20 @@ widens the damage from per-file to bundle-wide.
   colons, `(#9-channel)`), template safety, `--fix` fidelity, and the
   end-to-end effect on hub backlinks and manifest descriptions.
 
+Also in this release: **`elephant-wiki` 0.1.0-beta.2** — `wiki.py` reuses
+`build-index.py`'s frontmatter parser, so it inherits rule 5's handling; it now
+passes the file path in, so an unparseable block names the file instead of
+warning about an anonymous `<frontmatter>`. And a third Windows-only test
+failure, found because the two fixed in beta.4 had been hiding it: the rule-5
+assertions hardcoded `/` separators, while `validate-okf.py` reports positions
+via `os.path.relpath`. The validator was correct on Windows; only the test was
+OS-naive — and it had never run there, because `tests/test_hooks.py` aborted the
+job first. Three Windows failures in a row, each masked by the previous one.
+
 Reported with a full diagnosis and suggested fixes by a plugin user, including
 the observation that quoting the templates is necessary but not sufficient.
+
+[0.1.0-beta.5]: https://github.com/rafapg/elephant-mem/releases/tag/v0.1.0-beta.5
 
 ## [0.1.0-beta.4] - 2026-07-30
 
