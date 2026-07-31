@@ -145,13 +145,14 @@ def classify_value(raw, freetext):
       (kind, fixable_value) — an unsafe scalar; fixable_value is the text the
                               author meant, or None when it can't be inferred.
 
-    `freetext` selects how ` #` is read: as content on a prose field (so it must
-    be quoted), or as a documenting comment on a bare-token field (so it is
-    stripped before checking). See FREETEXT_KEYS.
+    `freetext` selects how ` #` is read on an UNQUOTED value: as content on a
+    prose field (so it must be quoted), or as a documenting comment on a
+    bare-token field (so it is stripped before checking). See FREETEXT_KEYS.
+    Quoting is analyzed FIRST and that stripping never applies inside quotes —
+    `resource: "Slack #a, #b"` is valid YAML, and cutting at ` #` before looking
+    at the quotes turned it into a bogus "unterminated quote".
     """
     v = raw.strip()
-    if not freetext:
-        v = v.split(" #", 1)[0].rstrip()
     if not v:
         return None
     if BLOCK_SCALAR.match(v):
@@ -160,17 +161,30 @@ def classify_value(raw, freetext):
         return None  # flow collection — PyYAML handles these; out of scope here
     if v[0] in "\"'":
         end = _closing_quote(v)
+        # A quoted scalar that never closes, or closes before the end of the
+        # line, is broken the same way — and in both cases the author's text is
+        # recoverable, just not always the same span:
+        #
+        #   "she said "ship it" now"   → outer quotes ARE the YAML quoting;
+        #                                the value is what's between them.
+        #   "Search API" meeting …     → the leading quote is CONTENT (a quoted
+        #                                title opening a sentence); the value is
+        #                                the whole line. Same for a value whose
+        #                                quote is simply never closed.
+        #
+        # The line ending in its own opening quote is what separates the two.
         if end < 0:
-            return ("unterminated-quote", None)
+            return ("unterminated-quote", v)
         rest = v[end + 1:].strip()
         if not rest or rest.startswith("#"):
             return None  # properly closed, optionally trailing a comment
-        # Closed early: everything after `end` is stray, i.e. the inner quotes
-        # were never escaped. The intended value is the span between the outer
-        # quotes — recoverable only when the line still ends with one.
-        inner = v[1:-1] if v.endswith(v[0]) and len(v) > 1 else None
-        return ("unescaped-quote", inner)
-    # Plain (unquoted) scalar.
+        wraps = v.endswith(v[0]) and len(v) > 1
+        return ("unescaped-quote", v[1:-1] if wraps else v)
+    # Plain (unquoted) scalar. Only here can a ` #` be a YAML comment.
+    if not freetext:
+        v = v.split(" #", 1)[0].rstrip()
+        if not v:
+            return None
     if ": " in v or v.endswith(":"):
         return ("unquoted-colon", v)
     if " #" in v:

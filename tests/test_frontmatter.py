@@ -230,6 +230,15 @@ def test_safe_shapes_not_flagged(root):
         ('a URL', 'resource: https://example.com/a/b'),
         ('an inline flow list', "entities: ['/entities/person/x.md', '/b.md']"),
         ('a block-sequence list', "entities:\n  - /entities/person/x.md"),
+        # Regression: comment-stripping used to run BEFORE the quote analysis, so
+        # a properly quoted non-free-text value containing ` #` was cut mid-string
+        # and misreported as an unterminated quote — with no repair possible.
+        # Found on a real bundle, not by the suite. Both lines are valid YAML.
+        ('quoted non-free-text value containing ` #`',
+         'resource: "Slack #team-a, #team-b, #support-bugs"'),
+        ('quoted channel list with ` #`', 'channel: "slack:#a, #b"'),
+        ('quoted value with ` #` AND a trailing comment',
+         'resource: "Slack #team-a"   # where it came from'),
     ]
     for label, line in safe:
         found = v.unsafe_frontmatter(line + "\n")
@@ -240,6 +249,22 @@ def test_safe_shapes_not_flagged(root):
     for label, line, kind in unsafe:
         found = v.unsafe_frontmatter(line + "\n")
         record(f"flagged: {label}", len(found) == 1 and found[0][2] == kind, found)
+
+    # Every finding must carry a repairable value, or --fix leaves the bundle
+    # permanently red. On a real bundle this was 34 of 445 findings.
+    inferable = [
+        ('outer quotes ARE the quoting (strip them)',
+         'description: "she said "ship it" now"', 'she said "ship it" now'),
+        ('leading quote is CONTENT — a quoted title opening a sentence',
+         'description: "Search API - Nova Onda" meeting on 2026-05-26 with Angelo',
+         '"Search API - Nova Onda" meeting on 2026-05-26 with Angelo'),
+        ('never-closed quote is kept verbatim, not guessed away',
+         'description: "never closed', '"never closed'),
+    ]
+    for label, line, want in inferable:
+        found = v.unsafe_frontmatter(line + "\n")
+        got = found[0][3] if found else None
+        record(f"--fix can infer: {label}", got == want, f"want={want!r}\ngot ={got!r}")
 
 
 # ---------------------------------------------------------------------------
