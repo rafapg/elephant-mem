@@ -4,6 +4,42 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.6] - 2026-07-30
+
+Two defects in the rule 5 that shipped in beta.5, both found on first contact
+with a real 5695-file bundle rather than by the 63-check suite. If you ran
+`validate-okf.py` on beta.5 and saw an "unterminated quote" on a line that
+looked fine, this is why — and `--fix` could not clear it.
+
+### Fixed
+
+- **False positive on a quoted value containing ` #`, with no possible repair.**
+  For a non-free-text field the trailing comment was stripped *before* the
+  quoting was analyzed, so `resource: "Slack #team-a, #team-b"` — valid YAML —
+  was cut mid-string and reported as an unterminated quote. Because the finding
+  carried no inferable value, `--fix` could not repair it and the bundle stayed
+  red permanently. Quoting is now analyzed first, and comment-stripping only
+  ever applies to an **unquoted** scalar, the only place a ` #` can be a YAML
+  comment at all.
+- **`--fix` refused to repair 34 of 445 real findings.** It recovered the value
+  only when the line ended in its own opening quote, which misses the commonest
+  shape by far — a quoted title opening a sentence
+  (`description: "Search API - Nova Onda" meeting on …`). There the leading
+  quote is *content*, not YAML quoting, so the intended value is the whole line.
+  The two are distinguished by whether the line ends in its opening quote. A
+  never-closed quote is now preserved verbatim rather than guessed away — in
+  someone's knowledge base, lossless beats clever.
+
+Measured on that bundle: 442 files / 445 findings / 34 unrepairable before,
+441 / 444 / **0** after. The file that disappeared was the false positive.
+
+The wider lesson, worth recording: the beta.5 suite tested the three modes from
+the bug report plus shapes I invented. Both defects here came from *real prose* —
+a `resource:` listing Slack channels, and meeting titles in quotes. Synthetic
+cases validated the logic; only real data found its edges.
+
+[0.1.0-beta.6]: https://github.com/rafapg/elephant-mem/releases/tag/v0.1.0-beta.6
+
 ## [0.1.0-beta.5] - 2026-07-30
 
 Fixes a class of silent frontmatter corruption reported against
