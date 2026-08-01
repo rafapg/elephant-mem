@@ -8,3 +8,12 @@ __pycache__/
 .planning/
 
 docs/convergence-analysis-*.md
+
+# Claude Code local state. Deliberately NOT a blanket `.claude/`: settings.json
+# and commands/ are worth shipping to contributors, and a blanket ignore would
+# swallow them later without a word.
+# worktrees/ is a git checkout — committing one nests a repo inside the repo.
+# settings.local.json holds per-machine permissions and is written without
+# being asked for, so it has to be ignored before it appears, not after.
+.claude/worktrees/
+.claude/settings.local.json
