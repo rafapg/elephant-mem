@@ -239,6 +239,22 @@ def test_safe_shapes_not_flagged(root):
         ('quoted channel list with ` #`', 'channel: "slack:#a, #b"'),
         ('quoted value with ` #` AND a trailing comment',
          'resource: "Slack #team-a"   # where it came from'),
+        # Leading characters that are NOT indicators when followed by non-space.
+        # Over-flagging these would fire on ordinary prose and numbers.
+        ('leading `-` (a negative number)', 'description: -5% growth in Q3'),
+        ('leading `~`', 'description: ~2000 documents migrated'),
+        ('leading `?`', 'description: ?unclear whether this shipped'),
+        ('leading `:`', 'description: :shrug was the only reply'),
+        ('a backtick NOT in first position', 'description: the `lexflow init` command'),
+        # `-`/`?` open a token only when alone or followed by a space, so these
+        # stay legitimate plain scalars. All verified accepted by PyYAML.
+        ('leading `->`', 'description: -> handed off to the platform team'),
+        ('leading `---`', 'description: --- separator in the pasted log'),
+        ('leading `??`', 'description: ?? nobody knows who owns this'),
+        ('leading `--` (a CLI flag)', 'description: --force was required'),
+        # A lone `~` is the idiomatic YAML null: `confidence: ~` meaning "unset"
+        # is intent, not damage. Flagging it would be a false positive.
+        ('a lone `~` (explicit null)', 'confidence: ~'),
     ]
     for label, line in safe:
         found = v.unsafe_frontmatter(line + "\n")
@@ -246,6 +262,24 @@ def test_safe_shapes_not_flagged(root):
 
     unsafe = [("unterminated quote", 'description: "never closed', "unterminated-quote"),
               ("`: ` on a non-free-text field", "owner: Jane: the lead", "unquoted-colon")]
+    # A plain scalar may not start with a YAML indicator. Verified against
+    # PyYAML: ` @ % * ! , > | all raise; `&` does NOT — it parses as an anchor
+    # and silently drops the first word, so it belongs with ` #` in the
+    # invisible-damage group. Found on a real bundle via a backticked command
+    # name in a description, and the lexical scan has to model it because the
+    # PyYAML backstop doesn't run where PyYAML is absent — including CI.
+    unsafe += [(f"leading {c!r} on a plain scalar",
+                f"description: {c}lexflow init generates a CLAUDE.md", "reserved-lead")
+               for c in "`@%&*!,>|"]
+    # `-` and `?` are indicators only when they open a token: alone, or followed
+    # by a space. Both forms raise ScannerError and take the whole block with
+    # them, and the lexical scan missed both — a gap CodeRabbit caught on #5.
+    # `:` is the same shape, already covered by the `: `/trailing-`:` rule.
+    unsafe += [("`- ` opening the value", "description: - handed off to Ana", "reserved-lead"),
+               ("`? ` opening the value", "description: ? unclear who owns it", "reserved-lead"),
+               ("a lone `-`", "description: -", "reserved-lead"),
+               ("a lone `?`", "description: ?", "reserved-lead"),
+               ("a lone `:`", "description: :", "unquoted-colon")]
     for label, line, kind in unsafe:
         found = v.unsafe_frontmatter(line + "\n")
         record(f"flagged: {label}", len(found) == 1 and found[0][2] == kind, found)
@@ -260,6 +294,14 @@ def test_safe_shapes_not_flagged(root):
          '"Search API - Nova Onda" meeting on 2026-05-26 with Angelo'),
         ('never-closed quote is kept verbatim, not guessed away',
          'description: "never closed', '"never closed'),
+        ('leading YAML indicator — quote the whole value, indicator included',
+         'description: `lexflow init` generates a CLAUDE.md',
+         '`lexflow init` generates a CLAUDE.md'),
+        ('leading `&` — the silent one; the dropped first word is preserved',
+         'description: &lexflow init generates a CLAUDE.md',
+         '&lexflow init generates a CLAUDE.md'),
+        ('`- ` opening the value — the dash is content, keep it',
+         'description: - handed off to Ana', '- handed off to Ana'),
     ]
     for label, line, want in inferable:
         found = v.unsafe_frontmatter(line + "\n")

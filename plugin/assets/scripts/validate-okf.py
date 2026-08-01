@@ -90,11 +90,32 @@ BLOCK_SCALAR = re.compile(r"^[|>][+-]?\d*$")
 # flag every template-derived file and the check would be worthless noise.
 FREETEXT_KEYS = {"description", "title"}
 
+# A plain scalar may not START with these, in ANY position-0 context. Most raise;
+# `&` is the dangerous one because it does NOT — `description: &foo bar` parses as
+# an anchor named `foo` with the value `bar`, silently dropping the first word (the
+# same class of invisible damage as ` #`). Backticks around an identifier are
+# extremely natural in technical prose (`description: `lexflow init` generates …`),
+# which is how this turned up. Not included: `[`/`{` (flow, out of scope), `'`/`"`
+# (handled by the quote analysis), and bare `|`/`>` (block scalars).
+RESERVED_LEAD = "`@%&*!,>|"
+
+# `-` and `?` are indicators ONLY when they open a token — i.e. when the value is
+# just the indicator, or the indicator is followed by a space. Both forms raise and
+# take the whole block with them. Everything else is a legitimate plain scalar, so
+# this has to be narrower than RESERVED_LEAD: `-foo`, `-1.5`, `--force`,
+# `-> arrow`, `--- three` and `?? what` are all fine and must not be flagged.
+# `:` is the same shape but already covered by the `: `/trailing-`:` rule below.
+# `~` is deliberately absent: a lone `~` is the idiomatic YAML null, so
+# `confidence: ~` meaning "unset" is intent, not damage.
+SPACED_LEAD = ("-", "?")
+
 UNSAFE_HINT = {
     "unquoted-colon": "unquoted value contains `: ` — breaks the whole frontmatter block",
     "unquoted-hash": "unquoted value contains ` #` — silently truncated as a YAML comment",
     "unescaped-quote": "quoted value has unescaped inner quotes — breaks the whole block",
     "unterminated-quote": "quoted value is never closed — breaks the whole block",
+    "reserved-lead": "unquoted value starts with a YAML indicator — breaks the block, "
+                     "or (with `&`) is silently read as an anchor and loses its first word",
 }
 
 
@@ -185,6 +206,8 @@ def classify_value(raw, freetext):
         v = v.split(" #", 1)[0].rstrip()
         if not v:
             return None
+    if v[0] in RESERVED_LEAD or v in SPACED_LEAD or v[:2] in ("- ", "? "):
+        return ("reserved-lead", v)
     if ": " in v or v.endswith(":"):
         return ("unquoted-colon", v)
     if " #" in v:
