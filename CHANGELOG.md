@@ -4,14 +4,27 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0-beta.6] - 2026-07-30
+## [0.1.0-beta.6] - 2026-08-01
 
-Two defects in the rule 5 that shipped in beta.5, both found on first contact
-with a real 5695-file bundle rather than by the 63-check suite. If you ran
-`validate-okf.py` on beta.5 and saw an "unterminated quote" on a line that
-looked fine, this is why — and `--fix` could not clear it.
+Two defects in the rule 5 that shipped in beta.5, plus a fourth failure mode it
+never modelled. All three came from first contact with a real 5695-file bundle
+rather than from the 63-check suite. If you ran `validate-okf.py` on beta.5 and
+saw an "unterminated quote" on a line that looked fine, this is why — and
+`--fix` could not clear it.
 
 ### Fixed
+
+- **Fourth failure mode: a value starting with a YAML indicator.** A plain
+  scalar may not begin with `` ` ``, `@`, `%`, `&`, `*`, `!`, `,`, `>` or `|`.
+  Most of those raise, but **`&` does not** — `description: &foo bar` parses as
+  an anchor named `foo` with the value `bar`, silently dropping the first word,
+  the same invisible damage as ` #`. Backticks around a command name are
+  ordinary technical prose (``description: `lexflow init` generates …``), which
+  is how this turned up. Rule 5 now detects all of them lexically and `--fix`
+  quotes the whole value, indicator included. This had to move into the lexical
+  scan rather than stay with the PyYAML backstop: the backstop doesn't run where
+  PyYAML is absent — including CI — so the mode was invisible there, and `&` was
+  invisible everywhere.
 
 - **False positive on a quoted value containing ` #`, with no possible repair.**
   For a non-free-text field the trailing comment was stripped *before* the
