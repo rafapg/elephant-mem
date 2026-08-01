@@ -26,6 +26,15 @@ saw an "unterminated quote" on a line that looked fine, this is why — and
   PyYAML is absent — including CI — so the mode was invisible there, and `&` was
   invisible everywhere.
 
+  Also covered, after review of that change: `-` and `?` are indicators only when
+  they *open a token* — when the value is just the indicator, or the indicator is
+  followed by a space. `description: - handed off to Ana` raises and destroys the
+  block exactly like the group above, and the first pass at this mode let it
+  through. The test has to be narrower than a plain first-character check, or it
+  would fire on `-5% growth`, `--force`, `-> arrow` and `--- separator`, all of
+  which are valid plain scalars. A lone `~` stays unflagged on purpose: it is the
+  idiomatic YAML null, so `confidence: ~` meaning "unset" is intent, not damage.
+
 - **False positive on a quoted value containing ` #`, with no possible repair.**
   For a non-free-text field the trailing comment was stripped *before* the
   quoting was analyzed, so `resource: "Slack #team-a, #team-b"` — valid YAML —

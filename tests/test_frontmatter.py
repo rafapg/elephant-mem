@@ -246,6 +246,15 @@ def test_safe_shapes_not_flagged(root):
         ('leading `?`', 'description: ?unclear whether this shipped'),
         ('leading `:`', 'description: :shrug was the only reply'),
         ('a backtick NOT in first position', 'description: the `lexflow init` command'),
+        # `-`/`?` open a token only when alone or followed by a space, so these
+        # stay legitimate plain scalars. All verified accepted by PyYAML.
+        ('leading `->`', 'description: -> handed off to the platform team'),
+        ('leading `---`', 'description: --- separator in the pasted log'),
+        ('leading `??`', 'description: ?? nobody knows who owns this'),
+        ('leading `--` (a CLI flag)', 'description: --force was required'),
+        # A lone `~` is the idiomatic YAML null: `confidence: ~` meaning "unset"
+        # is intent, not damage. Flagging it would be a false positive.
+        ('a lone `~` (explicit null)', 'confidence: ~'),
     ]
     for label, line in safe:
         found = v.unsafe_frontmatter(line + "\n")
@@ -262,6 +271,15 @@ def test_safe_shapes_not_flagged(root):
     unsafe += [(f"leading {c!r} on a plain scalar",
                 f"description: {c}lexflow init generates a CLAUDE.md", "reserved-lead")
                for c in "`@%&*!,>|"]
+    # `-` and `?` are indicators only when they open a token: alone, or followed
+    # by a space. Both forms raise ScannerError and take the whole block with
+    # them, and the lexical scan missed both — a gap CodeRabbit caught on #5.
+    # `:` is the same shape, already covered by the `: `/trailing-`:` rule.
+    unsafe += [("`- ` opening the value", "description: - handed off to Ana", "reserved-lead"),
+               ("`? ` opening the value", "description: ? unclear who owns it", "reserved-lead"),
+               ("a lone `-`", "description: -", "reserved-lead"),
+               ("a lone `?`", "description: ?", "reserved-lead"),
+               ("a lone `:`", "description: :", "unquoted-colon")]
     for label, line, kind in unsafe:
         found = v.unsafe_frontmatter(line + "\n")
         record(f"flagged: {label}", len(found) == 1 and found[0][2] == kind, found)
@@ -282,6 +300,8 @@ def test_safe_shapes_not_flagged(root):
         ('leading `&` — the silent one; the dropped first word is preserved',
          'description: &lexflow init generates a CLAUDE.md',
          '&lexflow init generates a CLAUDE.md'),
+        ('`- ` opening the value — the dash is content, keep it',
+         'description: - handed off to Ana', '- handed off to Ana'),
     ]
     for label, line, want in inferable:
         found = v.unsafe_frontmatter(line + "\n")
