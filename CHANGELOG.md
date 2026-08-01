@@ -4,7 +4,7 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0-beta.7] - 2026-08-01
 
 `catch-up` ran unattended but could not finish a thought. Nine consecutive runs
 diagnosed the same seven problems, wrote the same seven paragraphs into
@@ -50,6 +50,39 @@ writes the authority down.
 - `tests/test_backlog.py` — 36 checks over idempotent `add`, run-counting
   semantics, close/reopen, bounded evidence, error paths, `--at` replay, and
   `backlog.md` being reproducible from the canonical JSON alone.
+
+### Changed
+
+- **The Slack sweep no longer uses a stopword.** `sources.slack.sweep_query`
+  (default `"-zzqqxxjj"`) replaces `query_stopword`. It is a **pure negation**:
+  Slack's search has no match-all operator and no boolean OR, but a query that
+  is only `-<token nobody types>` matches every message.
+
+  The old design asked for a high-frequency word ("the", "de") on the theory it
+  appears everywhere. Measured against a real workspace — identical window,
+  identical call shape — the negation query paginated without bound while `"de"`
+  returned **3 messages for an entire day**. Two independent causes, either one
+  fatal: Slack's index drops common terms unpredictably (one term's recall swung
+  between 0% and 75% across consecutive windows, so there is no correct word to
+  pick), and **a message with no body text cannot match any term** — bot posts
+  carrying only a link unfurl were structurally unreachable and are now returned
+  normally.
+
+  This closes the "sweep is lossy" finding that ten consecutive runs reported
+  and that was previously scoped as a redesign. `query_stopword` stays honored
+  as a fallback so existing bundles keep running; `catch-up` files a backlog
+  item when it finds one.
+
+- **`log.md` is oldest-first, always appended.** It claimed "newest first" while
+  runs with content prepended and empty-window one-liners appended — the ledger
+  read in two directions at once. The procedure now states one rule for both
+  cases. Existing history is deliberately not reordered; the header says so.
+
+### Fixed
+
+- `state.py mark` had recorded the literal string `--help` as a processed Drive
+  fileId (someone expecting usage text; `mark` treats every argument as an id).
+  Harmless in itself — no file has that id — and now removed.
 
 ## [0.1.0-beta.6] - 2026-08-01
 

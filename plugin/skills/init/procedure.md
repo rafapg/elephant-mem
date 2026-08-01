@@ -175,10 +175,12 @@ can trim):
 Each stream carries a `channel:` value (its own name) stamped on the provenance of
 facts it produces. Also collect:
 
-- **`query_stopword`** — exactly **one** high-frequency word in the workspace's
-  dominant language (English `"the"`, Portuguese `"de"`, Spanish `"de"`). Explain
-  the one-word rule: a multi-word query ANDs its terms and produces false "empty
-  window" runs, so use a single word that appears in nearly every message.
+- **`sweep_query`** — leave it at the default `"-zzqqxxjj"` unless that nonsense
+  token could plausibly appear in the workspace. It is a **pure negation**, which
+  is how a Slack search returns *everything* in a window (there is no match-all
+  operator and no boolean OR). Don't offer a "pick a common word" option: a
+  stopword sweep under-returns silently, and messages with no body text — bot
+  posts that are only a link unfurl — can never match a term at all.
 
 If the user wants **Calendar** (meeting transcripts), write `sources.calendar`:
 

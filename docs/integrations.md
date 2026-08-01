@@ -55,7 +55,7 @@ under `sources.slack.streams`. A useful starting preset is four streams:
       "channel": "slack:dm"
     }
   },
-  "query_stopword": "the"
+  "sweep_query": "-zzqqxxjj"
 }
 ```
 
@@ -71,18 +71,33 @@ under `sources.slack.streams`. A useful starting preset is four streams:
   commitments. DMs are mostly logistics ("running 5 late", "can you send that
   link"), so the `slack:dm` stream uses this to avoid filing noise.
 
-### the one-word `query_stopword` rule
+### `sweep_query` — why it's a negation, not a stopword
 
-`catch-up` sweeps a stream by issuing a broad search and paginating the whole
-window. To make "return everything in this window" work, it queries a single
-**high-frequency stopword** — a word that appears in nearly every message in your
-workspace's dominant language (English `"the"`, Portuguese `"de"`, Spanish
-`"de"`).
+`catch-up` sweeps a stream by issuing one broad search and paginating the whole
+window. Slack's search offers no match-all operator and no boolean OR (a space
+ANDs the terms), so "return everything since the cursor" has to be expressed
+some other way. It does support `-term` exclusion — and a query that is
+**nothing but a negation of a token nobody ever types** matches every message.
+That is `sweep_query`, default `"-zzqqxxjj"`.
 
-**Use exactly one word.** A multi-word query ANDs its terms, so a two-word
-stopword only matches messages containing *both* — which most messages don't,
-producing false **"empty window"** runs where real content is silently skipped.
-One word, chosen so it's present in almost every message, is the whole trick.
+The intuitive alternative — query a high-frequency stopword — does not work, and
+fails in the worst possible way: quietly, with a plausible-looking non-empty
+result. Measured on a real workspace, identical window and call shape, the
+negation query paginated without bound while `"de"` returned **3 messages for an
+entire day**.
+
+Two independent causes:
+
+1. **Slack's index drops common terms unpredictably.** The same term's recall
+   swung from 0% to 75% across consecutive windows. No term was ever complete,
+   so this is not a tuning problem — there is no correct word to pick.
+2. **A message with no body text can never match a term.** Bot posts that carry
+   only a link unfurl or an attachment have no words to match. They are
+   structurally unreachable by any stopword and returned normally by the
+   negation query.
+
+Older bundles may still carry `query_stopword`; it is honored as a fallback so
+they keep running, but they are under-returning and `catch-up` says so.
 
 ### delivery: self-DM for `push-start-day`
 

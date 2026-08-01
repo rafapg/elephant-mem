@@ -43,7 +43,7 @@ report-don't-act default stands.
 
 - Everything under `<bundle>/knowledge/` and `<bundle>/state/` — the normal job.
 - **Self-tuning `elephant.json`, restricted to this closed list of fields:**
-  - `sources.slack.query_stopword`
+  - `sources.slack.sweep_query`
   - `sources.slack.streams.<name>.deny`
   - `sources.slack.streams.<name>.allow`
 
@@ -150,13 +150,32 @@ after.**
      own DMs are in-scope signal, not an exception.
    - Stamp the stream's `channel:` value on provenance.
 
-   Use the single **`sources.slack.query_stopword`** as the broad query so the
-   sweep returns everything in the window. **Use exactly one stopword.** A
-   multi-word query ANDs its terms and produces false "empty window" runs; one
-   high-frequency word in the workspace's dominant language (English `"the"`)
-   matches nearly every message. Because the cursor is a timestamp, you only
-   ever see messages newer than the last run — a partial day is never
-   re-deduped. Read threads for context as needed.
+   **The broad query is `sources.slack.sweep_query` — a pure negation, not a
+   stopword.** Slack's search has no "match everything" operator and no boolean
+   OR (space ANDs its terms), but it does support `-term` exclusion, and a query
+   consisting *only* of a negation of a token nobody ever types matches every
+   message. The default `"-zzqqxxjj"` is exactly that. Pass it as the query with
+   the `after=<ts>` **param** (not the date-granular `on:` modifier) and paginate
+   fully.
+
+   Do **not** substitute a high-frequency word. Measured on a real workspace,
+   same window, same call shape: the negation query paginated without bound
+   while the Portuguese stopword `"de"` returned **3 messages for an entire
+   day**. Two independent reasons a term query cannot work:
+   - Slack's index drops common terms unpredictably — recall varied from 0% to
+     75% across windows for the *same* term, and no term was ever complete.
+   - **A message with no body text can never match any term.** Bot posts that
+     carry only an attachment or a link unfurl are invisible to every stopword
+     and visible to the negation query. This class of message is structurally
+     unreachable the old way.
+
+   A bundle still carrying the legacy `query_stopword` keeps working (fall back
+   to it if `sweep_query` is absent), but it is under-returning — file a backlog
+   item saying so.
+
+   Because the cursor is a timestamp, you only ever see messages newer than the
+   last run — a partial day is never re-deduped. Read threads for context as
+   needed.
 
 2. **Forward — transcripts (`sources.calendar`).** List Calendar events whose
    end-time is in `(live_cursor − lookback … now]` (lookback =
@@ -219,8 +238,13 @@ after.**
    stream that produced facts). Then `advance-live <calendar-cursor>
    <now − gcal_lag_hours>` (the lag keeps just-ended meetings in the window next
    run), and `set-last-run` on all. Advance a source **only** past content you
-   actually ingested. Append a `log.md` line (or a one-liner "catch-up: nothing
-   new" on an empty window), ending with the backlog's one-liner —
+   actually ingested. **Append** the `log.md` entry — always at the end of the
+   file, never prepended. `log.md` is **oldest-first**; a run with content and a
+   run with an empty window follow the same rule, so the ledger has exactly one
+   reading direction. (Entries before 2026-08-01 are in mixed order — that
+   inconsistency is what this rule fixes; history was left as-is rather than
+   rewritten.) A one-liner is enough for an empty window. End the entry with the
+   backlog's one-liner —
    `backlog: <count --status open> open (<N> new, <M> closed)` — and **nothing
    else about deferred items**. If this run made a green-zone config change,
    commit that **first and alone** (`catch-up: config <field> <old> → <new>`),

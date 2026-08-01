@@ -112,7 +112,7 @@ data). Fully annotated example with **fictional** data:
           "channel": "slack:dm"
         }
       },
-      "query_stopword": "the"
+      "sweep_query": "-zzqqxxjj"
     },
     "calendar": {
       "notes_doc_marker": "Meeting notes",
@@ -162,14 +162,31 @@ and say so. Each source is optional and independent.
     only durable facts and commitments.
   - `channel` — the `channel:` value stamped on provenance frontmatter of facts
     from this stream.
-- `query_stopword` — a single high-frequency word in the workspace's dominant
-  language, used as the broad search query so a sweep returns everything in the
-  window. **Use exactly one stopword** — multi-word queries AND their terms and
-  cause false "empty window" runs. Pick a word that appears in nearly every
-  message in your workspace's main language (English `"the"`, Portuguese `"de"`,
-  Spanish `"de"`, etc.).
+- `sweep_query` (default `"-zzqqxxjj"`) — the broad query used to return
+  *everything* in a window. It is a **pure negation**, not a search term: Slack
+  has no match-all operator and no boolean OR, but a query consisting only of
+  `-<token nobody ever types>` matches every message. Change it only if that
+  nonsense token could plausibly appear in your workspace.
 
-> **These three fields are self-tuning.** `query_stopword`, and each stream's
+  **Do not replace it with a common word.** The obvious-looking approach — query
+  a high-frequency stopword (`"the"`, `"de"`) — under-returns badly and silently:
+
+  | query, same window, same workspace | messages returned |
+  |---|---|
+  | `-zzqqxxjj` (negation) | paginated, unbounded |
+  | `de` (Portuguese stopword) | **3, for an entire day** |
+
+  Two independent reasons, either one fatal: Slack's index drops common terms
+  unpredictably (measured recall for one term swung between 0% and 75% across
+  windows), and **a message with no body text cannot match any term at all** —
+  bot posts carrying only a link unfurl or an attachment are structurally
+  invisible to a stopword sweep and visible to the negation query.
+
+- `query_stopword` — **legacy**, superseded by `sweep_query`. Still honored as a
+  fallback when `sweep_query` is absent, so old bundles keep working, but such a
+  bundle is under-returning; `catch-up` files a backlog item when it sees one.
+
+> **These three fields are self-tuning.** `sweep_query`, and each stream's
 > `allow` / `deny`, are the only part of `elephant.json` the unattended
 > `catch-up` routine may rewrite on its own — and only after measuring the same
 > problem on three consecutive runs, one change per run, in its own commit
@@ -177,9 +194,9 @@ and say so. Each source is optional and independent.
 > undoes one). Everything else in this file is human-only. See the `catch-up`
 > skill's `procedure.md` → **Autonomy envelope**.
 >
-> The reason is that a stopword's recall is only observable in production: a
-> term that looks ubiquitous can be dropped by Slack's index, and the routine is
-> the only thing positioned to notice, run after run.
+> The reason is that sweep recall is only observable in production, against a
+> real workspace's traffic — the routine is the only thing positioned to notice
+> a regression, run after run.
 
 #### `sources.calendar`
 
