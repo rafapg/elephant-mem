@@ -169,6 +169,18 @@ and say so. Each source is optional and independent.
   message in your workspace's main language (English `"the"`, Portuguese `"de"`,
   Spanish `"de"`, etc.).
 
+> **These three fields are self-tuning.** `query_stopword`, and each stream's
+> `allow` / `deny`, are the only part of `elephant.json` the unattended
+> `catch-up` routine may rewrite on its own — and only after measuring the same
+> problem on three consecutive runs, one change per run, in its own commit
+> (`git log --grep='catch-up: config'` is the audit trail; a single `git revert`
+> undoes one). Everything else in this file is human-only. See the `catch-up`
+> skill's `procedure.md` → **Autonomy envelope**.
+>
+> The reason is that a stopword's recall is only observable in production: a
+> term that looks ubiquitous can be dropped by Slack's index, and the routine is
+> the only thing positioned to notice, run after run.
+
 #### `sources.calendar`
 
 - `notes_doc_marker` — the title fragment identifying the meeting-notes document

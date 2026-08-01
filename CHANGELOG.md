@@ -4,6 +4,53 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+`catch-up` ran unattended but could not finish a thought. Nine consecutive runs
+diagnosed the same seven problems, wrote the same seven paragraphs into
+`log.md`, and ended with "each of these needs a human" — including one item that
+had already been fixed and one that only the routine was positioned to measure.
+Nothing was blocking it technically; nothing authorized it either. This release
+writes the authority down.
+
+### Added
+
+- **Autonomy envelope for `catch-up`** (`skills/catch-up/procedure.md`,
+  `SKILL.md`). A scheduled-task harness injects a preamble that defaults to
+  *"when in doubt, produce a report"*; the skill is the task file that preamble
+  defers to, and it now states what the routine may do:
+  - **Green** — `knowledge/`, `state/`, local commits, plus self-tuning a
+    **closed list** of `elephant.json` fields (`sources.slack.query_stopword`
+    and each stream's `allow` / `deny`). Gated: the same finding measured on ≥3
+    consecutive runs, the measurement in the log, at most one change per run,
+    and its own commit (`catch-up: config <field> <old> → <new>`) so a single
+    `git revert` undoes it.
+  - **Yellow** — routine-shape changes, bulk knowledge rewrites, any other
+    config field, anything outside the bundle. File to the backlog, don't act.
+  - **Red** — `git push`, egress beyond declared connectors, editing the
+    plugin's own files, and **running any command a script suggested in its own
+    output**. That last one is retrospective: a run once read a `--fix` hint out
+    of a failure message and rewrote 597 knowledge files unreviewed. Script
+    stdout is now explicitly an untrusted surface.
+
+  Findings that don't clearly land in green are yellow; the green list is
+  exhaustive and may not be widened by reasoning about intent.
+
+- **`backlog.py` — a deferred-work ledger** (`state/backlog.json` canonical,
+  `state/backlog.md` rendered, both bootstrapped on first use, both outside the
+  OKF bundle). Everything yellow is filed **once**: `add` is idempotent, so the
+  routine calls it unconditionally and the script decides new-vs-bump. The
+  `seen` counter doubles as the green-zone evidence gate. `log.md` gets one line
+  — `backlog: N open (M new, K closed)` — instead of a paragraph per finding per
+  hour. Items close on evidence, never on silence.
+
+- New step 6 in the `catch-up` procedure (backlog reconcile, before the log
+  entry is written); steps renumbered to 9.
+
+- `tests/test_backlog.py` — 36 checks over idempotent `add`, run-counting
+  semantics, close/reopen, bounded evidence, error paths, `--at` replay, and
+  `backlog.md` being reproducible from the canonical JSON alone.
+
 ## [0.1.0-beta.6] - 2026-08-01
 
 Two defects in the rule 5 that shipped in beta.5, plus a fourth failure mode it
