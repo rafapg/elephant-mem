@@ -264,6 +264,23 @@ after.**
    `backfill_window_start` floor. Sources seeded today backfill down to the
    floor independently.
 
+   **Seeding a new source — off-by-one.** `next-backfill` returns
+   `backfill_oldest − 1 day`, so `backfill_oldest` means *"this day is already
+   done"*. Seeding it to **today** therefore claims today as done and the walk
+   starts at yesterday — everything posted earlier today, before the seed
+   moment, falls into a gap that neither the forward sweep (which reads strictly
+   after `live_cursor = now`) nor the backfill walk ever covers. Seed
+   `backfill_oldest` to **the day after the seed date** so the walk's first step
+   is the seed day itself:
+
+   ```bash
+   state.py advance-live     <name> "<now, ISO>"
+   state.py advance-backfill <name> "<seed date + 1 day>"   # NOT today
+   ```
+
+   This is not hypothetical: `slack:notif` was seeded exactly wrong when it was
+   added, and lost its seed day in both channels.
+
 **Outage / partial handling:** on an API error (e.g. a 429/529) or a transcript
 that won't load, capture what you can, leave the cursor where it is for the
 unfinished part, and log it — the next run resumes. Never advance a cursor past

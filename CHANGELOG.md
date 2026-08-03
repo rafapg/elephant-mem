@@ -84,6 +84,15 @@ writes the authority down.
   fileId (someone expecting usage text; `mark` treats every argument as an id).
   Harmless in itself — no file has that id — and now removed.
 
+- **New-source seeding lost its first day.** `next-backfill` returns
+  `backfill_oldest − 1`, so `backfill_oldest` means "already done" — seeding it
+  to *today* claims today as done and starts the walk at yesterday, leaving
+  everything posted earlier that day in a gap neither the forward sweep (strictly
+  after `live_cursor = now`) nor the backfill walk covers. The procedure now
+  spells out the off-by-one and says to seed `seed date + 1`. Found by the
+  routine itself, via the backlog this release adds, on the stream this release
+  added.
+
 ## [0.1.0-beta.6] - 2026-08-01
 
 Two defects in the rule 5 that shipped in beta.5, plus a fourth failure mode it
