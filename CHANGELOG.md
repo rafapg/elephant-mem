@@ -84,6 +84,29 @@ writes the authority down.
   fileId (someone expecting usage text; `mark` treats every argument as an id).
   Harmless in itself — no file has that id — and now removed.
 
+- **A cursor is a coverage watermark, not an ingestion watermark.** The old rule
+  — "advance only past content you actually ingested" — was written to survive a
+  partial failure, and it caused two opposite bugs, both seen in production:
+
+  - A stream whose only new messages are all skip-ruled (bot noise, CI chatter,
+    one-word acks) files nothing, so its cursor never moved and every later run
+    re-read and re-rejected the same messages, at compounding cost. Examined and
+    deliberately skipped **is** covered.
+  - Reading a thread for context legitimately reaches messages outside the swept
+    window, including days the backfill walk hasn't reached. Those may be
+    ingested, but must **not** move a cursor — the sweep didn't cover them, and
+    jumping the cursor would silently skip every day in between. Dedup absorbs
+    the overlap when the day-walk arrives.
+
+  The rule is now: **advance on successful coverage, hold only on failure.**
+
+- **`exclude_bots` was relying on a default that doesn't hold.** The Slack search
+  tool documents `include_bots` as defaulting to `false`; measured, omitting it
+  returns bot messages normally while passing `include_bots=false` on the
+  identical query returns nothing. Any stream with `exclude_bots: true` that left
+  the parameter off was silently ingesting bot noise. The procedure now requires
+  the flag be sent explicitly on every call, in both directions.
+
 - **New-source seeding lost its first day.** `next-backfill` returns
   `backfill_oldest − 1`, so `backfill_oldest` means "already done" — seeding it
   to *today* claims today as done and starts the walk at yesterday, leaving

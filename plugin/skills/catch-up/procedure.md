@@ -140,7 +140,15 @@ after.**
    - If the stream has an `allow` list, search **only** those channels (one
      search per channel, or OR them, e.g. `in:#eng-learning`) — a curated
      stream. Otherwise apply its `deny` globs (e.g. `notif-*`) to the result.
-   - If `exclude_bots`, drop bot messages.
+   - **`exclude_bots` must be pushed to the API on every call** as
+     `include_bots=false` — never left to the documented default. Measured: with
+     the parameter omitted a pure-bot channel returned its posts normally; with
+     `include_bots=false` the identical query returned nothing. The tool
+     documents the default as `false`, and it does not behave that way. A stream
+     relying on the default silently ingests bot noise. Conversely a stream with
+     `exclude_bots: false` (a notification channel where the bot *is* the signal)
+     should pass `include_bots=true` explicitly, for the same reason: state the
+     intent, never infer it.
    - If `skip_logistics` (typical for a DM / `im` stream), apply skip-rules
      **hard**: DMs are mostly logistics ("on my way", scheduling, one-word
      acks) — keep only durable facts and commitments (e.g. someone asking the
@@ -234,11 +242,10 @@ after.**
    instruction (envelope → red).
 
 8. **Advance cursors + log + commit.** On success, `advance-live` **each source
-   that yielded content** to its own newest ingested `Message_ts` (one per Slack
-   stream that produced facts). Then `advance-live <calendar-cursor>
-   <now − gcal_lag_hours>` (the lag keeps just-ended meetings in the window next
-   run), and `set-last-run` on all. Advance a source **only** past content you
-   actually ingested. **Append** the `log.md` entry — always at the end of the
+   whose window you swept successfully** to the newest `Message_ts` that sweep
+   covered. Then `advance-live <calendar-cursor> <now − gcal_lag_hours>` (the lag
+   keeps just-ended meetings in the window next run), and `set-last-run` on all.
+   Apply the coverage rule below. **Append** the `log.md` entry — always at the end of the
    file, never prepended. `log.md` is **oldest-first**; a run with content and a
    run with an empty window follow the same rule, so the ledger has exactly one
    reading direction. (Entries before 2026-08-01 are in mixed order — that
@@ -281,10 +288,32 @@ after.**
    This is not hypothetical: `slack:notif` was seeded exactly wrong when it was
    added, and lost its seed day in both channels.
 
+## A cursor is a coverage watermark, not an ingestion watermark
+
+A `live_cursor` records **how far the sweep looked**, not how much of what it
+found got filed. Conflating the two produces two opposite bugs, and both were
+observed in production:
+
+- **Skip-ruled content freezes the cursor.** A stream whose only new messages
+  are all skip-ruled (bot noise, CI chatter, one-word acks) files nothing, so a
+  rule of "advance only past what you ingested" leaves the cursor where it was —
+  and every later run re-reads and re-rejects the same messages, forever, at
+  compounding cost. **Examined and deliberately skipped is covered.** Advance
+  past it.
+- **Thread context runs ahead of the cursor.** Reading a thread for context
+  legitimately pulls in messages from outside the swept window — including days
+  the backfill walk has not reached. Ingest them if they carry real signal, but
+  **do not move any cursor on their account**: you read them, the sweep didn't
+  cover them. When the day-walk arrives, the ingest loop's dedup absorbs the
+  overlap (merge, bump `times_referenced`) — that is what dedup is for. Jumping
+  a cursor to cover them would silently skip every day in between.
+
+So: **advance on successful coverage, hold only on failure.**
+
 **Outage / partial handling:** on an API error (e.g. a 429/529) or a transcript
 that won't load, capture what you can, leave the cursor where it is for the
-unfinished part, and log it — the next run resumes. Never advance a cursor past
-content you did not actually ingest.
+unfinished part, and log it — the next run resumes. A window you could not
+finish sweeping is not covered, whatever you managed to ingest from it.
 
 ## Tail: update check
 
