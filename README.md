@@ -5,7 +5,8 @@
 *an elephant never forgets*
 
 ![license](https://img.shields.io/badge/license-MIT-black?style=flat-square)
-![plugin](https://img.shields.io/badge/plugin-v0.1.0--beta.6-black?style=flat-square)
+![elephant-mem](https://img.shields.io/badge/elephant--mem-v0.1.0--beta.7-black?style=flat-square)
+![elephant-wiki](https://img.shields.io/badge/elephant--wiki-v0.1.0--beta.2-black?style=flat-square)
 ![claude code](https://img.shields.io/badge/claude--code-plugin-black?style=flat-square)
 ![ci](https://img.shields.io/github/actions/workflow/status/rafapg/elephant-mem/ci.yml?branch=main&style=flat-square&label=ci)
 
@@ -162,6 +163,19 @@ Compares your installed plugin against the published `version` in
 newer, and — after you update — re-syncs the bundle's copied scripts and
 templates. Read modes also nudge you at most once a week when a release is
 available; they never update anything on their own.
+
+### two plugins, two version cycles
+
+This marketplace ships **two** plugins: `elephant-mem` (the memory) and
+`elephant-wiki` (an optional [static wiki](elephant-wiki/) over your bundle).
+They are installed separately and **versioned independently** — the wiki changes
+far less often, so the two numbers in the badges above drift apart on purpose. A
+lower `elephant-wiki` version does not mean it is out of date.
+
+Releases, git tags, and [changelog](CHANGELOG.md) sections track `elephant-mem`;
+a wiki bump is noted inside the `elephant-mem` release that shipped it. `update`
+only checks `elephant-mem` — update the wiki with
+`claude plugin update elephant-wiki@elephant-mem` when a release mentions it.
 
 ## docs
 
