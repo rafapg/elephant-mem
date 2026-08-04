@@ -181,6 +181,7 @@ The workflow after any write batch is fixed: run `build-index.py`, then
 | `rename-entity.py` | fix a mangled entity name — moves the file, rewrites links, keeps the old spelling as an alias |
 | `briefing.py` | time-first digest (`--days` / `--since` / `--until` / `--channel` / `--tag` / `--entity` / `--kind`) |
 | `state.py` | catch-up cursor bookkeeping (advance live/backfill, mark seen ids, render watermarks) |
+| `backlog.py` | catch-up's deferred-work ledger — findings the unattended routine may not fix on its own, filed once and counted, never re-narrated in `log.md` |
 | `snapshot-drift.py` | flag `snapshot` rollups whose underlying facts became newer than the snapshot's last-tended date |
 | `ingest-audio.py` | pull a transferred voice recording and transcribe it locally (WhisperX, diarized) for `ingest-audio` |
 

@@ -17,3 +17,6 @@ docs/convergence-analysis-*.md
 # being asked for, so it has to be ignored before it appears, not after.
 .claude/worktrees/
 .claude/settings.local.json
+
+# PR body scratch (untracked)
+.pr-body.md
