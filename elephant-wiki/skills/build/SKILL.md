@@ -24,13 +24,17 @@ mutates it. `wiki-out/` is git-ignored.
 ## Procedure
 
 The generator is `assets/scripts/wiki.py` (pure stdlib; it reuses the bundle's
-own `scripts/build-index.py` frontmatter parser). It resolves the bundle from
-the machine pointer `~/.config/elephant-mem/config.json` (override with
-`--bundle`).
+own `scripts/build-index.py` frontmatter parser), plus sibling JS assets it
+inlines at build time — `wiki.js` (the SPA) and `graph.js` (the local
+knowledge-graph view). It resolves the bundle from the machine pointer
+`~/.config/elephant-mem/config.json` (override with `--bundle`).
 
-1. **Locate the generator.** Prefer the bundle's own copy if present
-   (`<bundle>/scripts/wiki.py`, written by `--register`); otherwise use this
-   plugin's `${CLAUDE_PLUGIN_ROOT}/assets/scripts/wiki.py`.
+1. **Use the plugin's generator.** For a manual build, always run this
+   plugin's `${CLAUDE_PLUGIN_ROOT}/assets/scripts/wiki.py` — never
+   `<bundle>/scripts/wiki.py`. That in-bundle copy (written by `--register`)
+   exists only to keep the `post_ingest` hook self-contained; it can lag the
+   plugin's own copy, and running it directly can run stale, already-fixed
+   code.
 
 2. **Build once** — regenerate the wiki from the current bundle:
 
@@ -49,11 +53,17 @@ the machine pointer `~/.config/elephant-mem/config.json` (override with
    python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/wiki.py" build --register
    ```
 
-   `--register` copies the generator into `<bundle>/scripts/wiki.py` (so the
-   hook is self-contained and survives plugin updates), adds a `wiki` entry to
-   `hooks.post_ingest` in `elephant.json`, git-ignores `wiki-out/`, and builds
-   immediately. Requires the `elephant-mem` plugin's `post_ingest` hook support
-   (v0.1.0-beta.3+). Use `--unregister` to remove the subscription.
+   `--register` copies the generator AND its sibling JS assets (`wiki.js`,
+   `graph.js`) into `<bundle>/scripts/` (so the hook is self-contained and
+   survives plugin updates), adds a `wiki` entry to `hooks.post_ingest` in
+   `elephant.json`, git-ignores `wiki-out/`, and builds immediately. Requires
+   the `elephant-mem` plugin's `post_ingest` hook support (v0.1.0-beta.3+). Use
+   `--unregister` to remove the subscription.
+
+   An already-registered bundle self-heals: any plain build in step 2, run
+   from the plugin's own copy, detects the `wiki` subscriber in `elephant.json`
+   and refreshes `<bundle>/scripts/` (the `wiki.py` plus `wiki.js` /
+   `graph.js`) before building, so the hook never keeps running a stale copy.
 
 ## Notes
 
