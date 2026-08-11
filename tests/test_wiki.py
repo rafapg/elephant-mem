@@ -111,6 +111,21 @@ def inline_script_blocks(html_txt):
     return _SCRIPT_BLOCK_RE.findall(html_txt)
 
 
+_generator = None
+
+
+def load_generator():
+    """Import wiki.py as a module, to exercise the renderer's block rules
+    directly rather than inferring them from a built page."""
+    global _generator
+    if _generator is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_elephant_wiki_gen", WIKI)
+        _generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_generator)
+    return _generator
+
+
 def main():
     root = Path(tempfile.mkdtemp(prefix="elephant-wiki-"))
     try:
@@ -193,24 +208,165 @@ def _run(root):
     record("no <script src> to a local .js file (only data/*.js)",
            bool(src_refs) and all(s.startswith("data/") for s in src_refs), src_refs)
 
-    # 7b. the two assets land in SEPARATE <script> blocks (fix: one shared
-    # block meant a graph.js typo blanked the whole page) — graph.js first,
-    # since it must define window.localGraph before wiki.js's load-time
-    # render can hit an entity page.
+    # 7b. three inline blocks: the theme bootstrap in <head>, then the two assets
+    # in SEPARATE blocks (fix: one shared block meant a graph.js typo blanked the
+    # whole page) — graph.js first, since it must define window.localGraph before
+    # wiki.js's load-time render can hit an entity page.
     blocks = inline_script_blocks(html_txt)
-    record("wiki.html carries exactly two inline <script> blocks", len(blocks) == 2, len(blocks))
-    if len(blocks) == 2:
-        record("first inline block is graph.js (defines window.localGraph)",
-               "window.localGraph = function" in blocks[0] and "titleOfEnt" not in blocks[0])
-        record("second inline block is wiki.js (defines titleOfEnt)",
-               "titleOfEnt" in blocks[1] and "window.localGraph = function" not in blocks[1])
+    record("wiki.html carries exactly three inline <script> blocks", len(blocks) == 3, len(blocks))
+    # The theme has to resolve before first paint; deferring it to the app script
+    # gives a dark-mode reader a full white flash on every load.
+    head_txt = html_txt[:html_txt.index("</head>")]
+    record("theme bootstrap runs in <head>",
+           bool(blocks) and blocks[0] in head_txt
+           and "data-theme" in blocks[0] and "localStorage" in blocks[0])
+    record("theme bootstrap falls back to the OS preference",
+           bool(blocks) and "prefers-color-scheme" in blocks[0])
+    if len(blocks) == 3:
+        assets = blocks[1:]
+        record("first asset block is graph.js (defines window.localGraph)",
+               "window.localGraph = function" in assets[0] and "titleOfEnt" not in assets[0])
+        record("second asset block is wiki.js (defines titleOfEnt)",
+               "titleOfEnt" in assets[1] and "window.localGraph = function" not in assets[1])
         # Marker strings alone would still pass if the substitution truncated or
         # mangled an asset outside them: compare each block to its source file.
         for i, name in enumerate(("graph.js", "wiki.js")):
             want = (assets_dir / name).read_text(encoding="utf-8")
-            record(f"inline block {i} is {name} verbatim",
-                   blocks[i].strip() == want.strip(),
-                   f"{len(blocks[i])} vs {len(want)} chars")
+            record(f"inline asset block {i} is {name} verbatim",
+                   assets[i].strip() == want.strip(),
+                   f"{len(assets[i])} vs {len(want)} chars")
+
+    # 7c. the markdown renderer's block rules. Bundle bodies are hard-wrapped
+    # prose, and both of these shipped broken: paragraphs kept the source's wrap
+    # because lines were joined with <br>, and a wrapped list item's later lines
+    # fell out of the list loop and were emitted as a paragraph after the </ul>.
+    md = load_generator().md_to_html
+    para = md("Lex Flow is a platform for\nbuilding automations that\nrun.")
+    record("a wrapped paragraph reflows into one <p>",
+           para == "<p>Lex Flow is a platform for building automations that run.</p>", para)
+    hard = md("line one  \nline two")
+    record("two trailing spaces still force a hard break", "<br>" in hard, hard)
+    lst = md("- **Now:** browsers for\n  initial triage.\n- **Later:** automation\n  by Capitani.")
+    record("a wrapped list item stays inside its <li>",
+           lst == "<ul><li><strong>Now:</strong> browsers for initial triage.</li>"
+                  "<li><strong>Later:</strong> automation by Capitani.</li></ul>", lst)
+    record("no orphan paragraph escapes after the </ul>", "</ul><p>" not in lst, lst)
+    olst = md("1. first item that\n   wraps\n2. second")
+    record("an ordered list wraps the same way",
+           olst == "<ol><li>first item that wraps</li><li>second</li></ol>", olst)
+    ended = md("- a wrapped\n  item\n\nA real paragraph.")
+    record("a blank line still ends the list",
+           ended == "<ul><li>a wrapped item</li></ul><p>A real paragraph.</p>", ended)
+    heading = md("- top\n- second\n## Heading")
+    record("a heading still breaks out of a list", "<h2>Heading</h2>" in heading, heading)
+    quote = md("> quoted text that\n> wraps")
+    record("a wrapped blockquote reflows",
+           quote == "<blockquote>quoted text that wraps</blockquote>", quote)
+
+    # 7d. the design system. Two themes over one token ramp, and — the part no
+    # eye catches — every token graph.js reads off the root must actually be
+    # declared, or the canvas silently falls back to a hardcoded hex and the
+    # graph is drawn in the light palette on a dark page.
+    record("a dark theme is declared", "[data-theme=dark]" in html_txt)
+    graph_src = (assets_dir / "graph.js").read_text(encoding="utf-8")
+    read_tokens = sorted(set(re.findall(r'v\("(--[a-z0-9-]+)"\)', graph_src)))
+    style = html_txt[html_txt.index("<style>"):html_txt.index("</style>")]
+    dark_block = style[style.index("[data-theme=dark]"):]
+    # Every assertion about what the sheet DECLARES has to run against the
+    # declarations. The sheet documents the tokens it retired ("--faint IS
+    # DELETED"), so a naive substring check over the raw text finds the very
+    # names it is asserting are gone — and `style.index("@media")` lands on a
+    # comment that merely mentions one, truncating the base-rule slice.
+    css = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+    record("comments are balanced (a nested /* silently eats the next rule)",
+           style.count("/*") == style.count("*/") and "/*" not in css)
+
+    # The contract is pinned exactly, not to a floor: a future edit that drops
+    # --line or adds an undeclared name must fail loudly rather than pass >=4.
+    expected_tokens = ["--accent", "--b40", "--b70", "--line",
+                       "--line-soft", "--muted", "--text"]
+    record("graph.js reads exactly the declared palette contract",
+           read_tokens == expected_tokens, read_tokens)
+    for tok in read_tokens:
+        record(f"{tok} is declared in the stylesheet", f"{tok}:" in css)
+    # Only ramp tokens are re-declared per theme; the semantic ones derive from
+    # them, so requiring every read token in the dark block would be wrong.
+    # --b40 and --b45 are here because the canvas reads the edge colour and
+    # --ghost off them: a theme flip must never hand it a light-mode edge.
+    record("the dark theme redeclares the base ramp",
+           all(f"--b{n}:" in dark_block
+               for n in ("00", "30", "40", "45", "70", "100")))
+    # --faint carried all 543 counts and every date at 2.65:1. The point of
+    # retiring it is that a name saying "faint text" invites text reuse, while
+    # "ghost" forbids it — so the name itself is the assertion.
+    record("--faint is retired in favour of --ghost", "--faint" not in css)
+    record("--ghost is declared", "--ghost:" in css)
+    # font-weight above 500 resolves to the nearest available weight on a
+    # non-variable stack, so 650 rendered as plain Bold — identical to h1,
+    # .sect, .badge and .brand at once. There was no hierarchy above 400.
+    record("no phantom font weights",
+           ":650" not in css and ":550" not in css)
+    # Uppercase was the only hierarchy device in play, on five unrelated roles.
+    # Making it mean one thing is what makes it mean anything.
+    record("uppercase is used exactly once, on .badge",
+           css.count("text-transform:uppercase") == 1)
+    # The HSL-component accent is what produced --accent-lift: lightening on
+    # hover LOWERS contrast on a light ground (4.51:1, under AA).
+    record("the accent is a literal per theme, not HSL components",
+           "--accent-h:" not in css and "--accent-lift" not in css
+           and "--accent-hover:" in css)
+    record("the modal scrim is neutral, not accent-tinted",
+           "background:var(--scrim)" in css)
+    # The shell itself: three panes, and the two rail blocks the views fill.
+    for sel in ('class="rail rail-l"', 'class="pane"', 'class="rail rail-r"',
+                'id="nav"', 'id="lg"', 'id="mentions"', 'id="pop"', 'id="ovhost"'):
+        record(f"shell carries {sel}", sel in html_txt)
+    # A media query adds no specificity, so a responsive block placed above the
+    # base rules it overrides loses to them — which is exactly how the phone
+    # layout shipped broken once, with the rail still a centred column. The
+    # real invariant is two-sided: every component rule before the first
+    # @media, and nothing but @media after it.
+    first_media = css.index("@media")
+    record("every component rule is declared before the first @media block",
+           all(sel in css[:first_media] for sel in
+               (".rail-l{", ".item{", ".row{", ".pop{", ".badge{", ".sect{")),
+           "a media query above the rule it overrides silently loses to it")
+    record("nothing but media queries follows the first @media block",
+           css[first_media:].rstrip().endswith("}"))
+
+    # 7e. the ledger spine. It is a positioned ::after anchored off the SAME
+    # tokens that size the grid tracks, so the line and the columns cannot
+    # desync — a misalignment is invisible to a string test, so the coupling
+    # is what gets asserted. The first track is a fixed length, not
+    # minmax(0,...): a content-sized track makes every .item resolve its own
+    # column width, and the "continuous" line then misses most rows.
+    record("the ledger spine is anchored off the grid's own tokens",
+           "left:calc(var(--measure) + var(--appgap)/2 + var(--row-pad))" in css)
+    record("the fact row grid uses those same tokens",
+           "grid-template-columns:var(--measure) var(--apparatus)" in css
+           and "column-gap:var(--appgap)" in css)
+    record("the sentence track is a fixed length, not content-sized",
+           "minmax(0,var(--measure))" not in css,
+           "a content-sized track resolves per row, so the spine misaligns")
+    record("the spine never appears without an apparatus column",
+           css.index("--apparatus:200px") < css.index("var(--row-pad))"))
+
+    # 7f. the node cap. Deriving it from a box width would reintroduce the bug
+    # it fixes: clientWidth reads 0 while the rail is display:none, and a
+    # slipped zero pins every graph to 18 nodes.
+    record("railCap is derived from innerWidth, never clientWidth",
+           "window.innerWidth" in graph_src and "railCap" in graph_src)
+    record("railCap never reads a box width",
+           "clientWidth" not in graph_src.split("railCap")[1].split("\n")[0])
+    record("the node cap is clamped at both ends", ", 18, CAP)" in graph_src)
+    # Nine hues collapse to a worst-pair OKLab distance of 0.0133 under
+    # simulated deuteranopia — below any JND. Lightness is the channel
+    # dichromacy leaves intact, so zeroing these silently undoes it.
+    record("graph.js carries a per-kind lightness offset for CVD",
+           "const LK" in graph_src
+           and all(f"{k}:" in graph_src.split("const LK")[1].split("}")[0]
+                   for k in ("person", "team", "org", "project", "tool",
+                             "concept", "event", "place", "repo")))
 
     # 8. a missing asset fails the build LOUDLY, naming the file — exercised on
     # a COPY of the scripts, never by touching the real repo files.
@@ -306,8 +462,8 @@ def _run(root):
     r = run(broken_dir / "wiki.py", "build", "--bundle", b, "--out", broken_out)
     record("build still succeeds with a syntactically broken graph.js", r.returncode == 0, r.stdout + r.stderr)
     broken_html = (broken_out / "wiki.html").read_text(encoding="utf-8") if (broken_out / "wiki.html").exists() else ""
-    broken_blocks = inline_script_blocks(broken_html)
-    record("broken-graph build still carries two separate inline script blocks",
+    broken_blocks = inline_script_blocks(broken_html)[1:]   # drop the theme bootstrap
+    record("broken-graph build still carries two separate inline asset blocks",
            len(broken_blocks) == 2, len(broken_blocks))
     node_bin = shutil.which("node")
     if node_bin and len(broken_blocks) == 2:

@@ -1,7 +1,7 @@
 {
   "name": "elephant-wiki",
   "description": "A human-navigable wiki for your elephant-mem bundle — a local, zero-server static site generated from the markdown knowledge base. Subscribes to the bundle's post_ingest event so it stays current on its own.",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "author": {
     "name": "Rafael Girolineto"
   }
