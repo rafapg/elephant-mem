@@ -75,7 +75,14 @@ def make_bundle(root):
         "entities: [/entities/person/alice.md]\n"
         "sources: [/sources/2026-07/s1.md]\n"
         "confidence: high\nstatus: active\ntags: [shipping]\noccurred: 2026-07-10\n---\n\n"
-        "Alice shipped the widget.\n\n**Why it matters / context:** it unblocked launch.\n",
+        "Alice shipped the widget.\n\n**Why it matters / context:** it unblocked launch.\n\n"
+        # Hostile links, as a third-party source could plant them in an ingested
+        # body: every one of these must render as inert text, while the http one
+        # stays a link. The tab/case variants are live in a browser, which reads a
+        # scheme with whitespace and control characters stripped.
+        "See [zap](javascript:alert(1)), [zap2](JaVaScRiPt:alert(2)), "
+        "[zap3](java\tscript:alert(3)), [zap4](data:text/html,zap) "
+        "and [real](https://example.com/ok).\n",
         encoding="utf-8")
     (b / "knowledge" / "sources" / "2026-07" / "s1.md").write_text(
         "---\ntype: source\ndescription: Standup notes 2026-07-10.\n"
@@ -161,6 +168,22 @@ def _run(root):
     record("month shard written with __SHARD__ contract",
            shard.exists() and shard.read_text(encoding="utf-8").startswith("window.__SHARD__('f',"),
            "missing/!SHARD")
+
+    # 6b. a link in a bundle body cannot carry a script. Bodies are third-party
+    # text, and the rendered HTML goes straight into innerHTML in a page holding
+    # the whole knowledge base, so an unsafe scheme must lose its href entirely.
+    shard_txt = shard.read_text(encoding="utf-8") if shard.exists() else ""
+    # Normalise the whole shard the way a browser reads a scheme — whitespace and
+    # the JSON \t / \n / \r escapes removed — so an obfuscated "java\tscript:"
+    # cannot slip past a literal-prefix check.
+    norm = re.sub(r"\\[tnr]|\s", "", shard_txt).lower()
+    unsafe = [s for s in ("javascript:", "data:", "vbscript:")
+              if f'href=\\"{s}' in norm or f'href="{s}' in norm]
+    record("no executable-scheme href survives rendering", not unsafe, unsafe)
+    record("the hostile link's words are kept as inert text", "zap" in shard_txt, "label dropped too")
+    record("a safe https link is still a link",
+           'href=\\"https://example.com/ok\\"' in shard_txt or 'href="https://example.com/ok"' in shard_txt,
+           shard_txt[:400])
 
     # 7. the split-out JS assets land INSIDE wiki.html, not as a <script src> to
     # a local file — the page must stay self-contained apart from data/.

@@ -126,11 +126,32 @@ def route_for(target):
     return t
 
 
+_SAFE_SCHEMES = ("http:", "https:", "mailto:")
+
+
+def safe_href(href):
+    """A bundle body is third-party text — Slack messages, transcripts, forwarded
+    documents — so a link written into one must not be able to carry a script.
+    `[x](javascript:…)` rendered straight into an href executes in a page that
+    holds the whole knowledge base. Returns None for anything but an http(s)/
+    mailto URL, a rewritten hash route, or a scheme-less relative path.
+
+    Browsers ignore whitespace and control characters when reading a scheme, so
+    `java\\tscript:` is live where a naive startswith check is not: probe with
+    those stripped, and keep the original for the href itself."""
+    probe = re.sub(r"[\s\x00-\x1f\x7f]", "", href).lower()
+    if not re.match(r"^[a-z][a-z0-9+.\-]*:", probe):
+        return href                       # "#/entities/x", "/facts/y.md", "./z"
+    return href if probe.startswith(_SAFE_SCHEMES) else None
+
+
 def _inline(text):
     """Inline markdown on an already HTML-escaped string."""
     def link(m):
         label, target = m.group(1), m.group(2)
-        href = route_for(target)
+        href = safe_href(route_for(target))
+        if href is None:
+            return label                  # unsafe scheme: keep the words, drop the link
         ext = href.startswith("http://") or href.startswith("https://")
         attr = ' target="_blank" rel="noopener"' if ext else ""
         return f'<a href="{html.escape(href, quote=True)}"{attr}>{label}</a>'

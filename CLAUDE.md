@@ -19,7 +19,7 @@ Two plugins ship from one marketplace (`.claude-plugin/marketplace.json`):
 
 `elephant-mem` and `elephant-wiki` version **separately**. They are distinct
 plugins, installed separately, and the wiki changes far less often — as of
-`elephant-mem` 0.1.0-beta.7 the wiki is on 0.1.0-beta.2. A gap between the two
+`elephant-mem` 0.1.0-beta.7 the wiki is on 0.1.0-beta.3. A gap between the two
 numbers is expected and is **not** a sign the wiki is behind.
 
 What follows from that:
@@ -27,13 +27,19 @@ What follows from that:
 - **Bump only the plugin whose files changed.** A change under `plugin/` bumps
   `plugin/.claude-plugin/plugin.json`; a change under `elephant-wiki/` bumps
   `elephant-wiki/.claude-plugin/plugin.json`. A change touching both bumps both.
-- **`elephant-mem`'s version is the repo's version.** Git tags (`v0.1.0-beta.N`),
-  GitHub releases, and `## [0.1.0-beta.N]` CHANGELOG sections all track
-  `elephant-mem` alone. There are no `elephant-wiki` tags.
-- **Wiki bumps are recorded inside the `elephant-mem` section** that shipped
-  them, as a line like *"Also in this release: `elephant-wiki` 0.1.0-beta.2 — …"*
-  (see the 0.1.0-beta.5 section for the precedent). The wiki gets no section of
-  its own.
+- **`elephant-mem`'s version is the repo's version.** Git tags (`v0.1.0-beta.N`)
+  and GitHub releases track `elephant-mem` alone. There are no `elephant-wiki`
+  tags.
+- **Each plugin owns its CHANGELOG.** `CHANGELOG.md` at the root is
+  `elephant-mem`'s; `elephant-wiki/CHANGELOG.md` is the wiki's. A change under
+  `elephant-wiki/` is written up there, in the same house style, and **not** in
+  the root file. Since the wiki has no tags, date its section by the day it
+  lands on `main` — that is what the marketplace serves.
+  - Up to wiki 0.1.0-beta.2 the convention was the opposite: those bumps were
+    recorded inline in the `elephant-mem` section that shipped them ("Also in
+    this release: …", see 0.1.0-beta.5). That history was left where it is and
+    is linked from the wiki's own file; don't move it, and don't add new inline
+    notes.
 - **Only `elephant-mem`'s version is machine-read.** The `update` mode fetches
   `plugin/.claude-plugin/plugin.json` from `main` and compares it to the
   installed one. Nothing reads the wiki's `version`; it is there for the
@@ -48,11 +54,13 @@ Do this on a branch, land it through a PR, then tag the **merge commit** — the
 
 1. **Bump** the `version` in the `plugin.json` of each plugin whose files
    changed (see above).
-2. **CHANGELOG** — open or finish the `## [<version>] - <date>` section. The
-   date is the day the release is **tagged**, not the day the section was
-   started; fix it at tag time if the work spanned days. Keep the house style:
-   a short lead paragraph saying what was actually wrong, then
-   `### Added` / `### Changed` / `### Fixed`. Note any wiki bump inline.
+2. **CHANGELOG** — open or finish the `## [<version>] - <date>` section in the
+   CHANGELOG of each plugin that was bumped (root for `elephant-mem`,
+   `elephant-wiki/CHANGELOG.md` for the wiki). For `elephant-mem` the date is
+   the day the release is **tagged**, not the day the section was started; fix
+   it at tag time if the work spanned days. Keep the house style: a short lead
+   paragraph saying what was actually wrong, then
+   `### Added` / `### Changed` / `### Fixed`.
 3. **README** — update the version badge(s) in the centered header block.
 4. **Tag and release**, annotated, with a title:
 
