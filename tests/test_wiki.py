@@ -181,6 +181,13 @@ def _run(root):
                "window.localGraph = function" in blocks[0] and "titleOfEnt" not in blocks[0])
         record("second inline block is wiki.js (defines titleOfEnt)",
                "titleOfEnt" in blocks[1] and "window.localGraph = function" not in blocks[1])
+        # Marker strings alone would still pass if the substitution truncated or
+        # mangled an asset outside them: compare each block to its source file.
+        for i, name in enumerate(("graph.js", "wiki.js")):
+            want = (assets_dir / name).read_text(encoding="utf-8")
+            record(f"inline block {i} is {name} verbatim",
+                   blocks[i].strip() == want.strip(),
+                   f"{len(blocks[i])} vs {len(want)} chars")
 
     # 8. a missing asset fails the build LOUDLY, naming the file — exercised on
     # a COPY of the scripts, never by touching the real repo files.

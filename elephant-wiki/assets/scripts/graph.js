@@ -238,6 +238,15 @@
       p.rel=()=>{ window.removeEventListener("mousemove",mv); window.removeEventListener("mouseup",up); p.rel=null; };
       window.addEventListener("mousemove",mv); window.addEventListener("mouseup",up);
     });
+    // Released outside the window AND never moved back in: the buttons===0 check
+    // above never gets a mousemove to fire on, so blur is the only signal left
+    // that the drag is over. Ends it without navigating.
+    on(window,"blur",()=>{
+      if(!p.drag) return;
+      if(p.rel) p.rel();
+      p.drag = null;
+      reheat();
+    });
     on(window,"resize",()=>{ if(el.isConnected===false) return teardown(p); size(); reheat(); });
     on(window,"hashchange",()=>teardown(p));
 
