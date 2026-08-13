@@ -19,7 +19,7 @@ Two plugins ship from one marketplace (`.claude-plugin/marketplace.json`):
 
 `elephant-mem` and `elephant-wiki` version **separately**. They are distinct
 plugins, installed separately, and the wiki changes far less often — as of
-`elephant-mem` 0.1.0-beta.7 the wiki is on 0.1.0-beta.3. A gap between the two
+`elephant-mem` 0.1.0-beta.7 the wiki is on 0.1.0-beta.4. A gap between the two
 numbers is expected and is **not** a sign the wiki is behind.
 
 What follows from that:

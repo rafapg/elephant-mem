@@ -102,14 +102,23 @@ def between(text, start, end):
     The suite keeps running when a build produced no wiki.html (html_txt is
     ""), so a bare str.index() here would raise mid-run and hide every check
     after it behind a traceback.
+
+    `end=None` means "to the end of the text" and is used deliberately. A marker
+    that is PASSED but absent is a different thing and returns "" — same as an
+    absent start marker. Without that distinction a truncated wiki.html with no
+    "</style>" handed the whole rest of the document to the CSS assertions
+    instead of degrading to nothing, which is the failure mode this helper
+    exists to prevent.
     """
     if not text:
         return ""
     a = 0 if start is None else text.find(start)
     if a < 0:
         return ""
-    b = len(text) if end is None else text.find(end, a)
-    return text[a:b if b >= 0 else len(text)]
+    if end is None:
+        return text[a:]
+    b = text.find(end, a)
+    return "" if b < 0 else text[a:b]
 
 
 def load_core(out):
