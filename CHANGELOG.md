@@ -4,6 +4,55 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.8] - 2026-08-13
+
+`ingest` is the primary verb of a memory system and Claude could not see it.
+`disable-model-invocation: true` does more than block the Skill tool — it
+removes the skill from the model's listing entirely, so "save this text for me"
+produced no offer and no suggestion, because from inside the session that verb
+did not exist. The only route in was typing its name, which is the one thing a
+user has to already know. Meanwhile `capture` writes facts, rebuilds the index,
+and commits — the same side effects — and has always been model-invocable. So
+the flag was never protecting against side effects; it was protecting against
+*unbounded input*, and that is an argument about what counts as a source, not
+about who may invoke. This release moves the protection into the skill, where it
+can say no to a stack trace and yes to an article.
+
+### Changed
+
+- **`ingest` is model-invocable** (`skills/ingest/SKILL.md`). The flag is gone
+  and the description is written **negatively**, because the failure mode of an
+  auto-invocable writer is a bundle full of debris. The trigger is the user
+  asking for a source to be *remembered* — never a source merely appearing in
+  the conversation. Named non-triggers: pasted stack traces, logs, diffs, test
+  output, error messages, code, a page fetched while working on some other task,
+  and the repository being worked in. When retention is unclear the instruction
+  is to offer once and wait, never to ingest on a guess.
+
+- **`ingest` is documented as auto-invocable** (`README.md`) and called out as
+  the one auto-invocable mode that writes, with the confirmation behaviour and
+  the "appearing is not a trigger" rule stated where users read the mode table.
+
+### Added
+
+- **A scope gate — step 0 of `skills/ingest/procedure.md`.** When Claude reached
+  for the skill itself, it states the source, the kind of facts expected, and
+  that this writes and commits, then waits. Silence, a topic change, or a hedge
+  is explicitly **not** an accept, and it is one offer per source per
+  conversation — a decline holds for the session, in the same shape `capture`
+  already uses. Nothing is read, fetched, or written before the accept.
+
+  The gate is skipped where it would be noise or harm: when the user invoked by
+  name (`/elephant-mem:ingest <source>`) or named source and intent together —
+  the ask *is* the confirmation — and for automated callers, since `catch-up`
+  reuses only the core loop (steps 2–6) under its own autonomy envelope and
+  `ingest-audio` enters at step 1 with a recording already handed over. It is
+  numbered 0 for that reason: both callers reference step numbers, and
+  renumbering would have silently redirected them.
+
+  The gate does not soften the negative triggers. A pasted stack trace is not
+  offered and declined — it is not a source.
+
 ## [0.1.0-beta.7] - 2026-08-04
 
 `catch-up` ran unattended but could not finish a thought. Nine consecutive runs
