@@ -96,6 +96,22 @@ def run(script, *args):
                           capture_output=True, text=True, encoding="utf-8")
 
 
+def between(text, start, end):
+    """Slice between two markers, tolerating either being absent.
+
+    The suite keeps running when a build produced no wiki.html (html_txt is
+    ""), so a bare str.index() here would raise mid-run and hide every check
+    after it behind a traceback.
+    """
+    if not text:
+        return ""
+    a = 0 if start is None else text.find(start)
+    if a < 0:
+        return ""
+    b = len(text) if end is None else text.find(end, a)
+    return text[a:b if b >= 0 else len(text)]
+
+
 def load_core(out):
     txt = (out / "data" / "core.js").read_text(encoding="utf-8")
     return json.loads(txt[txt.index("=") + 1:].rstrip().rstrip(";"))
@@ -216,7 +232,7 @@ def _run(root):
     record("wiki.html carries exactly three inline <script> blocks", len(blocks) == 3, len(blocks))
     # The theme has to resolve before first paint; deferring it to the app script
     # gives a dark-mode reader a full white flash on every load.
-    head_txt = html_txt[:html_txt.index("</head>")]
+    head_txt = between(html_txt, None, "</head>")
     record("theme bootstrap runs in <head>",
            bool(blocks) and blocks[0] in head_txt
            and "data-theme" in blocks[0] and "localStorage" in blocks[0])
@@ -270,8 +286,12 @@ def _run(root):
     record("a dark theme is declared", "[data-theme=dark]" in html_txt)
     graph_src = (assets_dir / "graph.js").read_text(encoding="utf-8")
     read_tokens = sorted(set(re.findall(r'v\("(--[a-z0-9-]+)"\)', graph_src)))
-    style = html_txt[html_txt.index("<style>"):html_txt.index("</style>")]
-    dark_block = style[style.index("[data-theme=dark]"):]
+    # Line 155 deliberately tolerates a missing wiki.html. Without these
+    # guards the first marker slice raised ValueError on the empty string and
+    # took every remaining check down with it, so one build failure was
+    # reported as a crash rather than as a list of failures.
+    style = between(html_txt, "<style>", "</style>")
+    dark_block = between(style, "[data-theme=dark]", None)
     # Every assertion about what the sheet DECLARES has to run against the
     # declarations. The sheet documents the tokens it retired ("--faint IS
     # DELETED"), so a naive substring check over the raw text finds the very
@@ -280,6 +300,31 @@ def _run(root):
     css = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
     record("comments are balanced (a nested /* silently eats the next rule)",
            style.count("/*") == style.count("*/") and "/*" not in css)
+
+    def rules_after_media(sheet):
+        """Selectors declared at top level AFTER the media queries begin.
+
+        The invariant is "nothing but @media follows the first @media", and
+        checking that the tail ends with "}" does not test it — a plain rule
+        appended after the media blocks also ends with "}". So walk the tail,
+        track brace depth, and collect anything that opens a block at depth 0
+        without being an at-rule.
+        """
+        tail, depth, out, buf = between(sheet, "@media", None), 0, [], ""
+        for ch in tail:
+            if ch == "{":
+                if depth == 0:
+                    sel = buf.strip()
+                    if sel and not sel.startswith("@"):
+                        out.append(sel)
+                    buf = ""
+                depth += 1
+            elif ch == "}":
+                depth = max(0, depth - 1)
+                buf = ""
+            elif depth == 0:
+                buf += ch
+        return out
 
     # The contract is pinned exactly, not to a floor: a future edit that drops
     # --line or adds an undeclared name must fail loudly rather than pass >=4.
@@ -326,13 +371,15 @@ def _run(root):
     # layout shipped broken once, with the rail still a centred column. The
     # real invariant is two-sided: every component rule before the first
     # @media, and nothing but @media after it.
-    first_media = css.index("@media")
+    first_media = css.index("@media") if "@media" in css else len(css)
     record("every component rule is declared before the first @media block",
            all(sel in css[:first_media] for sel in
                (".rail-l{", ".item{", ".row{", ".pop{", ".badge{", ".sect{")),
            "a media query above the rule it overrides silently loses to it")
+    stray = rules_after_media(css)
     record("nothing but media queries follows the first @media block",
-           css[first_media:].rstrip().endswith("}"))
+           not stray,
+           f"top-level rules after the first @media: {stray}")
 
     # 7e. the ledger spine. It is a positioned ::after anchored off the SAME
     # tokens that size the grid tracks, so the line and the columns cannot
@@ -349,7 +396,8 @@ def _run(root):
            "minmax(0,var(--measure))" not in css,
            "a content-sized track resolves per row, so the spine misaligns")
     record("the spine never appears without an apparatus column",
-           css.index("--apparatus:200px") < css.index("var(--row-pad))"))
+           "--apparatus:200px" in css and "var(--row-pad))" in css
+           and css.index("--apparatus:200px") < css.index("var(--row-pad))"))
 
     # 7f. the node cap. Deriving it from a box width would reintroduce the bug
     # it fixes: clientWidth reads 0 while the rail is display:none, and a

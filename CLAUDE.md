@@ -27,14 +27,20 @@ What follows from that:
 - **Bump only the plugin whose files changed.** A change under `plugin/` bumps
   `plugin/.claude-plugin/plugin.json`; a change under `elephant-wiki/` bumps
   `elephant-wiki/.claude-plugin/plugin.json`. A change touching both bumps both.
-- **`elephant-mem`'s version is the repo's version.** Git tags (`v0.1.0-beta.N`)
-  and GitHub releases track `elephant-mem` alone. There are no `elephant-wiki`
-  tags.
+- **Each plugin has its own tag namespace.** `v0.1.0-beta.N` is `elephant-mem`;
+  `wiki-v0.1.0-beta.N` is `elephant-wiki`. The prefix keeps the two disjoint, so
+  `git tag -l 'v*'` still lists `elephant-mem` releases and nothing else.
+  - Wiki tags start at `wiki-v0.1.0-beta.4`. Before that the wiki carried no
+    tags; those older sections stay as they are — don't retro-tag them.
+  - **A wiki tag is documentation, not delivery.** Nothing machine-reads it (see
+    below): the marketplace and `update` both serve `main`. So a forgotten wiki
+    tag costs you archaeology, while a forgotten `elephant-mem` bump withholds
+    the update prompt from every installed user. Not the same kind of mistake.
 - **Each plugin owns its CHANGELOG.** `CHANGELOG.md` at the root is
   `elephant-mem`'s; `elephant-wiki/CHANGELOG.md` is the wiki's. A change under
   `elephant-wiki/` is written up there, in the same house style, and **not** in
-  the root file. Since the wiki has no tags, date its section by the day it
-  lands on `main` — that is what the marketplace serves.
+  the root file. Date its section by the day the `wiki-v*` tag is cut, which is
+  the day it lands on `main` — that is what the marketplace serves.
   - Up to wiki 0.1.0-beta.2 the convention was the opposite: those bumps were
     recorded inline in the `elephant-mem` section that shipped them ("Also in
     this release: …", see 0.1.0-beta.5). That history was left where it is and

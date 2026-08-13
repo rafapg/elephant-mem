@@ -31,6 +31,12 @@
   }
   const routeOf = id => "#"+id.replace(/\.md$/,"");
   const esc = s => (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  // A malformed percent-escape makes decodeURIComponent throw a URIError, and
+  // two of the three call sites are inside the router — so a hash like
+  // "#/search/%" typed or pasted into the address bar killed navigation and
+  // left the page stuck until a reload. Falling back to the raw string means
+  // the route simply fails to match and you land on the home view.
+  const dec = s => { try { return decodeURIComponent(s); } catch(e) { return s; } };
   const titleOfEnt = id => (entById.get(id)||{}).title || id.split("/").pop().replace(/\.md$/,"");
   const cap1 = s => (s||"").charAt(0).toUpperCase()+(s||"").slice(1);
 
@@ -119,8 +125,9 @@
       const e=entById.get(entId);
       if(e){ expand(e.kind, true); hit=nav.querySelector(`.row[data-id="${CSS.escape(entId)}"]`); }
     }
-    if(!hit) hit=nav.querySelector(`.row[data-go="${hash}"]`);
-    if(!hit && hash.startsWith("#/kind/")) hit=nav.querySelector(`.row[data-kind="${hash.slice(7)}"]`);
+    if(!hit) hit=nav.querySelector(`.row[data-go="${CSS.escape(hash)}"]`);
+    if(!hit && hash.startsWith("#/kind/"))
+      hit=nav.querySelector(`.row[data-kind="${CSS.escape(hash.slice(7))}"]`);
     if(!hit) return;
     hit.classList.add("on");
     const r=hit.getBoundingClientRect(), pr=nav.getBoundingClientRect();
@@ -340,7 +347,7 @@
       + `${r.channel?`<span class="chip">${esc(r.channel)}</span>`:""}</div>`;
   }
   function popShow(a){
-    const id = decodeURIComponent(a.getAttribute("href")).slice(1)+".md";
+    const id = dec(a.getAttribute("href")).slice(1)+".md";
     const html = popFill(id);
     if(!html) return;
     popFor=id;
@@ -381,12 +388,12 @@
 
   // ── router ──
   const routeNow = () => {
-    const h=decodeURIComponent(location.hash||"#/");
+    const h=dec(location.hash||"#/");
     return h.startsWith("#/entities/")||h.startsWith("#/facts/")||h.startsWith("#/sources/")
       ? h.slice(1)+".md" : null;
   };
   function render(){
-    const h=decodeURIComponent(location.hash||"#/");
+    const h=dec(location.hash||"#/");
     popHide(); clearRail();
     pane.scrollTop=0; window.scrollTo(0,0);
     const id=h.slice(1)+".md";

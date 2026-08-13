@@ -1239,8 +1239,11 @@ a.chip:hover{background:var(--active);color:var(--text);text-decoration:none}
    A media query adds NO specificity, so a responsive block placed above the
    base rules it means to override simply loses to them. This codebase has
    already shipped that bug once — the phone layout went out with the rail
-   still a centred column (see the comment at wiki.py:682 and the assertion in
-   tests/test_wiki.py:289). Paste this AFTER css_components, not with Part A.
+   still a centred column. Two assertions in tests/test_wiki.py enforce the
+   ordering from both ends: "every component rule is declared before the first
+   @media block" and "nothing but media queries follows the first @media
+   block". They are named rather than cited by line, because a line number in
+   a comment is stale the moment anything above it moves.
 
    Emitted ascending, then the two descending legacy tiers, so no two blocks
    that can both match ever contradict each other.
@@ -1391,9 +1394,14 @@ a.chip:hover{background:var(--active);color:var(--text);text-decoration:none}
         <button class="toggle" id="theme" title="Toggle light / dark" aria-label="Toggle light / dark"></button>
       </div>
       <div class="srch">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"
+        <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16" fill="none"
+             stroke="currentColor" stroke-width="1.7"
              stroke-linecap="round"><circle cx="6.6" cy="6.6" r="4.4"/><path d="M10 10l3.6 3.6"/></svg>
-        <input id="q" placeholder="Search…" autocomplete="off" spellcheck="false">
+        <!-- A placeholder is not an accessible name, and it disappears the moment
+             the user types: a screen reader announced this as an unnamed text
+             input. The magnifier beside it is aria-hidden decoration. -->
+        <input id="q" aria-label="Search the wiki"
+               placeholder="Search…" autocomplete="off" spellcheck="false">
         <span class="kbd" id="kbd">/</span>
       </div>
     </div>

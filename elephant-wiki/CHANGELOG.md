@@ -4,14 +4,16 @@ Notable changes to the **`elephant-wiki`** plugin. `elephant-mem` has its own
 [CHANGELOG](../CHANGELOG.md); the two plugins version independently, so a gap
 between their numbers is expected and is not a sign either one is behind.
 
-`elephant-wiki` carries no git tags of its own — tags and GitHub releases track
-`elephant-mem` alone. A version here is dated by the day it landed on `main`,
-which is what the marketplace serves.
+`elephant-wiki` has its own tag namespace, `wiki-v0.1.0-beta.N`, starting at
+`wiki-v0.1.0-beta.4`; plain `v0.1.0-beta.N` tags are `elephant-mem`'s. Versions
+before beta.4 were never tagged and are dated by the day they landed on `main`,
+which is what the marketplace serves — nothing machine-reads a wiki tag, so it
+is a record rather than a delivery mechanism.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0-beta.4] - 2026-08-11
+## [0.1.0-beta.4] - 2026-08-13
 
 The page looked amateurish for reasons that turned out to be nameable, and two
 of them were rendering bugs rather than taste.
@@ -28,10 +30,9 @@ stacked 492 deep.
 The wiki is now a three-pane workspace, in the shape the Obsidian app uses: a
 persistent explorer on the left, a reading column in the middle, the local graph
 and linked mentions on the right. Colour comes from one warm-neutral ramp with a
-semantic layer over it, so a theme is a swap of fifteen values rather than a
-second stylesheet, and the accent is stored as HSL components so dark mode lifts
-its lightness instead of picking a different brown. Body text is ink; the accent
-is reserved for links that lead elsewhere, for the active row, and for hover.
+semantic layer over it, so a theme is a swap of about fifteen values rather
+than a second stylesheet. Body text is ink, and the accent is rationed to the
+seven places where it means something.
 
 Two of the defects were in the markdown renderer, and they were the larger part
 of why prose looked ragged. Paragraph lines were joined with `<br>`, so a body
@@ -86,10 +87,10 @@ that invited faint text no longer exists.
   delegated listener pair rather than 300. A row's own title is excluded: the row
   already shows the whole description, and previewing it put a floating copy of
   the sentence on top of the sentence.
-- **An expandable graph.** The rail is ~250px wide, where forty nodes is a
-  smudge, so it draws the 18 heaviest neighbours and `⤢` opens the full 40 in a
-  sheet with every node labelled. There is still only one simulation: expanding
-  hands it over, closing hands it back.
+- **An expandable graph.** The rail draws the heaviest neighbours its width can
+  carry — eighteen on a laptop, all forty from 2400px up — and `⤢` opens the
+  full forty in a sheet larger than the rail canvas at any viewport. There is
+  still only one simulation: expanding hands it over, closing hands it back.
 - **Linked mentions** beside the graph — the same model the canvas draws, as an
   ordered list of who this page shares facts with and how many, so the two can
   never disagree.
@@ -120,8 +121,8 @@ that invited faint text no longer exists.
   drawn in the light palette on a dark page.
 - **Facts and sources are rows, not cards** — hairline separated with a hover
   surface, the whole row clickable.
-- **A real type scale**: 28px page titles with tight tracking, section headers as
-  small uppercase labels with a rule, dates and counts in a monospace face.
+- **A real type scale**: seven steps across a 19.5px band, 30px page titles with
+  tight tracking, and section heads as larger lowercase ink with a rule.
 - **`person` moved off the accent's hue** in the graph. This bundle is
   person-heavy, and tinting the commonest kind the same warm tone as the accent
   made every graph read as one colour and as if every node were selected.
