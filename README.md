@@ -5,7 +5,7 @@
 *an elephant never forgets*
 
 ![license](https://img.shields.io/badge/license-MIT-black?style=flat-square)
-![elephant-mem](https://img.shields.io/badge/elephant--mem-v0.1.0--beta.7-black?style=flat-square)
+![elephant-mem](https://img.shields.io/badge/elephant--mem-v0.1.0--beta.8-black?style=flat-square)
 ![elephant-wiki](https://img.shields.io/badge/elephant--wiki-v0.1.0--beta.4-black?style=flat-square)
 ![claude code](https://img.shields.io/badge/claude--code-plugin-black?style=flat-square)
 ![ci](https://img.shields.io/github/actions/workflow/status/rafapg/elephant-mem/ci.yml?branch=main&style=flat-square&label=ci)
@@ -100,6 +100,13 @@ calls for it (you can also invoke them explicitly):
 | `capture` | save a durable decision reached in the current conversation | `/elephant-mem:capture` |
 | `start-day` | morning orientation: agenda + overnight digest + your open loops | `/elephant-mem:start-day` |
 | `end-day` | evening wrap: what happened, what's pending | `/elephant-mem:end-day` |
+| `ingest` | extract facts from a URL / file / pasted text you want remembered | `/elephant-mem:ingest <source>` |
+
+`ingest` is the one auto-invocable mode that **writes**. Ask for a source to be
+remembered and Claude reaches for it; when it reaches for it on its own it first
+states what it is about to file and waits for you to accept. Invoking it by name
+skips that confirmation. A source merely appearing in the conversation — a
+pasted stack trace, a page opened while debugging — is never a trigger.
 
 **Explicit** — deliberate operations you invoke by name (they have side effects
 or run unattended):
@@ -107,7 +114,6 @@ or run unattended):
 | mode | what it does | invocation |
 |---|---|---|
 | `init` | create and register a new bundle (the front door) | `/elephant-mem:init` |
-| `ingest` | extract facts from a URL / file / pasted text | `/elephant-mem:ingest <source>` |
 | `catch-up` | scheduled autonomous ingestion of everything new since last run | `/elephant-mem:catch-up` |
 | `push-start-day` | post the morning orientation to your Slack self-DM | `/elephant-mem:push-start-day` |
 | `ingest-audio` | transcribe a voice recording and ingest it | `/elephant-mem:ingest-audio` |

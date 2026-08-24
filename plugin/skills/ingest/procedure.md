@@ -6,6 +6,30 @@ It touches entities — also load `../_shared/entity-resolution.md`.
 `<source>` may be a URL, a local file path, or pasted text. Default is
 **autonomous**; `--review` adds a human approval gate (see below).
 
+0. **Confirm scope before writing.** This step exists because this skill is
+   model-invocable and it writes: it creates files, rebuilds the index, and
+   commits. **Skip it** when the user invoked the skill by name
+   (`/elephant-mem:ingest <source>`) or named both the source and the intent to
+   file it ("ingest this thread", "save that doc to memory") — the ask *is* the
+   confirmation. Otherwise, when **you** reached for this skill, state in one or
+   two lines what you are about to do — the source you identified, the kind of
+   facts you expect from it, and that it writes to the bundle and commits — then
+   **wait**.
+
+   Proceed only on an accept. Silence, a topic change, or a hedge is **not** an
+   accept: drop the offer and carry on with whatever the user was actually
+   doing. **One offer per source per conversation** — a decline holds for the
+   rest of the session; do not re-offer the same source in different words.
+
+   Do not read the source, fetch the URL, or write anything before the accept.
+   The negative triggers in `SKILL.md` are not softened by this gate — a pasted
+   stack trace or a page opened during a dev task is not offered at all, it is
+   simply not a source.
+
+   **Automated callers skip this step:** `catch-up` reuses only the core loop
+   (steps 2–6) under its own autonomy envelope, and `ingest-audio` enters at
+   step 1 with a recording the user already handed over.
+
 1. **Capture provenance.** Read the source fully (WebFetch for URLs, Read for
    files). Create `knowledge/sources/<YYYY-MM>/<YYYY-MM-DD>-<slug>.md` from
    `templates/source.md`: set `resource`, `source-kind`, `channel` (precise
