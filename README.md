@@ -165,10 +165,25 @@ The exception is the optional `ingest-audio` mode: WhisperX is not supported
 ```
 
 Compares your installed plugin against the published `version` in
-[`plugin.json`](plugin/.claude-plugin/plugin.json), shows the update command if
+[`plugin.json`](plugin/.claude-plugin/plugin.json), shows the update commands if
 newer, and — after you update — re-syncs the bundle's copied scripts and
 templates. Read modes also nudge you at most once a week when a release is
 available; they never update anything on their own.
+
+Updating the plugin is **two** commands, in this order:
+
+```
+claude plugin marketplace update elephant-mem
+claude plugin update elephant-mem@elephant-mem
+```
+
+The first one is easy to miss and it matters. `claude plugin update` does not
+read this repo — it reads your **local clone of the marketplace**, a git
+checkout of `main` under `~/.claude/plugins/marketplaces/`. Until you refresh
+that clone, the CLI will cheerfully report `✓ elephant-mem is already at the
+latest version` and name a version older than the badge above. Nothing is
+broken and nothing is lagging on the publishing side — your clone is just
+behind.
 
 ### two plugins, two version cycles
 
