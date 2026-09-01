@@ -12,14 +12,17 @@ through the entity pages that link them. So this script regenerates:
                                       Does NOT list every fact.
   4. entity/source backlinks       — the auto-facts block in each entity/source
                                       file, listing facts that reference it.
-  5. knowledge/manifest.jsonl      — ultra-slim triage surface: one compact JSON
-                                      line per active fact / open loop, carrying
-                                      only the fields needed to DECIDE what to
-                                      read in full (path, type, desc, entities,
-                                      tags, occurred, confidence, status). A
-                                      subagent loads the whole
-                                      manifest cheaply, triages, then deep-reads
-                                      only the chosen files.
+  5. knowledge/manifest.jsonl      — triage surface: one compact JSON line per
+                                      active fact / open loop, carrying only the
+                                      fields needed to DECIDE what to read in
+                                      full (path, type, desc, entities, tags,
+                                      occurred, confidence, status). It is NOT
+                                      cheap to load: it grows with every fact and
+                                      is already megabytes on a mature bundle, so
+                                      a consumer hands it to a subagent and
+                                      pre-filters with `rg` rather than reading
+                                      it whole — see the delegation rule in
+                                      skills/_shared/whole-field-scan.md.
   6. knowledge/entities/roster.tsv  — the RESOLUTION surface: one self-contained
                                       tab-separated row per active entity (slug,
                                       kind, title, aliases), so an extraction run

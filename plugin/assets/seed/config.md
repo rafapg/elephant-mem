@@ -47,10 +47,12 @@ knowledge/                   # OKF v0.1 bundle (the queryable surface)
   facts/<slug>.md            # atomic durable facts (type: fact)
   entities/<kind>/<slug>.md  # hubs: person|org|project|tool|concept|event|place
   entities/index.md          # derived: the entity CATALOG (navigation spine)
+  entities/roster.tsv        # derived: the RESOLUTION surface (one row/entity)
   tracking/loops/<slug>.md   # open-loops (type: open-loop)
   tracking/open-loops.md     # derived: board of open loops
   sources/<YYYY-MM>/<date>-<slug>.md  # provenance, one per source, month-partitioned
   index.md                   # derived: thin router (reserved, no frontmatter)
+  manifest.jsonl             # derived: triage surface, one line per fact/loop
   log.md                     # episodic ledger (reserved, no frontmatter)
 elephant.json                # bundle config: owner, languages, timezone, sources
 config.md                    # this file
