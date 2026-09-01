@@ -53,11 +53,30 @@ resolved: the file on disk is only regenerated at the mode's rebuild step, so
 until then the in-context copy *is* the roster, and two candidates naming the
 same new person in one run must land on one entity, not two.
 
-**A missing roster degrades, it never fails.** If `roster.tsv` is not there,
-run `python3 scripts/build-index.py` once — it is idempotent, and a mode that
-writes runs it anyway — then read it. If it is still absent, fall back to
+**A missing *or stale* roster degrades, it never fails.** The roster is only as
+current as the last `build-index.py`, and a run that died between creating a
+stub and its rebuild leaves entities the file does not carry. That failure is
+worse than an absent roster, because the resolver creates a second entity for a
+name that already exists and writes a `roster miss` line that looks legitimate —
+the very count the roster exists to make meaningful.
+
+So check before reading, and let the bundle's own git tree answer it: every mode
+that writes rebuilds and commits at its last step, so a **clean** tree means the
+last mode finished and the roster is current by construction.
+
+```bash
+git -C <bundle> status --porcelain    # empty → the roster is current
+```
+
+Not empty, or `roster.tsv` absent: run `python3 scripts/build-index.py` once —
+it is idempotent — then read it. If it is *still* absent, fall back to
 `entities/index.md` (the full catalog, the same names at far greater cost) and
 say so in the run's log.
+
+**Do not test freshness by modification time.** `build-index.py` emits the
+roster before it rewrites the auto-facts blocks, so entity files are routinely
+newer than a roster that is perfectly current; `find … -newer roster.tsv` reports
+a stale roster on every run.
 
 ## Correcting transcription errors
 

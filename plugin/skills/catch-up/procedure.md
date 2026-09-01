@@ -254,13 +254,16 @@ after.**
    That is ~20 tokens a mention, against the 9k a roster-carrying subagent
    would cost.
 
-   **A missing roster degrades, it never fails.** If `roster.tsv` is not there,
-   run `python3 scripts/build-index.py` once — it is idempotent and step 7 runs
-   it anyway — then read it. If it is still absent, fall back to
-   `entities/index.md` (the full catalog, far heavier, same names) and say so in
-   this run's `log.md` entry (step 8). This procedure prescribing that command
-   is not a script's own output suggesting one; the envelope's red rule stands
-   untouched.
+   **A missing or stale roster degrades, it never fails.** Check freshness
+   before the fan-out: `git -C <bundle> status --porcelain` empty means the last
+   mode finished its rebuild-and-commit step, so the roster is current. Not
+   empty, or the file absent, run `python3 scripts/build-index.py` once — it is
+   idempotent and step 7 runs it anyway — then read it. If it is still absent,
+   fall back to `entities/index.md` (the full catalog, far heavier, same names)
+   and say so in this run's `log.md` entry (step 8). Never test freshness by
+   modification time; `../_shared/entity-resolution.md` says why it lies here.
+   This procedure prescribing those commands is not a script's own output
+   suggesting one; the envelope's red rule stands untouched.
 
 4. **Consolidate (main agent only).** Run the `ingest` loop's core (see
    `../ingest/procedure.md`): skip-rules → entity resolution → multi-dimension

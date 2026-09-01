@@ -86,11 +86,14 @@ It touches entities — also load `../_shared/entity-resolution.md`.
    candidates naming the same new person in one run must land on one entity, not
    two.
 
-   **A missing roster degrades, it never fails.** If `roster.tsv` is not there,
-   run `python3 scripts/build-index.py` once — it is idempotent and step 8 runs
-   it anyway — then read it. If it is still absent, fall back to
-   `entities/index.md` (the full catalog, far heavier, same names) and say so in
-   this run's `log.md` entry.
+   **A missing or stale roster degrades, it never fails.** Check freshness
+   before you read: `git -C <bundle> status --porcelain` empty means the last
+   mode finished its rebuild-and-commit step, so the roster is current. Not
+   empty, or the file absent, run `python3 scripts/build-index.py` once — it is
+   idempotent and step 8 runs it anyway — then read it. If it is still absent,
+   fall back to `entities/index.md` (the full catalog, far heavier, same names)
+   and say so in this run's `log.md` entry. Never test freshness by modification
+   time; `../_shared/entity-resolution.md` says why it lies here.
 4. **Dedup** (5-dimension scoring vs. existing facts — load only likely
    matches): (1) the claim, (2) the why/root, (3) entities + referenced things,
    (4) tags, (5) source overlap.

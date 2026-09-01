@@ -49,6 +49,18 @@ instead of a search performed during it.
   `entities/index.md` is untouched and byte-identical: it is what humans and the
   wiki read, and its descriptions are what the roster deliberately drops.
 
+  A missing roster degrades rather than failing, and so does a **stale** one — a
+  run that died between creating a stub and its rebuild leaves entities the file
+  does not carry, and that is worse than an absent roster, because the resolver
+  then creates a second entity for a name that already exists and files a
+  `roster miss` line that reads as legitimate. Freshness is settled by the
+  bundle's own git tree, which every writing mode leaves clean at its last step:
+  clean means current, dirty means rebuild first. It is deliberately **not**
+  settled by modification time, because `build-index.py` emits the roster before
+  it rewrites the auto-facts blocks, so entity files are routinely newer than a
+  roster that is perfectly current and `find … -newer` would report every run as
+  stale.
+
 - **Roster coverage in `tests/test_index.py`** — rows and sort order, the
   four-column last row with empty aliases, the three sanitized characters, the
   comma split inside an alias, deprecated entities excluded, an empty bundle
