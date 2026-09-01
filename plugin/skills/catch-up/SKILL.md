@@ -21,8 +21,13 @@ gate).
 `catch-up` is **sources-driven**: it does exactly what `elephant.json` →
 `sources` describes, no more. If `sources` is absent or empty, there is nothing
 to ingest — say so and stop (the bundle is still fully usable via manual
-`ingest` / `capture`). A configured connector that is unavailable at run time is
-**skipped with a one-line note**, never a whole-run failure.
+`ingest` / `capture`). **One** configured connector unavailable at run time is
+**skipped with a one-line note** and never fails the run. **Every** configured
+source unavailable is a different thing — that is the environment-failure branch
+in [`procedure.md`](procedure.md) → **Degradation**: hold every cursor, ingest
+nothing, and log it as a failure rather than as an empty window. Don't read the
+first rule as covering the second: reading it that way is what kept the failure
+below invisible for 33 runs.
 
 The full procedure is in [`procedure.md`](procedure.md) — open it and follow it.
 

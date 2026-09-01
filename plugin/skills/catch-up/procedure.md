@@ -9,8 +9,8 @@ Low-confidence items are still written but also **queued** to
 `state/needs-review.md`.
 
 **Run this on the main thread.** Steps 1–2 call the MCP connectors, and a
-subagent does not inherit them — `elephant-worker` is read-only over the bundle
-and must never be handed this routine (`SKILL.md` → *Execution context*). The
+subagent does not inherit them — `elephant-worker` carries no MCP connector at
+all and must never be handed this routine (`SKILL.md` → *Execution context*). The
 only delegation this procedure allows is step 3, which fans out over text that
 is already fetched.
 
