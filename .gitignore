@@ -22,5 +22,11 @@ docs/convergence-analysis-*.md
 .claude/worktrees/
 .claude/settings.local.json
 
+# A bundle script run from this checkout resolves its bundle as plugin/assets/
+# and would write here. The scripts now refuse to run in the checkout, so these
+# should never reappear — the ignore is the second lock, not the first.
+plugin/assets/knowledge/
+plugin/assets/state/
+
 # PR body scratch (untracked)
 .pr-body.md

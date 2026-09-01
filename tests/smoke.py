@@ -383,6 +383,44 @@ def finish(scratch_root):
     return 0 if n_pass == total and total > 0 else 1
 
 
+GUARDED_SCRIPTS = (
+    "backlog.py", "briefing.py", "build-index.py", "decay-loops.py",
+    "ingest-audio.py", "rename-entity.py", "snapshot-drift.py", "state.py",
+    "validate-okf.py",
+)
+
+
+def checkout_guard_checks(scratch_root):
+    """Every bundle script resolves its bundle as the parent of its own
+    directory, which is correct at <bundle>/scripts/ and wrong in the plugin
+    checkout, where it lands on plugin/assets/. It used to create knowledge/ or
+    state/ there, inside the assets the marketplace publishes; four such files
+    were once committed by accident. Assert the refusal, and assert it does NOT
+    fire on a directory that merely happens to be named `assets`."""
+    fake = scratch_root / "fake-plugin"
+    (fake / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (fake / "assets" / "scripts").mkdir(parents=True, exist_ok=True)
+
+    # No .claude-plugin sibling: the same `assets` basename must not trip it.
+    plain = scratch_root / "plain" / "assets" / "scripts"
+    plain.mkdir(parents=True, exist_ok=True)
+
+    for name in GUARDED_SCRIPTS:
+        src = ASSETS / "scripts" / name
+        shutil.copy2(src, fake / "assets" / "scripts" / name)
+        shutil.copy2(src, plain / name)
+
+        r = run([sys.executable, fake / "assets" / "scripts" / name], cwd=fake)
+        refused = r.returncode != 0 and "refusing to run inside" in (r.stdout + r.stderr)
+        record(f"{name} refuses to run in the plugin checkout", refused,
+               f"rc={r.returncode}\n{r.stdout}\n{r.stderr}")
+
+        r2 = run([sys.executable, plain / name, "--help"], cwd=plain.parent.parent)
+        tripped = "refusing to run inside" in (r2.stdout + r2.stderr)
+        record(f"{name} does not trip on a bare assets/ dir", not tripped,
+               f"rc={r2.returncode}\n{r2.stdout}\n{r2.stderr}")
+
+
 def main():
     print("elephant-mem cross-platform smoke test")
     print(f"python:   {sys.version.splitlines()[0]}")
@@ -422,6 +460,8 @@ def main():
     send_email_checks(bundle, scratch_root)
 
     regen_check(bundle, source_rel)
+
+    checkout_guard_checks(scratch_root)
 
     return finish(scratch_root)
 

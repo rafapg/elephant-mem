@@ -119,8 +119,14 @@ install step. Run them all before committing:
 
 ```
 for t in tests/*.py; do python3 "$t" || echo "FAIL $t"; done
-python3 plugin/assets/scripts/validate-okf.py
 ```
+
+Not `validate-okf.py` on its own: a bundle script run from this checkout would
+resolve its bundle as `plugin/assets/`, and every one of them now refuses to
+start there. It used to "pass" against `plugin/assets/knowledge/`, four empty
+derived files a stray run had created and a `git add -A` had committed — a
+vacuous check over an accident. The suites cover the script properly, invoking
+it 25 times against real throwaway bundles.
 
 `.github/workflows/ci.yml` lists each suite as **its own step**, across a
 3-OS × PyYAML-on/off matrix (the frontmatter parser has two paths; both must
