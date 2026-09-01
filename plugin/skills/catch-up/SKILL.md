@@ -26,6 +26,24 @@ to ingest — say so and stop (the bundle is still fully usable via manual
 
 The full procedure is in [`procedure.md`](procedure.md) — open it and follow it.
 
+## Execution context: the main thread
+
+`catch-up` runs **on the thread that invoked it** — it is never handed whole to
+a subagent. Its first two steps call the MCP connectors (Slack / Calendar /
+Drive), and a subagent does not inherit them: `elephant-worker`, the only
+elephant-mem agent in the registry, declares `tools: Read, Grep, Glob, Bash,
+Write` and exists for the read-only launcher modes (`query`, `briefing`,
+`start-day`, `end-day`). Delegated there, this routine reports every configured
+source unavailable and ingests nothing while the connectors are perfectly
+healthy one level up. Measured: 33 runs did exactly that before it was
+diagnosed, indistinguishable in `log.md` from quiet hours.
+
+Nothing about the run argues for delegating it either. A scheduled task already
+starts in the bundle with a context of its own, so there is no main context to
+protect. The one legitimate fan-out is *inside* the procedure — step 3 sends
+**already fetched** text to extraction subagents that call no connector and
+write nothing.
+
 ## Authority
 
 A scheduled-task harness usually injects a preamble that defaults to *"when in

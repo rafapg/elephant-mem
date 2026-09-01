@@ -53,6 +53,34 @@ can say no to a stack trace and yes to an article.
   The gate does not soften the negative triggers. A pasted stack trace is not
   offered and declined — it is not a source.
 
+### Fixed
+
+- **`catch-up` reported every connector unavailable when it was delegated to a
+  subagent** (`skills/catch-up/SKILL.md`, `skills/catch-up/procedure.md`,
+  `agents/elephant-worker.md`). Scheduled runs intermittently ended having swept
+  nothing, logging *"toolset limited to Read/Bash/Write"* while the session that
+  fired them had Slack, Calendar and Drive fully authenticated. The cause was
+  not authentication: the run had been handed to `elephant-worker`, whose
+  definition fixes `tools: Read, Grep, Glob, Bash, Write` and carries no MCP
+  connector at all. That agent exists for the read-only launcher modes, which
+  read the bundle off disk; nothing said `catch-up` was excluded, and it is the
+  only elephant-mem agent in the registry, so a run that decided to isolate
+  itself had exactly one place to go. Measured in one bundle: 33 occurrences
+  before diagnosis.
+
+  Three changes. `catch-up` now states that it runs on the invoking thread and
+  why delegation buys nothing (a scheduled task already has a context of its
+  own), keeping the one legitimate fan-out — step 3, over text already fetched.
+  `elephant-worker` says in its own description and body that it holds no
+  connectors and must refuse a sweep. And the routine no longer accepts the
+  silence: a single connector missing is still skipped with a note, but **all**
+  of them missing is now an environment failure — no cursor advances, nothing is
+  ingested, the log entry names the toolset actually present, and the finding is
+  filed as `catchup-invoked-without-mcp-connectors`. Connectors do not all
+  drop on the same tick; that reading means the run is in the wrong place. The
+  mislabel was the reason this survived 33 runs, since a silent no-op is
+  indistinguishable from a quiet hour in `log.md`.
+
 ## [0.1.0-beta.7] - 2026-08-04
 
 `catch-up` ran unattended but could not finish a thought. Nine consecutive runs
