@@ -8,6 +8,12 @@ review gate; it writes, validates, commits, and leaves a trail in `log.md`.
 Low-confidence items are still written but also **queued** to
 `state/needs-review.md`.
 
+**Run this on the main thread.** Steps 1–2 call the MCP connectors, and a
+subagent does not inherit them — `elephant-worker` carries no MCP connector at
+all and must never be handed this routine (`SKILL.md` → *Execution context*). The
+only delegation this procedure allows is step 3, which fans out over text that
+is already fetched.
+
 ## What drives it: `sources`
 
 Everything below is parameterised by `elephant.json` → `sources`. **Read that
@@ -29,6 +35,26 @@ and stop. Otherwise, iterate exactly the sources it declares:
 **Degradation:** a configured connector that is not available at run time
 (Slack / Calendar / Drive / a BYO MCP) → **skip that source with a one-line
 note and carry on**; never abort the whole run because one connector is absent.
+
+**Every source unavailable at once is not degradation — it is the wrong
+execution context.** Connectors fail one at a time; they do not all drop on the
+same tick. What does produce that reading is running this routine where the MCP
+tools were never attached — inside a subagent (`elephant-worker` carries none),
+or under a harness invoked without them. So when **no** configured source is
+reachable, stop and treat it as an environment failure:
+
+- advance no cursor and ingest nothing — the window is uncovered, not empty;
+- write the `log.md` entry as `environment failure`, naming the toolset you
+  actually have (e.g. *"toolset limited to Read/Bash/Write; Slack, Calendar and
+  Drive absent"*), never as an empty window;
+- `backlog.py add catchup-invoked-without-mcp-connectors --summary … --evidence …`
+  (idempotent — it bumps `seen` if the previous run already filed it);
+- commit **only** that log line and the backlog file, message
+  `catch-up: environment failure (no connectors)`, so the record does not sit
+  dirty in the tree waiting for the next run's `git add -A` to absorb it.
+
+The mislabel is the whole bug: a no-op run reads exactly like a quiet hour, so
+this failed 33 times in a row without anyone noticing.
 
 ## Autonomy envelope (what this run may change on its own)
 
@@ -314,6 +340,10 @@ So: **advance on successful coverage, hold only on failure.**
 that won't load, capture what you can, leave the cursor where it is for the
 unfinished part, and log it — the next run resumes. A window you could not
 finish sweeping is not covered, whatever you managed to ingest from it.
+
+That is the one-source case. Every source down at once is not an outage — see
+**Degradation** above: log it as an environment failure, hold every cursor, and
+file the backlog item.
 
 ## Tail: update check
 

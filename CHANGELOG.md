@@ -4,7 +4,67 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0-beta.8] - 2026-08-13
+## [0.1.0-beta.9] - 2026-09-01
+
+Two modes reported a state that was true of where they were running and false of
+the system, and both messages were reassuring. `update` announced a new release
+and then printed a command that reads the user's local marketplace clone, so the
+CLI answered that they already had the latest — naming a version that was
+current at whatever commit the clone had stopped on. `catch-up`, when a run
+handed itself to a subagent with no MCP connectors, found every configured
+source unavailable and logged an unremarkable empty window. Neither looked like
+a failure from inside, and both survived being investigated, because in each
+case the wrong explanation fit the evidence. This release makes the reports
+name what is actually true.
+
+### Fixed
+
+- **`update` sent users into a loop it could not resolve** (`skills/update/SKILL.md`,
+  `README.md`). The mode checks for a release by fetching the published manifest
+  over the network, then printed `claude plugin update elephant-mem@elephant-mem`
+  as the whole remedy. But that command does not read the repo — it reads the
+  user's **local clone of the marketplace**, a git checkout of `main` under
+  `~/.claude/plugins/marketplaces/`, refreshed only by `claude plugin marketplace
+  update`. With a stale clone the two halves contradict each other: the mode
+  announces a new release and the CLI answers `✓ elephant-mem is already at the
+  latest version (0.1.0-beta.6)`, naming whatever `plugin.json` held at the commit
+  the clone stopped at. Nothing is broken, nothing is actionable, and the obvious
+  reading — that the published catalog lags the repo — is wrong, so the loop
+  survives being investigated.
+
+  The mode now prints `claude plugin marketplace update elephant-mem` first and
+  states why it is not optional, the README documents updating as two commands,
+  and the contradiction is written down as a symptom with a single diagnosis, so
+  the next report resolves in one step instead of an archaeology session. Reported
+  from the field against 0.1.0-beta.6; reproduced locally against 0.1.0-beta.8.
+
+- **`catch-up` reported every connector unavailable when it was delegated to a
+  subagent** (`skills/catch-up/SKILL.md`, `skills/catch-up/procedure.md`,
+  `agents/elephant-worker.md`). Scheduled runs intermittently ended having swept
+  nothing, logging *"toolset limited to Read/Bash/Write"* while the session that
+  fired them had Slack, Calendar and Drive fully authenticated. The cause was
+  not authentication: the run had been handed to `elephant-worker`, whose
+  definition fixes `tools: Read, Grep, Glob, Bash, Write` and carries no MCP
+  connector at all. That agent exists for the launcher modes, which read
+  the bundle off disk and need no connector; nothing said `catch-up` was excluded, and it is the
+  only elephant-mem agent in the registry, so a run that decided to isolate
+  itself had exactly one place to go. Measured in one bundle: 33 occurrences
+  before diagnosis.
+
+  Three changes. `catch-up` now states that it runs on the invoking thread and
+  why delegation buys nothing (a scheduled task already has a context of its
+  own), keeping the one legitimate fan-out — step 3, over text already fetched.
+  `elephant-worker` says in its own description and body that it holds no
+  connectors and must refuse a sweep. And the routine no longer accepts the
+  silence: a single connector missing is still skipped with a note, but **all**
+  of them missing is now an environment failure — no cursor advances, nothing is
+  ingested, the log entry names the toolset actually present, and the finding is
+  filed as `catchup-invoked-without-mcp-connectors`. Connectors do not all
+  drop on the same tick; that reading means the run is in the wrong place. The
+  mislabel was the reason this survived 33 runs, since a silent no-op is
+  indistinguishable from a quiet hour in `log.md`.
+
+## [0.1.0-beta.8] - 2026-08-24
 
 `ingest` is the primary verb of a memory system and Claude could not see it.
 `disable-model-invocation: true` does more than block the Skill tool — it
@@ -52,27 +112,6 @@ can say no to a stack trace and yes to an article.
 
   The gate does not soften the negative triggers. A pasted stack trace is not
   offered and declined — it is not a source.
-
-### Fixed
-
-- **`update` sent users into a loop it could not resolve** (`skills/update/SKILL.md`,
-  `README.md`). The mode checks for a release by fetching the published manifest
-  over the network, then printed `claude plugin update elephant-mem@elephant-mem`
-  as the whole remedy. But that command does not read the repo — it reads the
-  user's **local clone of the marketplace**, a git checkout of `main` under
-  `~/.claude/plugins/marketplaces/`, refreshed only by `claude plugin marketplace
-  update`. With a stale clone the two halves contradict each other: the mode
-  announces a new release and the CLI answers `✓ elephant-mem is already at the
-  latest version (0.1.0-beta.6)`, naming whatever `plugin.json` held at the commit
-  the clone stopped at. Nothing is broken, nothing is actionable, and the obvious
-  reading — that the published catalog lags the repo — is wrong, so the loop
-  survives being investigated.
-
-  The mode now prints `claude plugin marketplace update elephant-mem` first and
-  states why it is not optional, the README documents updating as two commands,
-  and the contradiction is written down as a symptom with a single diagnosis, so
-  the next report resolves in one step instead of an archaeology session. Reported
-  from the field against 0.1.0-beta.6; reproduced locally against 0.1.0-beta.8.
 
 ## [0.1.0-beta.7] - 2026-08-04
 
