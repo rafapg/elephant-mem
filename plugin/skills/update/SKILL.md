@@ -39,11 +39,27 @@ Report in the bundle's `conversation_language`:
 - **Up to date** → say so and stop (unless the user asked to re-sync assets
   anyway — see step 3).
 - **Newer available** → show the version delta, the changelog link
-  (`https://github.com/rafapg/elephant-mem/releases`), and the exact command:
+  (`https://github.com/rafapg/elephant-mem/releases`), and **both** commands, in
+  this order:
   ```
+  claude plugin marketplace update elephant-mem
   claude plugin update elephant-mem@elephant-mem
   ```
-  Do **not** run it yourself — updating the plugin is the user's action.
+  Do **not** run them yourself — updating the plugin is the user's action.
+
+  **The first command is not optional.** The check above reads the published
+  manifest over the network, but `claude plugin update` reads the version from
+  the user's **local clone of the marketplace** (`~/.claude/plugins/marketplaces/
+  elephant-mem`, a git checkout tracking `main`). That clone is only refreshed by
+  `claude plugin marketplace update`. Skip it and the two disagree: this mode
+  reports a new release while the CLI answers `✓ elephant-mem is already at the
+  latest version (<older>)` — and the user is stuck in a loop with nothing
+  broken and nothing to do.
+
+  If the user reports exactly that contradiction, the diagnosis is the stale
+  clone every time, **not** a lag between the repo and a published catalog.
+  Refreshing the marketplace resolves it; the version the CLI names is whatever
+  `plugin.json` held at the commit their clone stopped at.
 
 **Check-only mode** (user asked to "just check" / "check only"): stop here after
 reporting. Do not re-sync assets.

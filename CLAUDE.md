@@ -52,6 +52,16 @@ What follows from that:
   marketplace and for humans. So a forgotten wiki bump is cosmetic, while a
   forgotten `elephant-mem` bump silently withholds the update prompt from every
   installed user.
+- **A release is not reachable the moment it lands on `main`.** `marketplace.json`
+  carries no `version` — it points at `./plugin`, so the version the CLI sees comes
+  from `plugin.json` **at the commit the user's local marketplace clone sits on**
+  (`~/.claude/plugins/marketplaces/elephant-mem`, a checkout tracking `main`).
+  Until they run `claude plugin marketplace update`, `claude plugin update` reports
+  them current at an older version. This is the single explanation for "the CLI says
+  I'm on the latest but the badge says otherwise" — not a lag in a published
+  catalog, which is the wrong answer that keeps getting reached for. Nothing in
+  release procedure fixes it, so `update` and the README both print the refresh
+  command first.
 
 ## Cutting a release
 
