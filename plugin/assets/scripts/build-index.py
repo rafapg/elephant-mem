@@ -12,14 +12,24 @@ through the entity pages that link them. So this script regenerates:
                                       Does NOT list every fact.
   4. entity/source backlinks       — the auto-facts block in each entity/source
                                       file, listing facts that reference it.
-  5. knowledge/manifest.jsonl      — ultra-slim triage surface: one compact JSON
-                                      line per active fact / open loop, carrying
-                                      only the fields needed to DECIDE what to
-                                      read in full (path, type, desc, entities,
-                                      tags, occurred, confidence, status). A
-                                      subagent loads the whole
-                                      manifest cheaply, triages, then deep-reads
-                                      only the chosen files.
+  5. knowledge/manifest.jsonl      — triage surface: one compact JSON line per
+                                      active fact / open loop, carrying only the
+                                      fields needed to DECIDE what to read in
+                                      full (path, type, desc, entities, tags,
+                                      occurred, confidence, status). It is NOT
+                                      cheap to load: it grows with every fact and
+                                      is already megabytes on a mature bundle, so
+                                      a consumer hands it to a subagent and
+                                      pre-filters with `rg` rather than reading
+                                      it whole — see the delegation rule in
+                                      skills/_shared/whole-field-scan.md.
+  6. knowledge/entities/roster.tsv  — the RESOLUTION surface: one self-contained
+                                      tab-separated row per active entity (slug,
+                                      kind, title, aliases), so an extraction run
+                                      resolves names in context instead of grepping
+                                      and opening entity files. The bundle path is
+                                      not stored; it reconstructs as
+                                      /entities/{kind}/{slug}.md.
 
 Never hand-edit those — this script is the single source of truth so they can't
 drift. Pure stdlib (PyYAML optional, with a minimal fallback).
@@ -51,6 +61,9 @@ HUB_MAX_FACTS_DEFAULT = 50
 FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 INLINE_LIST = re.compile(r"^\[(.*)\]$")
 AUTO = re.compile(r"<!-- BEGIN auto-facts -->.*?<!-- END auto-facts -->", re.DOTALL)
+TSV_BREAKING = re.compile(r"[\t\r\n]")
+TSV_BREAKING_ALIAS = re.compile(r"[\t\r\n,]")
+ROSTER_HEADER = "# slug\tkind\ttitle\taliases"
 
 try:
     import yaml  # type: ignore
@@ -223,6 +236,33 @@ def write(rel, lines):
         fh.write("\n".join(lines).rstrip() + "\n")
 
 
+def tsv_field(s):
+    """Collapse the three characters that would break the TSV grid (tab, CR, LF)
+    to a space. A comma survives here: the column is tab-delimited, and law-firm
+    and org names carry real commas."""
+    return TSV_BREAKING.sub(" ", str(s))
+
+
+def tsv_alias(s):
+    """Same, plus the comma — the alias column is itself comma-joined, so a comma
+    inside a single alias would split it into two names."""
+    return TSV_BREAKING_ALIAS.sub(" ", str(s))
+
+
+def write_roster(rel, rows):
+    """Write the roster with its own writer, NOT through write(): that helper ends
+    with `"\\n".join(lines).rstrip() + "\\n"`, and the rstrip() eats the trailing tab
+    of a last row whose aliases are empty — silently emitting three columns instead
+    of four. newline="\\n" keeps the row separator out of the sanitized fields on
+    Windows. Returns the byte size written."""
+    path = os.path.join(BUNDLE, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    data = "".join(r + "\n" for r in rows)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(data)
+    return len(data.encode("utf-8"))
+
+
 def main():
     if YAML_MISSING:
         # Without PyYAML EVERY file goes through the naive parser, so the damage
@@ -275,6 +315,18 @@ def main():
             cat.append(line(c))
         cat.append("")
     write("entities/index.md", cat)
+
+    # 1b. entities/roster.tsv — the resolution surface, from the same active()
+    # list the catalog is built from. One self-contained row per entity, so a
+    # future shard is a matter of dropping lines rather than a reformat.
+    roster_rows = []
+    for c in sorted(active(entities), key=lambda x: (x["kind"], x["title"].lower(), x["path"])):
+        slug = os.path.basename(c["path"])[:-len(".md")]
+        aliases = ",".join(tsv_alias(a) for a in as_list(c["fm"].get("aliases")))
+        roster_rows.append("\t".join((
+            tsv_field(slug), tsv_field(c["kind"]), tsv_field(c["title"]), aliases,
+        )))
+    roster_bytes = write_roster("entities/roster.tsv", [ROSTER_HEADER] + roster_rows)
 
     # 2. tracking/open-loops.md — board of open loops by owner
     board = ["# Open loops", "", "Action items / commitments still open. Derived — do not edit by hand.", ""]
@@ -460,7 +512,8 @@ def main():
 
     print(f"Rebuilt: {len(active(entities))} entities, {len(active(facts))} facts, "
           f"{len(open_loops)} open loops, {len(sources)} sources. "
-          f"manifest.jsonl: {len(manifest)} rows.")
+          f"manifest.jsonl: {len(manifest)} rows. "
+          f"roster.tsv: {len(roster_rows)} rows, {roster_bytes} bytes.")
     return 0
 
 

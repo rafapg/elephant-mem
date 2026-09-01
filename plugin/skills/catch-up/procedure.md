@@ -222,11 +222,48 @@ after.**
    so they aren't retried forever). Transcripts are **primary**; Slack is
    **secondary**.
 
-3. **Extract via subagents (large windows).** When the window holds multiple
+3. **Load the roster, then extract via subagents (large windows).** Before the
+   fan-out, read `knowledge/entities/roster.tsv` once and hold it — one
+   tab-separated row per active entity (`slug`, `kind`, `title`, `aliases`
+   comma-joined, a `#`-prefixed header first), the whole bundle in a single
+   read. It is the resolution surface for step 4.
+
+   **This load has to be written here; it cannot be inherited.** Step 4 reuses
+   the `ingest` loop's core (steps 2–6), and `ingest` loads the roster in *its*
+   step 3 — which this routine reaches from its own step 4, after the fan-out
+   has already happened. Hence the explicit load, ahead of it. The roster goes
+   to the **main agent alone**, once per run; handing it to each subagent would
+   pay ~9k tokens N times over for a decision the consolidator makes anyway.
+
+   **Fan out over already-fetched text.** When the window holds multiple
    meetings or a busy Slack span, fan out **extraction subagents** (one per
    transcript + one per busy source span) that RETURN candidate specs and write
    **nothing**; the main agent consolidates. This keeps disjoint writers off the
    index and avoids races. A near-empty window can be done inline.
+
+   **A candidate spec carries the name as written plus its context, never a
+   slug.** The subagent holds the transcript, the main agent holds the roster,
+   and neither half resolves alone: nicknames are speaker- and
+   context-dependent (`../_shared/entity-resolution.md`) — one meeting's "JJ" is
+   a different person in the next, and the candidate spec is where that context
+   gets thrown away. So every person or thing a candidate names travels with
+   **the name exactly as the source wrote it** and **the context that
+   disambiguates it** — who said it, which meeting or channel, what was being
+   discussed. A subagent carries no roster, so a slug returned from there is
+   invention rather than resolution: it returns none, and it creates no entity.
+   That is ~20 tokens a mention, against the 9k a roster-carrying subagent
+   would cost.
+
+   **A missing or stale roster degrades, it never fails.** Check freshness
+   before the fan-out: `git -C <bundle> status --porcelain` empty means the last
+   mode finished its rebuild-and-commit step, so the roster is current. Not
+   empty, or the file absent, run `python3 scripts/build-index.py` once — it is
+   idempotent and step 7 runs it anyway — then read it. If it is still absent,
+   fall back to `entities/index.md` (the full catalog, far heavier, same names)
+   and say so in this run's `log.md` entry (step 8). Never test freshness by
+   modification time; `../_shared/entity-resolution.md` says why it lies here.
+   This procedure prescribing those commands is not a script's own output
+   suggesting one; the envelope's red rule stands untouched.
 
 4. **Consolidate (main agent only).** Run the `ingest` loop's core (see
    `../ingest/procedure.md`): skip-rules → entity resolution → multi-dimension
@@ -235,6 +272,18 @@ after.**
    facts (append the new source, bump `times_referenced`, corroborate) rather
    than filing a duplicate; **close** open-loops a new source shows done (set
    `status: done`, `closed`, `closed_by`).
+
+   **Entity resolution happens here, against the roster loaded at step 3 — and
+   only here.** The subagents returned names, not slugs; this is where they
+   become entities. The method is `ingest` step 3: `title` first, then
+   `aliases`, then the mention's own context when a short name matches more than
+   one row, with the row reconstructing `/entities/{kind}/{slug}.md` on its own,
+   so a resolution opens no `entities/*.md` file. Two things are this routine's
+   own. A miss creates the stub and carries its `roster miss:` line into **this**
+   run's `log.md` entry (step 8). And a new entity's row is appended to the
+   roster you are holding **before the next candidate is resolved** — the file on
+   disk is only rewritten at step 7, so a window naming the same new person in
+   two transcripts must land on one entity, not two.
 
 5. **Low-confidence → queue.** Any item you must guess on (uncertain
    name/entity, ambiguous tool, weak single-mention signal): write it anyway

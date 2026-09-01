@@ -15,6 +15,10 @@ by covering the specific bug fixes and new behavior below:
      and build-index.py's status-set dispatch changes behavior when
      vocab.json declares a value the hardcoded fallback doesn't know about
      (loop_status "expired").
+  5. entities/roster.tsv: the resolution surface — one four-column row per
+     ACTIVE entity, sorted by kind then title, with the trailing tab of an
+     empty `aliases` column surviving, grid-breaking characters sanitized,
+     the catalog left untouched and validate-okf.py still clean.
 
 Pure stdlib, Python 3.10+, same scaffolding style as tests/smoke.py: every
 check builds its own throwaway bundle under a tempdir and drives the shipped
@@ -25,6 +29,7 @@ Exit code 0 only if every check below passes.
 import datetime
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -84,15 +89,52 @@ MARKER = (
 )
 
 
-def write_entity(bundle, rel, title, kind="person", with_marker=True):
+# A bare-token alias: safe both as an inline-list item (which both frontmatter
+# parsers split on the comma) and as a plain YAML scalar.
+SIMPLE_ALIAS = re.compile(r"^[A-Za-z0-9 ._-]+$")
+
+
+def _yaml_quote(s):
+    """Double-quote a scalar, escaping `\\` and `"` and nothing else — the two
+    escapes build-index.py's BOTH frontmatter paths agree on (PyYAML's, and the
+    naive fallback's unquote()). A `\\t` escape would not: PyYAML reads it as a
+    tab, the fallback leaves it literal."""
+    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _yaml_scalar(s):
+    """A frontmatter value: plain when that is safe, quoted when it is not. Only
+    a literal tab or an inner quote forces quoting (PyYAML rejects a plain scalar
+    holding a tab outright), so every file the other tests write stays
+    byte-identical to what they wrote before these parameters existed."""
+    s = str(s)
+    return _yaml_quote(s) if ("\t" in s or '"' in s) else s
+
+
+def _aliases_lines(aliases):
+    """The `aliases:` frontmatter line(s). Inline (`aliases: [a, b]`) while every
+    alias is a bare token — the shape a real bundle carries, and the only inline
+    shape validate-okf.py's collision check reads — and a quoted block sequence
+    once one alias holds a comma or a tab, since an inline list is comma-split by
+    both parsers and so could never carry a comma INSIDE an alias."""
+    if not aliases:
+        return "aliases: []\n"
+    if all(SIMPLE_ALIAS.match(a) for a in aliases):
+        return "aliases: [" + ", ".join(aliases) + "]\n"
+    return "aliases:\n" + "".join(f"  - {_yaml_quote(a)}\n" for a in aliases)
+
+
+def write_entity(bundle, rel, title, kind="person", with_marker=True,
+                 aliases=None, status=None):
     text = (
         "---\n"
         "type: entity\n"
         f"kind: {kind}\n"
-        f"title: {title}\n"
-        f"description: {title}.\n"
-        "aliases: []\n"
-        "tags: []\n"
+        f"title: {_yaml_scalar(title)}\n"
+        f"description: {_yaml_scalar(str(title) + '.')}\n"
+        + _aliases_lines(aliases)
+        + (f"status: {status}\n" if status else "")
+        + "tags: []\n"
         f"created: {TODAY}\n"
         f"updated: {TODAY}\n"
         f"timestamp: {TODAY}\n"
@@ -173,6 +215,16 @@ def write_source(bundle, rel, desc, source_kind="note"):
     return path
 
 
+def load_script_module(script_name):
+    """Import a hyphenated script (build-index.py, briefing.py) as a module, so
+    its helpers can be unit-tested directly rather than only through a build."""
+    path = ASSETS / "scripts" / script_name
+    spec = importlib.util.spec_from_file_location(script_name.replace(".", "_"), path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def load_module_forcing_no_yaml(script_name):
     """Import a hyphenated script (build-index.py, briefing.py) as a module
     with its `yaml` global forced to None, so parse_fm() exercises the
@@ -180,10 +232,7 @@ def load_module_forcing_no_yaml(script_name):
     in the environment running these tests (it is on this dev machine, but
     NOT in CI — see .github/workflows/ci.yml — and presumably not in most
     bundle environments either, which is how the reported bug went unnoticed)."""
-    path = ASSETS / "scripts" / script_name
-    spec = importlib.util.spec_from_file_location(script_name.replace(".", "_"), path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = load_script_module(script_name)
     mod.yaml = None
     return mod
 
@@ -468,6 +517,178 @@ def test_vocab_dispatch_expired_loop(root):
     )
 
 
+# ---------------------------------------------------------------------------
+# 5. entities/roster.tsv — the resolution surface
+# ---------------------------------------------------------------------------
+
+TAB = "\t"
+
+# The whole file build-index.py must emit for the bundle below, byte for byte.
+# Written out rather than recomputed so the expectation is readable as a grid:
+#   - header first, then kind ("org" < "person") then title, case-INSENSITIVELY
+#     ("acme" sorts before "Zeta, Ltda");
+#   - `Zeta, Ltda` keeps its comma (the column is tab-delimited), `Al,Ali` loses
+#     its own to a space (the alias column is itself comma-joined);
+#   - the tab inside `Bob<TAB>Builder` and inside the alias `B<TAB>B` is a space;
+#   - deprecated `dave` has no row at all;
+#   - the last row (`zoe`) has no aliases and still ends on its fourth column,
+#     i.e. on a trailing tab — the reason the roster does not go through write().
+EXPECTED_ROSTER = (
+    f"# slug{TAB}kind{TAB}title{TAB}aliases\n"
+    f"acme{TAB}org{TAB}acme{TAB}ACME,Acme Inc\n"
+    f"zeta{TAB}org{TAB}Zeta, Ltda{TAB}\n"
+    f"alice{TAB}person{TAB}Alice{TAB}Al Ali\n"
+    f"bob{TAB}person{TAB}Bob Builder{TAB}B B,Bobby\n"
+    f"zoe{TAB}person{TAB}Zoe{TAB}\n"
+)
+
+# What entities/index.md held before the roster existed, for the same bundle:
+# the roster is emitted from the same active() list and must not perturb it.
+EXPECTED_CATALOG = (
+    "# Entities\n"
+    "\n"
+    "Catalog (the navigation spine). Derived — do not edit by hand.\n"
+    "\n"
+    "## org\n"
+    "\n"
+    "- [acme](/entities/org/acme.md) — acme.\n"
+    "- [Zeta, Ltda](/entities/org/zeta.md) — Zeta, Ltda.\n"
+    "\n"
+    "## person\n"
+    "\n"
+    "- [Alice](/entities/person/alice.md) — Alice.\n"
+    f"- [Bob{TAB}Builder](/entities/person/bob.md) — Bob{TAB}Builder.\n"
+    "- [Zoe](/entities/person/zoe.md) — Zoe.\n"
+)
+
+
+def _roster_bundle(root, name):
+    bundle = new_bundle(root, name)
+    # lowercase title on purpose: with a case-SENSITIVE sort "Zeta, Ltda" would
+    # come first, so this row is what pins the .lower() in the sort key.
+    write_entity(bundle, "entities/org/acme.md", "acme", kind="org",
+                 aliases=["ACME", "Acme Inc"])
+    write_entity(bundle, "entities/org/zeta.md", "Zeta, Ltda", kind="org")
+    write_entity(bundle, "entities/person/alice.md", "Alice", aliases=["Al,Ali"])
+    write_entity(bundle, "entities/person/bob.md", f"Bob{TAB}Builder",
+                 aliases=[f"B{TAB}B", "Bobby"])
+    write_entity(bundle, "entities/person/zoe.md", "Zoe")
+    write_entity(bundle, "entities/person/dave.md", "Dave", status="deprecated",
+                 aliases=["Davey"])
+    return bundle
+
+
+def test_roster(root):
+    mod = load_script_module("build-index.py")
+    record(
+        "tsv_field() collapses tab, CR and LF to a space and KEEPS a comma "
+        "(a title's comma is content; the column is tab-delimited)",
+        mod.tsv_field("a\tb\rc\nd,e") == "a b c d,e",
+        repr(mod.tsv_field("a\tb\rc\nd,e")),
+    )
+    record(
+        "tsv_alias() collapses the comma too (the alias column is comma-joined, "
+        "so an inner comma would split one alias into two names)",
+        mod.tsv_alias("a\tb\rc\nd,e") == "a b c d e",
+        repr(mod.tsv_alias("a\tb\rc\nd,e")),
+    )
+
+    bundle = _roster_bundle(root, "roster")
+    result = run_script(bundle, "build-index.py")
+    if not record("build-index.py exits 0 (bundle with a roster)", result.returncode == 0,
+                   result.stdout + result.stderr):
+        return
+
+    roster_path = bundle / "knowledge" / "entities" / "roster.tsv"
+    if not record("entities/roster.tsv was written", roster_path.exists()):
+        return
+    raw = roster_path.read_bytes()
+    text = raw.decode("utf-8")
+
+    record(
+        "roster is byte-identical to the expected grid: header, one row per "
+        "ACTIVE entity, sorted by kind then title case-insensitively, "
+        "sanitized, deprecated excluded",
+        text == EXPECTED_ROSTER,
+        f"got:\n{text!r}\nwant:\n{EXPECTED_ROSTER!r}",
+    )
+
+    lines = text.splitlines()
+    record("header line comes first and names the four columns",
+           lines[:1] == [f"# slug{TAB}kind{TAB}title{TAB}aliases"], lines[:1])
+    record("every row carries exactly four tab-separated columns",
+           all(len(ln.split(TAB)) == 4 for ln in lines), lines)
+    record(
+        "the last row has empty aliases and still ends on its 4th column — the "
+        "trailing tab write()'s rstrip() would have eaten",
+        lines[-1] == f"zoe{TAB}person{TAB}Zoe{TAB}" and text.endswith(f"Zoe{TAB}\n"),
+        repr(lines[-1]),
+    )
+    record("no deprecated entity reaches the roster",
+           "dave" not in text and "Davey" not in text, text)
+
+    by_slug = {ln.split(TAB)[0]: ln.split(TAB) for ln in lines[1:]}
+    record("a comma inside ONE alias becomes a space, keeping it a single alias",
+           by_slug["alice"][3] == "Al Ali", by_slug.get("alice"))
+    record("a comma inside a TITLE survives untouched",
+           by_slug["zeta"][2] == "Zeta, Ltda", by_slug.get("zeta"))
+    record("a tab in a title and in an alias each become a space",
+           by_slug["bob"][2] == "Bob Builder" and by_slug["bob"][3] == "B B,Bobby",
+           by_slug.get("bob"))
+
+    record(
+        "summary line reports the roster's row count and byte size",
+        f"roster.tsv: 5 rows, {len(raw)} bytes." in result.stdout,
+        result.stdout,
+    )
+
+    catalog_path = bundle / "knowledge" / "entities" / "index.md"
+    catalog = catalog_path.read_text(encoding="utf-8")
+    record(
+        "entities/index.md is byte-identical to what it emitted before the "
+        "roster existed — the catalog is untouched by this change",
+        catalog == EXPECTED_CATALOG,
+        f"got:\n{catalog!r}\nwant:\n{EXPECTED_CATALOG!r}",
+    )
+
+    val = run_script(bundle, "validate-okf.py")
+    record(
+        "validate-okf.py exits clean over a bundle holding the roster: "
+        "no error, no warning (the .tsv is invisible to its .md walk)",
+        val.returncode == 0
+        and "WARNING" not in (val.stdout + val.stderr)
+        and "FAILED" not in val.stdout,
+        val.stdout + val.stderr,
+    )
+
+    result2 = run_script(bundle, "build-index.py")
+    record(
+        "rebuild is idempotent: roster and catalog unchanged across reruns",
+        result2.returncode == 0
+        and roster_path.read_bytes() == raw
+        and catalog_path.read_text(encoding="utf-8") == catalog,
+        result2.stdout + result2.stderr,
+    )
+
+    # fresh `init`: no entities at all
+    empty = new_bundle(root, "roster-empty")
+    result3 = run_script(empty, "build-index.py")
+    empty_roster = empty / "knowledge" / "entities" / "roster.tsv"
+    record("build-index.py exits 0 on a bundle with no entities",
+           result3.returncode == 0, result3.stdout + result3.stderr)
+    record(
+        "an empty bundle gets the header line alone — the file exists, nothing errors",
+        empty_roster.exists()
+        and empty_roster.read_text(encoding="utf-8") == f"# slug{TAB}kind{TAB}title{TAB}aliases\n",
+        empty_roster.read_text(encoding="utf-8") if empty_roster.exists() else "<missing>",
+    )
+    record(
+        "summary line reports 0 rows for the empty roster",
+        "roster.tsv: 0 rows, " in result3.stdout,
+        result3.stdout,
+    )
+
+
 def guarded(fn, root):
     try:
         fn(root)
@@ -491,6 +712,7 @@ def main():
         test_hub_sharding,
         test_vocab_warnings,
         test_vocab_dispatch_expired_loop,
+        test_roster,
     ):
         guarded(fn, scratch_root)
 

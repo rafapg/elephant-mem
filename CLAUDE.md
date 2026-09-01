@@ -102,6 +102,13 @@ Do this on a branch, land it through a PR, then tag the **merge commit** — the
 - **Repo docs are in English** (README, CHANGELOG, `docs/`, skill files), even
   when the conversation is in Portuguese. A bundle's own content follows its
   `conversation_language`.
+- **The seed `config.md` reaches new bundles only.** `init` copies
+  `plugin/assets/seed/config.md` into the bundle once, and `update` re-syncs
+  `scripts/` and `templates/` and deliberately never `config.md` — it is the
+  user's file to edit. So every bundle already on disk carries a diverged copy
+  that no edit to the seed will ever reach; correcting a fact there is a manual
+  step for its owner. Fix the seed anyway, and never read a live bundle's
+  `config.md` as if it said what the seed says.
 
 ## Tests
 

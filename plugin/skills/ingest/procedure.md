@@ -51,11 +51,49 @@ It touches entities — also load `../_shared/entity-resolution.md`.
    ephemeral chatter. **Never skip a durable fact just because it concerns a
    team outside the owner's immediate orbit.** Relevance is applied later (at
    retrieval and at decay), never at capture.
-3. **Resolve entities.** For each candidate, identify the entities it concerns.
-   Read `knowledge/index.md` and matching `entities/` files (check `aliases`).
-   Reuse an existing entity if it matches; create a stub from
-   `templates/entity.md` if genuinely new; if the match is ambiguous, pick the
-   best and flag it in the log for `maintain`.
+3. **Resolve entities against the roster.** For each candidate, identify the
+   entities it concerns. Before you resolve the first one, read
+   `knowledge/entities/roster.tsv` once and hold it — one tab-separated row per
+   active entity (`slug`, `kind`, `title`, `aliases` comma-joined, a
+   `#`-prefixed header first), the whole bundle in a single read. That roster is
+   the resolution surface for the rest of the run.
+
+   **Resolve in context.** Match the name as the source wrote it against `title`
+   first, then `aliases`; the row reconstructs the path on its own —
+   `/entities/{kind}/{slug}.md`. Do not grep per candidate name and do not open
+   `entities/*.md` to decide a match; open an entity file only when you need its
+   body (attributes, timeline), never to confirm one. When a short name matches
+   more than one row, the candidate's own context (speaker, meeting or channel,
+   topic) decides it; when that still leaves it genuinely ambiguous, do not
+   guess — see `../_shared/entity-resolution.md`.
+
+   **No row is a miss, and a miss goes on the record.** Create the stub from
+   `templates/entity.md` only after the roster gave you nothing, and carry with
+   it, into this run's `log.md` entry (step 8), one line naming what you
+   actually searched:
+
+   ```text
+   roster miss: "<name as written>" (checked: <the variants you matched>)
+   ```
+
+   That line is what makes the invented-entity failure countable
+   (`grep -c 'roster miss' knowledge/log.md`); a stub filed without it looks
+   exactly like a resolution that worked.
+
+   **Append the new entity's row to the roster you are holding, immediately** —
+   before the next candidate is resolved. The file on disk is only regenerated
+   at step 8, so until then the in-context copy *is* the roster, and two
+   candidates naming the same new person in one run must land on one entity, not
+   two.
+
+   **A missing or stale roster degrades, it never fails.** Check freshness
+   before you read: `git -C <bundle> status --porcelain` empty means the last
+   mode finished its rebuild-and-commit step, so the roster is current. Not
+   empty, or the file absent, run `python3 scripts/build-index.py` once — it is
+   idempotent and step 8 runs it anyway — then read it. If it is still absent,
+   fall back to `entities/index.md` (the full catalog, far heavier, same names)
+   and say so in this run's `log.md` entry. Never test freshness by modification
+   time; `../_shared/entity-resolution.md` says why it lies here.
 4. **Dedup** (5-dimension scoring vs. existing facts — load only likely
    matches): (1) the claim, (2) the why/root, (3) entities + referenced things,
    (4) tags, (5) source overlap.

@@ -4,6 +4,136 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.10] - 2026-09-01
+
+Extraction entered the bundle blind, and the pipeline made inventing an entity
+the cheapest thing to do. `ingest` step 3 said to read `knowledge/index.md` and
+the "matching `entities/` files", but `index.md` is a 4.8 KB router that names
+no entity at all, and the only real catalog, `entities/index.md`, is 128 KB
+because it carries a full description per entity. So a run grepped once per
+candidate name and opened entity files averaging 12.2 KB to read the ~60 bytes
+that actually decide a match — `title` and `aliases`. When a grep missed, and a
+grep misses on every nickname the source spelled its own way, writing a new stub
+was the shortest path available. That is the invented-entity failure, and it was
+the pipeline's doing rather than the model's. This release gives resolution a
+surface of its own: one bounded file, loaded once before extraction starts,
+instead of a search performed during it.
+
+### Added
+
+- **`knowledge/entities/roster.tsv`, the resolution surface**
+  (`assets/scripts/build-index.py`). One self-contained tab-separated row per
+  **active** entity — `slug`, `kind`, `title`, `aliases` comma-joined — behind a
+  single `#`-prefixed header, sorted by kind then title so a rebuild produces a
+  stable diff. The bundle path is not stored: it reconstructs as
+  `/entities/{kind}/{slug}.md`, which held for 639 of 639 entities in the bundle
+  this was measured against. That, plus TSV having no repeated keys, puts a row
+  at 58 bytes and the whole roster at 36 KB (~9k tokens) for all 639 entities,
+  against 128 KB for the catalog and against the ~30k tokens a run already spent
+  opening ten entity files. The same rows as JSONL would have cost ~25 KB more
+  in key overhead alone, on the exact axis the change exists to reduce.
+
+  It is emitted by `build-index.py` immediately after the catalog, from the same
+  `active(entities)` list — no new traversal and no new script — and it writes
+  through its own writer rather than the shared `write()` helper, which ends
+  with `"\n".join(lines).rstrip() + "\n"` and would have eaten the trailing tab
+  of a last row with no aliases, silently emitting three columns instead of
+  four. Tab, CR and LF collapse to a space in any field, and a comma collapses
+  inside a single alias, since that column is itself comma-joined; a comma in a
+  `title` is left alone, because the column is tab-delimited and law-firm names
+  carry real commas. The build summary now reports the roster's row count and
+  byte size next to the existing counts, so growth is visible on every build
+  without anyone going looking — the format is born shardable, and at the
+  observed rate of entity creation the file passes 100 KB in 8 to 18 months.
+
+  `entities/index.md` is untouched and byte-identical: it is what humans and the
+  wiki read, and its descriptions are what the roster deliberately drops.
+
+  A missing roster degrades rather than failing, and so does a **stale** one — a
+  run that died between creating a stub and its rebuild leaves entities the file
+  does not carry, and that is worse than an absent roster, because the resolver
+  then creates a second entity for a name that already exists and files a
+  `roster miss` line that reads as legitimate. Freshness is settled by the
+  bundle's own git tree, which every writing mode leaves clean at its last step:
+  clean means current, dirty means rebuild first. It is deliberately **not**
+  settled by modification time, because `build-index.py` emits the roster before
+  it rewrites the auto-facts blocks, so entity files are routinely newer than a
+  roster that is perfectly current and `find … -newer` would report every run as
+  stale.
+
+- **Roster coverage in `tests/test_index.py`** — rows and sort order, the
+  four-column last row with empty aliases, the three sanitized characters, the
+  comma split inside an alias, deprecated entities excluded, an empty bundle
+  yielding the header alone, the catalog unchanged, and `validate-okf.py` clean
+  over a bundle carrying the roster. It extends the suite that already drives
+  `build-index.py` instead of opening a new one, because a new suite needs its
+  own explicit `- run:` line in `ci.yml` and `test_backlog.py` went a full
+  release unrun for exactly that reason.
+
+### Changed
+
+- **`ingest` resolves against the roster** (`skills/ingest/procedure.md`). Step
+  3 loads it once before the first candidate and holds it for the run, matches
+  `title` then `aliases` in context, and reconstructs the path from the row, so
+  a resolution the roster carries opens no `entities/*.md` file and costs no
+  tool call. An entity file is opened only for its body — attributes, timeline —
+  never to confirm an identity. A new entity's row is appended to the in-context
+  copy **immediately**, before the next candidate is resolved: the file on disk
+  is only regenerated at step 8, and two candidates naming the same new person
+  in one run have to land on one entity.
+
+- **`catch-up` loads the roster before the fan-out, and its subagents stopped
+  returning slugs** (`skills/catch-up/procedure.md`). The load could not be
+  inherited, and that was the easy thing to get wrong: step 4 reuses the
+  `ingest` loop's core (steps 2–6), so a load written only into `ingest` step 3
+  would have arrived *inside* step 4 — after the subagents had already run. It
+  therefore carries its own explicit load, ahead of step 3, to the **main agent
+  alone**, once per run rather than ~9k tokens × N.
+
+  The second thing that did not survive the fan-out was context. Nicknames are
+  speaker- and context-dependent — one meeting's "JJ" is a different person in
+  the next — and the subagent reading the transcript holds that while the
+  candidate spec it returned threw it away. So a candidate spec now carries
+  **the name exactly as the source wrote it plus what disambiguates it** (who
+  said it, which meeting or channel, what was being discussed) and **never a
+  slug**: a subagent carries no roster, so a slug from there is invention rather
+  than resolution. That costs ~20 tokens a mention against 9k per subagent, and
+  it leaves the main agent holding both halves of the decision.
+
+- **The no-invention rule became shared, with one artifact per failure**
+  (`skills/_shared/entity-resolution.md`). Every mode that touches entities now
+  inherits the roster as the resolution surface, in mode-neutral wording. A name
+  the roster does not carry is the only case that creates an entity, and it
+  costs a line in the run's log — `roster miss: "<as written>" (checked:
+  <variants>)`. An ambiguity the mention's context cannot settle is not resolved
+  to the likelier row: it gets the sibling line, `roster ambiguous: "<as
+  written>" → <slug>, <slug>`, a `needs-review` tag and a `state/needs-review.md`
+  entry naming both candidates. Both lines are greppable on purpose, so
+  `grep -c 'roster miss' knowledge/log.md` is the instrumented form of the
+  failure this release set out to reduce, and a stub filed without its line
+  looks exactly like a resolution that worked. A missing roster degrades and
+  never fails: run `build-index.py` once, then read it; if it is still absent,
+  fall back to the catalog and say so in the log.
+
+### Fixed
+
+- **The docstring promised the manifest loads cheaply**
+  (`assets/scripts/build-index.py`). Item 5 described `manifest.jsonl` as an
+  "ultra-slim triage surface" a subagent "loads cheaply". It grows with every
+  fact and is already 3.7 MB on a mature bundle, so the one place a reader looks
+  to size it was telling them the opposite. It now says the surface is **not**
+  cheap to load and points at the delegation rule in
+  `skills/_shared/whole-field-scan.md`: hand it to a subagent, pre-filter with
+  `rg`, never read it whole. Right-sizing the file itself is its own change.
+
+- **The seed layout omitted two of the bundle's derived files**
+  (`assets/seed/config.md`). `manifest.jsonl` had been missing from the `##
+  Layout` block since it shipped, and the roster would have joined it; both are
+  listed now. Note that `init` copies the seed once and `update` deliberately
+  re-syncs only `scripts/` and `templates/`, so every bundle already on disk
+  carries a diverged copy this edit never reaches — correcting it there is a
+  manual step for its owner.
+
 ## [0.1.0-beta.9] - 2026-09-01
 
 Two modes reported a state that was true of where they were running and false of
