@@ -55,6 +55,25 @@ can say no to a stack trace and yes to an article.
 
 ### Fixed
 
+- **`update` sent users into a loop it could not resolve** (`skills/update/SKILL.md`,
+  `README.md`). The mode checks for a release by fetching the published manifest
+  over the network, then printed `claude plugin update elephant-mem@elephant-mem`
+  as the whole remedy. But that command does not read the repo — it reads the
+  user's **local clone of the marketplace**, a git checkout of `main` under
+  `~/.claude/plugins/marketplaces/`, refreshed only by `claude plugin marketplace
+  update`. With a stale clone the two halves contradict each other: the mode
+  announces a new release and the CLI answers `✓ elephant-mem is already at the
+  latest version (0.1.0-beta.6)`, naming whatever `plugin.json` held at the commit
+  the clone stopped at. Nothing is broken, nothing is actionable, and the obvious
+  reading — that the published catalog lags the repo — is wrong, so the loop
+  survives being investigated.
+
+  The mode now prints `claude plugin marketplace update elephant-mem` first and
+  states why it is not optional, the README documents updating as two commands,
+  and the contradiction is written down as a symptom with a single diagnosis, so
+  the next report resolves in one step instead of an archaeology session. Reported
+  from the field against 0.1.0-beta.6; reproduced locally against 0.1.0-beta.8.
+
 - **`catch-up` reported every connector unavailable when it was delegated to a
   subagent** (`skills/catch-up/SKILL.md`, `skills/catch-up/procedure.md`,
   `agents/elephant-worker.md`). Scheduled runs intermittently ended having swept
@@ -62,8 +81,8 @@ can say no to a stack trace and yes to an article.
   fired them had Slack, Calendar and Drive fully authenticated. The cause was
   not authentication: the run had been handed to `elephant-worker`, whose
   definition fixes `tools: Read, Grep, Glob, Bash, Write` and carries no MCP
-  connector at all. That agent exists for the read-only launcher modes, which
-  read the bundle off disk; nothing said `catch-up` was excluded, and it is the
+  connector at all. That agent exists for the launcher modes, which read
+  the bundle off disk and need no connector; nothing said `catch-up` was excluded, and it is the
   only elephant-mem agent in the registry, so a run that decided to isolate
   itself had exactly one place to go. Measured in one bundle: 33 occurrences
   before diagnosis.
