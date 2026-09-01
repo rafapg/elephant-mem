@@ -9,6 +9,10 @@ __pycache__/
 
 docs/convergence-analysis-*.md
 
+# bb records (discovery.md / spec.md) quote the private bundle the same way —
+# real entity titles and nicknames turn up in examples. Same reason as above.
+.bb/
+
 # Claude Code local state. Deliberately NOT a blanket `.claude/`: settings.json
 # and commands/ are worth shipping to contributors, and a blanket ignore would
 # swallow them later without a word.
