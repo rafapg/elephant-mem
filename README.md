@@ -5,7 +5,7 @@
 *an elephant never forgets*
 
 ![license](https://img.shields.io/badge/license-MIT-black?style=flat-square)
-![elephant-mem](https://img.shields.io/badge/elephant--mem-v0.1.0--beta.11-black?style=flat-square)
+![elephant-mem](https://img.shields.io/badge/elephant--mem-v0.1.0--beta.12-black?style=flat-square)
 ![elephant-wiki](https://img.shields.io/badge/elephant--wiki-v0.1.0--beta.4-black?style=flat-square)
 ![claude code](https://img.shields.io/badge/claude--code-plugin-black?style=flat-square)
 ![ci](https://img.shields.io/github/actions/workflow/status/rafapg/elephant-mem/ci.yml?branch=main&style=flat-square&label=ci)

@@ -4,6 +4,43 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.12] - 2026-09-02
+
+0.1.0-beta.11 closed one accident and left an intent open in the same breath: the
+four templates under `assets/templates/` are copied into every new bundle by
+`init` and re-synced by `update`, and nothing validated them. Writing the check
+found the reason a check would have been worth having. `validate-okf.py` compared
+the raw frontmatter line to the controlled vocabulary, so the documenting comment
+the templates carry on each vocabulary field counted as part of the value. A
+bundle built from the four templates warned five times about itself
+(`out-of-vocab kind='concept         # person | org | …'`), and so did every file
+a model wrote keeping that comment, which is what a template is for.
+
+### Added
+
+- **`tests/test_templates.py`**, 11 checks over three layers. That the four
+  templates exist and each declares the `type` its filename claims: a suite that
+  only ran the validator would pass vacuously on a template that was deleted or
+  renamed, which is the exact shape of the pass 0.1.0-beta.11 removed from CI.
+  That a bundle whose `knowledge/` is the four templates passes `validate-okf.py`
+  with exit 0 **and** no warnings, checked separately because a warning leaves
+  the exit code at 0. And that `build-index.py` consumes the same bundle, counts
+  one document of each type, and emits every derived surface, so the fields the
+  templates carry are the ones the code reads and not merely the ones the
+  validator tolerates. Its `- run:` line is in `ci.yml`: a glob does not pick up
+  a new suite, and `test_backlog.py` went a full release unrun for want of that
+  line.
+
+### Fixed
+
+- **`vocab_warnings()` reads a vocabulary value without its trailing YAML
+  comment.** The rule already existed one function above, in `classify_value()`,
+  and is now a shared `strip_comment()` helper: the cut is on `" #"` and never a
+  bare `#`, so `(#9-channel)` stays content. Both readings in the function were
+  wrong, not just the reported one. The second is `type_val`, which decides
+  *which* fields get checked at all, so a `type: fact  # …` misrouted the whole
+  dispatch and the file's vocabulary went unchecked in silence.
+
 ## [0.1.0-beta.11] - 2026-09-02
 
 Every script under `assets/scripts/` resolves its bundle as the parent of its own
