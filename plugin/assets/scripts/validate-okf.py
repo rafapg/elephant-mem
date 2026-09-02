@@ -158,6 +158,12 @@ def yaml_error(block):
         return where + (getattr(exc, "problem", None) or type(exc).__name__)
 
 
+def strip_comment(v):
+    """The value of a plain (unquoted) scalar with its trailing YAML comment
+    removed. The cut is on ` #`, never a bare `#`: `(#9-channel)` is content."""
+    return v.split(" #", 1)[0].rstrip()
+
+
 def _closing_quote(v):
     """Index of the quote that closes the quoted scalar `v` (v[0] is the opening
     quote), or -1 if it is never closed. Honors the escaping rules of each YAML
@@ -221,7 +227,7 @@ def classify_value(raw, freetext):
         return ("unescaped-quote", v[1:-1] if wraps else v)
     # Plain (unquoted) scalar. Only here can a ` #` be a YAML comment.
     if not freetext:
-        v = v.split(" #", 1)[0].rstrip()
+        v = strip_comment(v)
         if not v:
             return None
     if v[0] in RESERVED_LEAD or v in SPACED_LEAD or v[:2] in ("- ", "? "):
@@ -332,8 +338,13 @@ def vocab_warnings(vocab):
         if not m:
             continue
         block = m.group(1)
+        # Every field checked here is a bare vocabulary token, never free text,
+        # so a trailing ` #` is always a comment. Reading the raw line instead
+        # made each of the four templates warn about itself — the whole
+        # `concept         # person | org | …` line was compared to the
+        # vocabulary — and so did every file a model wrote keeping that comment.
         tm = TYPE_KEY.search(block)
-        type_val = tm.group(1).strip() if tm else ""
+        type_val = strip_comment(tm.group(1).strip()) if tm else ""
 
         checks = [("type", TYPE_KEY, vocab.get("type"))]
         if type_val == "entity":
@@ -352,7 +363,7 @@ def vocab_warnings(vocab):
             fm_match = pattern.search(block)
             if not fm_match:
                 continue
-            val = fm_match.group(1).strip()
+            val = strip_comment(fm_match.group(1).strip())
             if val and val not in allowed:
                 counts[(field, val)] = counts.get((field, val), 0) + 1
 

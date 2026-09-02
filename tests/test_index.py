@@ -457,6 +457,19 @@ def test_vocab_warnings(root):
     record("warns about out-of-vocab source-kind='rumor' with a count",
            "out-of-vocab source-kind='rumor' (1 file(s))" in val.stdout, val.stdout)
 
+    # The templates document each vocabulary in a trailing YAML comment, and a
+    # model that keeps it writes the comment into the file. Reading the raw line
+    # made every such value out-of-vocab — the templates warned about themselves.
+    bundle_c = new_bundle(root, "vocab-comment", with_vocab=True)
+    write_entity(bundle_c, "entities/concept/okf.md", "OKF",
+                 kind="concept         # person | org | project | tool | concept")
+    val_c = run_script(bundle_c, "validate-okf.py")
+    record(
+        "a vocabulary value trailed by a YAML comment is read as the token alone, not warned",
+        val_c.returncode == 0 and "out-of-vocab" not in val_c.stdout,
+        val_c.stdout + val_c.stderr,
+    )
+
     bundle2 = new_bundle(root, "vocab-absent", with_vocab=False)
     write_entity(bundle2, "entities/person/bob.md", "Bob", kind="alien")
     write_source(bundle2, f"sources/{MONTH}/s1.md", "weird source", source_kind="rumor")
