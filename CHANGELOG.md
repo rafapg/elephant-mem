@@ -18,18 +18,25 @@ a model wrote keeping that comment, which is what a template is for.
 
 ### Added
 
-- **`tests/test_templates.py`**, 11 checks over three layers. That the four
-  templates exist and each declares the `type` its filename claims: a suite that
-  only ran the validator would pass vacuously on a template that was deleted or
-  renamed, which is the exact shape of the pass 0.1.0-beta.11 removed from CI.
-  That a bundle whose `knowledge/` is the four templates passes `validate-okf.py`
-  with exit 0 **and** no warnings, checked separately because a warning leaves
-  the exit code at 0. And that `build-index.py` consumes the same bundle, counts
-  one document of each type, and emits every derived surface, so the fields the
-  templates carry are the ones the code reads and not merely the ones the
-  validator tolerates. Its `- run:` line is in `ci.yml`: a glob does not pick up
-  a new suite, and `test_backlog.py` went a full release unrun for want of that
-  line.
+- **`tests/test_templates.py`**, 22 checks, mounting the four templates as a
+  real bundle and driving it. That they exist and each declares the `type` its
+  filename claims: a suite that only ran the validator would pass vacuously on a
+  template deleted or renamed, the exact shape of the pass 0.1.0-beta.11 removed
+  from CI. That the bundle passes `validate-okf.py` with exit 0 **and** no
+  warnings, checked separately because a warning leaves the exit code at 0. And
+  that **every** script which reads a bundle runs over it, six of them, each
+  asserting something substantive rather than exit 0 — exit 0 while saying
+  nothing is what all six defects below looked like. A template is a contract
+  with every script that reads a bundle, so the reader list is derived from a
+  glob minus named exemptions carrying their reason, and a twelfth script is red
+  until someone writes a driver or an exemption for it. Restoring any of
+  `decay-loops.py`, `snapshot-drift.py`, `rename-entity.py` or `validate-okf.py`
+  to its pre-fix version turns the suite red; `build-index.py` and `briefing.py`
+  are held by `tests/test_frontmatter.py` instead, which forces the fallback
+  parser in-process and so catches them on both legs of the matrix rather than
+  only where PyYAML is absent. Its `- run:` line is in `ci.yml`: a glob does not
+  pick up a new suite, and `test_backlog.py` went a full release unrun for want
+  of that line.
 
 ### Fixed
 
@@ -65,6 +72,33 @@ a model wrote keeping that comment, which is what a template is for.
   One check that used to be skipped without PyYAML — that an unquoted ` #` is
   silently truncated before repair — now runs on both parsers, because they
   finally damage it identically.
+
+- **The rule now reaches the regex readers, one of which was destroying data.**
+  `strip_comment()` had reached the two `parse_fm()` copies and the validator's
+  `vocab_warnings()`, and stopped there. Six other places read the same
+  frontmatter of the same files with their own regexes and none had been taught
+  it. `rename-entity.py`'s `merge_aliases()` anchored on `^aliases:\s*\[(.*)\]\s*$`,
+  which cannot match past a comment sitting after the `]`, so the existing list
+  read as empty and the merge became a replacement: `rename-entity.py t t2
+  --alias Newname` over the shipped `entity.md` turned `["Tee", "T."]` into
+  `[Newname]`, exit 0 and no warning, on the column `roster.tsv` resolves
+  against. `decay-loops.py`'s `field()` glued the comment, so a
+  template-derived loop never matched `status != "open"` and the whole decay
+  mode was a no-op — and that script has no PyYAML branch at all, so it failed
+  on every machine rather than half the matrix. `snapshot-drift.py` glued
+  `occurred`, and since `newest()` compares those as strings, a fact tended the
+  same day as the snapshot sorted *newer* and produced a false DRIFTED verdict
+  with the comment printed in the report. The validator's own
+  `alias_title_collisions()` was blind the same way through `ALIASES_KEY` and
+  `TITLE_KEY`, which is the check that exists to surface entity conflation.
+  `merge_aliases()` now also fails closed: an `aliases:` line it cannot read as
+  an inline list aborts the write instead of replacing it.
+- **`rename-entity.py` says what already landed when it refuses.** The guard
+  leaves the `aliases:` line untouched, but it reported that as "Nothing was
+  written to that file" — and in the plain rename path the move and the
+  bundle-wide link rewrite run *before* the merge, so both had already landed.
+  The message read as "the command did nothing" and sent the next run at a slug
+  that no longer resolved.
 
 ## [0.1.0-beta.11] - 2026-09-02
 
