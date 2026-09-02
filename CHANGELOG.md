@@ -4,6 +4,57 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.11] - 2026-09-02
+
+Every script under `assets/scripts/` resolves its bundle as the parent of its own
+directory. That is correct where they live once installed, `<bundle>/scripts/`,
+and wrong in this repo, where the parent is `plugin/assets/` — the assets the
+marketplace publishes. Run from a checkout, a script did not fail: it created the
+bundle it expected to find, inside the shipped package. That is not a
+hypothetical. `plugin/assets/knowledge/` held `index.md`, `manifest.jsonl`,
+`entities/index.md` and `tracking/open-loops.md`, four empty derived files a
+stray run had created and a `git add -A` had swept into 0.1.0-beta.2's Windows
+UTF-8 fix. They have shipped in every release since.
+
+Nothing read them and nothing leaked — `init` seeds from `assets/seed/` and
+`update` re-syncs only `scripts/` and `templates/` — but the next run would have
+added `entities/roster.tsv` to the pile, and a script pointed at a real bundle by
+mistake is the same class of accident with content in it.
+
+### Fixed
+
+- **The nine bundle scripts refuse to run inside the plugin checkout**
+  (`backlog`, `briefing`, `build-index`, `decay-loops`, `ingest-audio`,
+  `rename-entity`, `snapshot-drift`, `state`, `validate-okf`). The signal is
+  exact — the resolved root is named `assets` and carries a `.claude-plugin`
+  sibling — so a bundle that merely lives in a directory called `assets` is
+  untouched, which is its own check in `tests/smoke.py`. The guard sits under
+  `__name__ == "__main__"`, because the suites import these modules to exercise
+  their pure functions and only *execution* is the accident. Eighteen new checks
+  cover both halves across all nine.
+- **`plugin/assets/knowledge/` is gone**, and it plus `plugin/assets/state/` are
+  now ignored. The ignore is the second lock: the guard is what stops the files
+  being written at all.
+
+### Changed
+
+- **The `validate-okf.py` step is out of CI.** It ran the script straight from
+  the checkout, where the only bundle it could find was that accidental
+  directory, so "OKF validation passed" was a pass over four empty files. The
+  script is exercised properly by the suites: 10 executions across `smoke`,
+  `test_frontmatter` and `test_index`, each against a real throwaway bundle, plus
+  three in-process imports that reach its functions directly. Its
+  line in `CLAUDE.md`'s pre-commit block goes with it, and the reason is recorded
+  there so it does not get added back.
+
+  The deleted step carried a comment stating an intent it never met — that the
+  shipped seed bundle satisfies the rules it asks users to satisfy. There is no
+  `knowledge/` under `assets/seed/` for `validate-okf.py` to walk, so nothing was
+  ever checked. The comment went with the step rather than being left to assert a
+  check that is not there, and the intent stays open: the four templates under
+  `assets/templates/` ship into every new bundle and nothing validates them,
+  before this change or after it.
+
 ## [0.1.0-beta.10] - 2026-09-01
 
 Extraction entered the bundle blind, and the pipeline made inventing an entity

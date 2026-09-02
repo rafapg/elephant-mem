@@ -41,6 +41,24 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 BUNDLE = Path(__file__).resolve().parent.parent
+
+# A bundle script lives at <bundle>/scripts/, so it resolves its bundle as the
+# parent of its own directory. Run from the plugin checkout that parent is
+# `plugin/assets/`, and the script would create knowledge/ or state/ inside the
+# assets the marketplace publishes. That is not hypothetical: `plugin/assets/
+# knowledge/` once carried four derived files, committed by accident and shipped.
+# Refuse rather than create. Guarded on __main__ so the suites can still
+# import the module to exercise its pure functions.
+if __name__ == "__main__" and BUNDLE.name == "assets" and (
+    BUNDLE.parent / ".claude-plugin"
+).is_dir():
+    sys.exit(
+        "refusing to run inside the elephant-mem plugin checkout.\n"
+        "This script expects to live at <bundle>/scripts/, so it resolves its\n"
+        "bundle as the parent of its own directory. Run from the checkout that\n"
+        "is plugin/assets/, and it would write into the assets the marketplace\n"
+        "publishes. Run it from an installed bundle instead."
+    )
 KNOWLEDGE = BUNDLE / "knowledge"
 LOOPS_DIR = KNOWLEDGE / "tracking" / "loops"
 

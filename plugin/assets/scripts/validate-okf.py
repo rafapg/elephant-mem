@@ -57,6 +57,24 @@ if hasattr(sys.stderr, "reconfigure"):
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUNDLE = os.path.join(ROOT, "knowledge")
+
+# A bundle script lives at <bundle>/scripts/, so it resolves its bundle as the
+# parent of its own directory. Run from the plugin checkout that parent is
+# `plugin/assets/`, and the script would create knowledge/ or state/ inside the
+# assets the marketplace publishes. That is not hypothetical: `plugin/assets/
+# knowledge/` once carried four derived files, committed by accident and shipped.
+# Refuse rather than create. Guarded on __main__ so the suites can still
+# import the module to exercise its pure functions.
+if __name__ == "__main__" and os.path.basename(ROOT) == "assets" and os.path.isdir(
+    os.path.join(os.path.dirname(ROOT), ".claude-plugin")
+):
+    sys.exit(
+        "refusing to run inside the elephant-mem plugin checkout.\n"
+        "This script expects to live at <bundle>/scripts/, so it resolves its\n"
+        "bundle as the parent of its own directory. Run from the checkout that\n"
+        "is plugin/assets/, and it would write into the assets the marketplace\n"
+        "publishes. Run it from an installed bundle instead."
+    )
 RESERVED = {"index.md", "log.md", "open-loops.md"}
 # Regenerated hub-sharding shard (see build-index.py) — has no frontmatter by
 # design, so it's exempt from rule 1 (frontmatter + `type`) but still subject
