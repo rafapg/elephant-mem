@@ -35,3 +35,4 @@ jobs:
       - run: python tests/test_wiki.py
       - run: python tests/test_frontmatter.py
       - run: python tests/test_backlog.py
+      - run: python tests/test_templates.py
