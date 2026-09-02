@@ -35,5 +35,3 @@ jobs:
       - run: python tests/test_wiki.py
       - run: python tests/test_frontmatter.py
       - run: python tests/test_backlog.py
-      # The shipped seed bundle must satisfy the same rules it asks users to
-      # satisfy — including rule 5, which a seed template once violated itself.

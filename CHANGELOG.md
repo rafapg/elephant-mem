@@ -41,10 +41,19 @@ mistake is the same class of accident with content in it.
 - **The `validate-okf.py` step is out of CI.** It ran the script straight from
   the checkout, where the only bundle it could find was that accidental
   directory, so "OKF validation passed" was a pass over four empty files. The
-  script is exercised properly by the suites, 25 invocations across `smoke`,
-  `test_frontmatter` and `test_index`, each against a real throwaway bundle. Its
+  script is exercised properly by the suites: 10 executions across `smoke`,
+  `test_frontmatter` and `test_index`, each against a real throwaway bundle, plus
+  three in-process imports that reach its functions directly. Its
   line in `CLAUDE.md`'s pre-commit block goes with it, and the reason is recorded
   there so it does not get added back.
+
+  The deleted step carried a comment stating an intent it never met — that the
+  shipped seed bundle satisfies the rules it asks users to satisfy. There is no
+  `knowledge/` under `assets/seed/` for `validate-okf.py` to walk, so nothing was
+  ever checked. The comment went with the step rather than being left to assert a
+  check that is not there, and the intent stays open: the four templates under
+  `assets/templates/` ship into every new bundle and nothing validates them,
+  before this change or after it.
 
 ## [0.1.0-beta.10] - 2026-09-01
 

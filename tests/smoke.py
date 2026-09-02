@@ -383,10 +383,18 @@ def finish(scratch_root):
     return 0 if n_pass == total and total > 0 else 1
 
 
-GUARDED_SCRIPTS = (
-    "backlog.py", "briefing.py", "build-index.py", "decay-loops.py",
-    "ingest-audio.py", "rename-entity.py", "snapshot-drift.py", "state.py",
-    "validate-okf.py",
+# Derived, not hand-listed: a hardcoded tuple proves "these nine refuse", never
+# "every script refuses", so the tenth script is unguarded by construction —
+# the same shape as the accident this guard exists to close. Globbing forces a
+# decision on anything new under assets/scripts/. Exempt, with the reason:
+#   run-hooks.py  — falls back to the same parent-of-__file__ root, but takes
+#                   --bundle and creates nothing: append_log() returns early
+#                   when <bundle>/state/ is absent.
+#   send-email.py — resolves no bundle at all; its config comes from a pointer.
+GUARD_EXEMPT = {"run-hooks.py", "send-email.py"}
+GUARDED_SCRIPTS = tuple(
+    p.name for p in sorted((ASSETS / "scripts").glob("*.py"))
+    if p.name not in GUARD_EXEMPT
 )
 
 
