@@ -62,17 +62,106 @@ FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 SHARE_THRESHOLD = 2
 
 
+def _closing_quote(v):
+    """Index of the quote that closes the quoted scalar `v` (v[0] is the opening
+    quote), or -1 if it is never closed. Honors the escaping rules of each YAML
+    quoting style: `\\"` inside double quotes, `''` inside single quotes.
+    Mirrors build-index.py's function of the same name."""
+    q, i, n = v[0], 1, len(v)
+    while i < n:
+        c = v[i]
+        if q == '"' and c == "\\":
+            i += 2
+            continue
+        if c == q:
+            if q == "'" and i + 1 < n and v[i + 1] == "'":
+                i += 2
+                continue
+            return i
+        i += 1
+    return -1
+
+
+def _closing_bracket(v):
+    """Index of the `]` closing the inline list `v` (v[0] is `[`), or -1 if it
+    is never closed. A quoted item is skipped whole, so a `]` or a `#` inside
+    one is content. Mirrors build-index.py's function of the same name."""
+    depth, i, n = 0, 0, len(v)
+    while i < n:
+        c = v[i]
+        if c in "\"'":
+            end = _closing_quote(v[i:])
+            if end < 0:
+                return -1
+            i += end + 1
+            continue
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def strip_comment(v):
+    """The scalar `v` with its trailing YAML comment removed.
+
+    A `#` opens a comment only after a space, and only outside quotes and
+    inline lists: `(#9-channel)` is content, and so are `resource:
+    "slack:#channel"` and `entities: ["a #b"]`. Same rule and same scanning as
+    build-index.py's / validate-okf.py's strip_comment().
+    """
+    v = v.strip()
+    if not v or v[0] == "#":
+        return ""
+    if v[0] in "\"'":
+        end = _closing_quote(v)
+    elif v[0] == "[":
+        end = _closing_bracket(v)
+    else:
+        return v.split(" #", 1)[0].rstrip()
+    if end < 0:
+        return v  # never closed — no outside for a comment to live in
+    rest = v[end + 1:]
+    if not rest.strip() or rest.lstrip().startswith("#"):
+        return v[:end + 1]
+    return (v[:end + 1] + rest.split(" #", 1)[0]).rstrip()
+
+
 def field_list(fm, key):
-    """Extract a `key: [a, b, c]` inline list from a frontmatter block."""
-    m = re.search(rf"^\s*{re.escape(key)}:\s*\[(.*?)\]\s*$", fm, re.MULTILINE)
+    """Extract a `key: [a, b, c]` inline list from a frontmatter block.
+
+    The pattern matches to end of line, not to a `]` that ends it: fact.md
+    ships `entities: []          # bundle-absolute links, e.g. [/entities/…]`,
+    so on any fact that kept the comment the old `\\]\\s*$` either missed the
+    line outright (no signal — `len(shared) >= SHARE_THRESHOLD` could never
+    fire) or, when the comment itself carried a `]`, swallowed the comment into
+    the list and made two unrelated facts "share" its words.
+    """
+    m = re.search(rf"^\s*{re.escape(key)}:\s*(\[.*)$", fm, re.MULTILINE)
     if not m:
         return []
-    return [x.strip() for x in m.group(1).split(",") if x.strip()]
+    v = strip_comment(m.group(1))
+    if not (v.startswith("[") and v.endswith("]")):
+        return []
+    return [x.strip() for x in v[1:-1].split(",") if x.strip()]
 
 
 def field_scalar(fm, key):
+    """A `key: value` scalar, without its trailing YAML comment.
+
+    Kept glued, the comment poisoned both readers of this function: newest()
+    compares these as strings, so `occurred: 2026-06-24  # when the content…`
+    sorted ABOVE a bare `2026-06-24` and a same-day fact reported the snapshot
+    as drifted; and a `status: deprecated  # active | …` no longer equalled
+    `deprecated`, so a retired fact was still counted as a live drift signal.
+    """
     m = re.search(rf"^{re.escape(key)}:\s*(\S.*?)\s*$", fm, re.MULTILINE)
-    return m.group(1).strip() if m else None
+    if not m:
+        return None
+    return strip_comment(m.group(1)) or None
 
 
 def bundle_path(abspath):

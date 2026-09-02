@@ -11,6 +11,8 @@ mentions are referenced across many files. This script, in order:
   3. rewrites every bundle link /entities/<kind>/<old>.md -> .../<new>.md
   4. sets the new `title`/`description` and MERGES --alias values, so future
      ingestion of the OLD spelling resolves back to this entity automatically
+     (if the existing `aliases:` line can't be read as an inline list, step 4
+     is refused rather than overwritten — see merge_aliases)
 
 With --merge, the target slug is expected to ALREADY exist (the old entity is a
 duplicate/phantom of the target). Instead of renaming, the script applies the
@@ -80,23 +82,132 @@ def find_entity(slug):
     return None
 
 
+def _closing_quote(v):
+    """Index of the quote that closes the quoted scalar `v` (v[0] is the opening
+    quote), or -1 if it is never closed. Honors the escaping rules of each YAML
+    quoting style: `\\"` inside double quotes, `''` inside single quotes.
+    Mirrors build-index.py's function of the same name."""
+    q, i, n = v[0], 1, len(v)
+    while i < n:
+        c = v[i]
+        if q == '"' and c == "\\":
+            i += 2
+            continue
+        if c == q:
+            if q == "'" and i + 1 < n and v[i + 1] == "'":
+                i += 2
+                continue
+            return i
+        i += 1
+    return -1
+
+
+def _closing_bracket(v):
+    """Index of the `]` closing the inline list `v` (v[0] is `[`), or -1 if it
+    is never closed. A quoted item is skipped whole, so a `]` or a `#` inside
+    one is content. Mirrors build-index.py's function of the same name."""
+    depth, i, n = 0, 0, len(v)
+    while i < n:
+        c = v[i]
+        if c in "\"'":
+            end = _closing_quote(v[i:])
+            if end < 0:
+                return -1
+            i += end + 1
+            continue
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def split_comment(v):
+    """Split a raw frontmatter value into (value, trailing comment).
+
+    The comment keeps the whitespace that separated it, so `value + comment`
+    reconstructs the line verbatim. A `#` opens a comment only after a space,
+    and only outside quotes and inline lists: `(#9-channel)` is content, and so
+    are `description: "vale #123"` and `aliases: ["a #b"]`. Same rule and same
+    scanning as build-index.py's / validate-okf.py's strip_comment(), which is
+    this function's `[0]` — split rather than strip because this script also
+    WRITES the line back, and a comment silently dropped on rewrite is the same
+    class of loss as one silently read as content.
+    """
+    v = v.rstrip()
+    stripped = v.lstrip()
+    if not stripped or stripped[0] == "#":
+        return "", v
+    if stripped[0] in "\"'":
+        end = _closing_quote(stripped)
+    elif stripped[0] == "[":
+        end = _closing_bracket(stripped)
+    else:
+        head, sep, _tail = v.partition(" #")
+        value = head.rstrip()
+        return value, (v[len(value):] if sep else "")
+    if end < 0:
+        return v, ""  # never closed — no outside for a comment to live in
+    lead = len(v) - len(stripped)
+    cut = lead + end + 1
+    head, sep, _tail = v[cut:].partition(" #")
+    if not sep:
+        return v, ""
+    keep = cut + len(head.rstrip())
+    return v[:keep], v[keep:]
+
+
+class AliasMergeError(Exception):
+    """The `aliases:` line exists but is not an inline list we can read."""
+
+
 def set_line(block, key, value):
-    pat = re.compile(rf"^{re.escape(key)}:.*$", re.MULTILINE)
-    if pat.search(block):
-        return pat.sub(f"{key}: {value}", block, count=1)
+    """Set `key` to `value`, preserving any trailing YAML comment on the line."""
+    pat = re.compile(rf"^{re.escape(key)}:(?P<rest>.*)$", re.MULTILINE)
+    m = pat.search(block)
+    if m:
+        comment = split_comment(m.group("rest"))[1]
+        return block[: m.start()] + f"{key}: {value}{comment}" + block[m.end():]
     return block.rstrip() + f"\n{key}: {value}"
 
 
 def merge_aliases(block, new_aliases):
-    m = re.search(r"^aliases:\s*\[(.*)\]\s*$", block, re.MULTILINE)
-    existing = [x.strip() for x in m.group(1).split(",") if x.strip()] if m else []
+    """Merge `new_aliases` into the entity's inline `aliases:` list.
+
+    Fails closed. The old reader anchored on `\\]\\s*$`, which does not match
+    when the line keeps the trailing comment entity.md ships — so `existing`
+    fell to `[]` and the set_line() below REPLACED the line instead of
+    extending it. Silently: exit 0, no warning, every accumulated alias gone.
+    That column is the roster's resolution surface, and a resolution that fails
+    is what makes an ingestion invent an entity.
+
+    So a line that is present but unreadable (an unterminated `[`, a block
+    sequence) now raises rather than being overwritten. A regex that misses
+    again must stop, not erase.
+    """
+    m = re.search(r"^aliases:(?P<rest>.*)$", block, re.MULTILINE)
+    if m is None:
+        existing = []
+    else:
+        raw = split_comment(m.group("rest"))[0].strip()
+        if not (raw.startswith("[") and raw.endswith("]")):
+            raise AliasMergeError(
+                f"cannot read the existing aliases as an inline list: {m.group(0).strip()!r}"
+            )
+        existing = [x.strip() for x in raw[1:-1].split(",") if x.strip()]
     merged = existing + [a for a in new_aliases if a not in existing]
     return set_line(block, "aliases", "[" + ", ".join(merged) + "]")
 
 
 def update_entity_fields(path, title=None, desc=None, aliases=None):
     """Set canonical title/description and MERGE aliases on an entity file's
-    frontmatter (aliases applied LAST, so they survive any prose --text)."""
+    frontmatter (aliases applied LAST, so they survive any prose --text).
+
+    Nothing is written unless every edit succeeded: an unreadable `aliases:`
+    line aborts the whole update rather than half-applying it."""
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
     m = FM.match(text)
@@ -106,7 +217,7 @@ def update_entity_fields(path, title=None, desc=None, aliases=None):
     if desc:
         block = set_line(block, "description", desc)
     if aliases:
-        block = merge_aliases(block, aliases)
+        block = merge_aliases(block, aliases)  # may raise AliasMergeError
     text = text[: m.start(1)] + block + text[m.end(1):]
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text)
@@ -127,6 +238,18 @@ def rewrite_bundle(pairs, old_link, new_link):
                 fh.write(text)
             touched += 1
     return touched
+
+
+def refuse(path, exc, kept=None):
+    """Report an aborted alias merge and exit non-zero. The entity file is left
+    exactly as it was — the whole point is that we do not overwrite a line we
+    could not read."""
+    print(f"refusing to rewrite aliases on {path}: {exc}", file=sys.stderr)
+    print("Nothing was written to that file. Fix the `aliases:` line by hand "
+          "(an inline list, e.g. `aliases: [A, B]`) and re-run.", file=sys.stderr)
+    if kept:
+        print(f"The source entity was NOT deleted: {kept}", file=sys.stderr)
+    return 1
 
 
 def main():
@@ -166,8 +289,14 @@ def main():
         # MERGE: target already exists — collapse the source into it.
         # (a) prose --text + link rewrite across the bundle
         touched = rewrite_bundle(pairs, old_link, new_link)
-        # (b) merge aliases (and optional title/desc) into the EXISTING target
-        update_entity_fields(dst, title=args.title, desc=args.desc, aliases=args.alias)
+        # (b) merge aliases (and optional title/desc) into the EXISTING target.
+        # If the aliases can't be read, refuse — and in particular do NOT reach
+        # (c) below, which would delete the source entity in exchange for a
+        # merge that never happened.
+        try:
+            update_entity_fields(dst, title=args.title, desc=args.desc, aliases=args.alias)
+        except AliasMergeError as exc:
+            return refuse(dst, exc, kept=src)
         # (c) delete the source entity file
         os.remove(src)
         # (d) summarize
@@ -187,7 +316,10 @@ def main():
     touched = rewrite_bundle(pairs, old_link, new_link)
 
     # 4: set canonical fields on the entity (LAST, so --alias survives any --text)
-    update_entity_fields(dst, title=args.title, desc=args.desc, aliases=args.alias)
+    try:
+        update_entity_fields(dst, title=args.title, desc=args.desc, aliases=args.alias)
+    except AliasMergeError as exc:
+        return refuse(dst, exc)
 
     print(f"renamed {old_link} -> {new_link}; {touched} file(s) updated.")
     print("now run: python3 scripts/build-index.py && python3 scripts/validate-okf.py")

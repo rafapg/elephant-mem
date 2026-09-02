@@ -86,7 +86,10 @@ ABS_LINK = re.compile(r"\]\((/[^)\s#]+)")
 FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 TYPE_KEY = re.compile(r"^type:\s*(\S.*?)\s*$", re.MULTILINE)
 TITLE_KEY = re.compile(r"^title:\s*(\S.*?)\s*$", re.MULTILINE)
-ALIASES_KEY = re.compile(r"^aliases:\s*\[(.*)\]\s*$", re.MULTILINE)
+# The whole inline list AND whatever follows it: the `]` is not the end of the
+# line whenever the entity kept the trailing comment entity.md ships. Where the
+# list actually closes is decided by inline_list(), which honors quoting.
+ALIASES_KEY = re.compile(r"^aliases:\s*(\[.*)$", re.MULTILINE)
 KIND_KEY = re.compile(r"^kind:\s*(\S.*?)\s*$", re.MULTILINE)
 CONFIDENCE_KEY = re.compile(r"^confidence:\s*(\S.*?)\s*$", re.MULTILINE)
 STATUS_KEY = re.compile(r"^status:\s*(\S.*?)\s*$", re.MULTILINE)
@@ -158,12 +161,6 @@ def yaml_error(block):
         return where + (getattr(exc, "problem", None) or type(exc).__name__)
 
 
-def strip_comment(v):
-    """The value of a plain (unquoted) scalar with its trailing YAML comment
-    removed. The cut is on ` #`, never a bare `#`: `(#9-channel)` is content."""
-    return v.split(" #", 1)[0].rstrip()
-
-
 def _closing_quote(v):
     """Index of the quote that closes the quoted scalar `v` (v[0] is the opening
     quote), or -1 if it is never closed. Honors the escaping rules of each YAML
@@ -181,6 +178,72 @@ def _closing_quote(v):
             return i
         i += 1
     return -1
+
+
+def _closing_bracket(v):
+    """Index of the `]` closing the inline list `v` (v[0] is `[`), or -1 if it
+    is never closed. A quoted item is skipped whole, so a `]` or a `#` inside
+    one is content. Mirrors build-index.py's function of the same name."""
+    depth, i, n = 0, 0, len(v)
+    while i < n:
+        c = v[i]
+        if c in "\"'":
+            end = _closing_quote(v[i:])
+            if end < 0:
+                return -1
+            i += end + 1
+            continue
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def strip_comment(v):
+    """The scalar `v` with its trailing YAML comment removed.
+
+    It used to cut on ` #` and nothing else, which is right for the plain
+    bare-token scalar classify_value() hands it (the quotes are peeled there
+    first) but wrong for every caller that reads a raw frontmatter line:
+    `title: "vale #123"` came back as `"vale`, and `aliases: ["a", "b"]  # other
+    names…` never matched its regex at all, so alias_title_collisions() went
+    blind on any entity that kept the comment our own templates ship.
+
+    A `#` opens a comment only after a space, and only outside quotes and
+    inline lists: `(#9-channel)` is content, and so are `resource:
+    "slack:#channel"` and `aliases: ["a #b"]`. Same rule and same scanning as
+    build-index.py's / briefing.py's strip_comment().
+    """
+    v = v.strip()
+    if not v or v[0] == "#":
+        return ""
+    if v[0] in "\"'":
+        end = _closing_quote(v)
+    elif v[0] == "[":
+        end = _closing_bracket(v)
+    else:
+        return v.split(" #", 1)[0].rstrip()
+    if end < 0:
+        return v  # never closed — no outside for a comment to live in
+    rest = v[end + 1:]
+    if not rest.strip() or rest.lstrip().startswith("#"):
+        return v[:end + 1]
+    return (v[:end + 1] + rest.split(" #", 1)[0]).rstrip()
+
+
+def inline_list(raw):
+    """Items of an inline `[a, b]` list read from a raw frontmatter line, or
+    None when `raw` is not one — a block sequence (`aliases:` then `  - a`),
+    an unterminated `[`, or any other shape. None means "not read", so the
+    caller can fall back instead of mistaking it for an empty list."""
+    v = strip_comment(raw)
+    if not (v.startswith("[") and v.endswith("]")):
+        return None
+    return [x.strip() for x in v[1:-1].split(",") if x.strip()]
 
 
 def classify_value(raw, freetext):
@@ -385,13 +448,18 @@ def alias_title_collisions():
         if not m:
             continue
         block = m.group(1)
+        # Both reads go through strip_comment: an entity that kept the trailing
+        # comment its template ships used to collide with nothing at all — the
+        # aliases line stopped matching, and the title carried the comment into
+        # the collision key. This warning exists to expose entity conflation,
+        # so reading it wrong is exactly the failure it is meant to catch.
         names = []
         tm = TITLE_KEY.search(block)
-        if tm and tm.group(1).strip():
-            names.append(tm.group(1).strip())
+        if tm and strip_comment(tm.group(1)):
+            names.append(strip_comment(tm.group(1)))
         am = ALIASES_KEY.search(block)
         if am:
-            names += [x.strip() for x in am.group(1).split(",") if x.strip()]
+            names += inline_list(am.group(1)) or []
         am_block = read_block_list(block, "aliases")
         names += [x for x in am_block if x not in names]
         rel = os.path.relpath(path, BUNDLE)
