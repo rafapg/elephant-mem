@@ -40,6 +40,31 @@ a model wrote keeping that comment, which is what a template is for.
   wrong, not just the reported one. The second is `type_val`, which decides
   *which* fields get checked at all, so a `type: fact  # …` misrouted the whole
   dispatch and the file's vocabulary went unchecked in silence.
+- **The fallback frontmatter parser strips a trailing YAML comment too.** The
+  same defect as the entry above, one layer deeper and with a far wider blast
+  radius. `build-index.py` and `briefing.py` parse frontmatter with PyYAML when
+  it is installed and with a naive parser when it is not, and the naive one read
+  the documenting comment as part of the value. A bundle built from the four
+  shipped templates came out wrong three ways at once: the entity's `kind`
+  reached `roster.tsv` as `concept         # person | org | project | …`,
+  `aliases: []           # other names…` stopped matching the inline-list
+  pattern and became that whole string instead of an empty list, and
+  `status: open          # open | done | dropped` no longer equalled `open`, so
+  the open loop was invisible to the surface that lists them —
+  `1 entities, 1 facts, 0 open loops, 1 sources`. Not a template-only problem:
+  those comments are the documentation the model reads while filling the file,
+  so every user file that keeps one was misread the same way, on any machine
+  without PyYAML — which CLAUDE.md describes as the ordinary local case, and
+  which is half of CI's matrix. Both copies of the parser now mirror
+  `validate-okf.py`'s rule and its quote scanning, so a `#` opens a comment only
+  after a space and only outside quotes and inline lists: `resource:
+  "slack:#canal"` and `(#9-channel)` survive intact, and a greedy cut is the
+  regression the new cases guard against. 41 checks in
+  `tests/test_frontmatter.py` hold it, among them an oracle that parses one
+  block both ways and requires the fallback to agree with PyYAML field by field.
+  One check that used to be skipped without PyYAML — that an unquoted ` #` is
+  silently truncated before repair — now runs on both parsers, because they
+  finally damage it identically.
 
 ## [0.1.0-beta.11] - 2026-09-02
 

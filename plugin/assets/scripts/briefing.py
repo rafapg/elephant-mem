@@ -93,6 +93,67 @@ TRACKED_TYPES = vocab_set("type", ["entity", "fact", "open-loop", "source"]) - {
 FACT_HISTORY_STATUS = vocab_set("fact_status", ["active", "superseded", "deprecated"]) - {"active"}
 
 
+def _closing_quote(v):
+    """Index of the quote closing the quoted scalar `v`, honoring `\\"` inside
+    double quotes and `''` inside single ones, or -1 — see validate-okf.py."""
+    q, i, n = v[0], 1, len(v)
+    while i < n:
+        c = v[i]
+        if q == '"' and c == "\\":
+            i += 2
+            continue
+        if c == q:
+            if q == "'" and i + 1 < n and v[i + 1] == "'":
+                i += 2
+                continue
+            return i
+        i += 1
+    return -1
+
+
+def _closing_bracket(v):
+    """Index of the `]` closing the inline list `v`, or -1. Quoted items are
+    skipped whole, so a `]` or a `#` inside one is content."""
+    depth, i, n = 0, 0, len(v)
+    while i < n:
+        c = v[i]
+        if c in "\"'":
+            end = _closing_quote(v[i:])
+            if end < 0:
+                return -1
+            i += end + 1
+            continue
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def strip_comment(v):
+    """The scalar `v` without its trailing YAML comment. A `#` opens one only
+    after a space and only outside quotes and inline lists — see the fuller
+    rationale on build-index.py's strip_comment()."""
+    v = v.strip()
+    if not v or v[0] == "#":
+        return ""
+    if v[0] in "\"'":
+        end = _closing_quote(v)
+    elif v[0] == "[":
+        end = _closing_bracket(v)
+    else:
+        return v.split(" #", 1)[0].rstrip()
+    if end < 0:
+        return v  # never closed — no outside for a comment to live in
+    rest = v[end + 1:]
+    if not rest.strip() or rest.lstrip().startswith("#"):
+        return v[:end + 1]
+    return (v[:end + 1] + rest.split(" #", 1)[0]).rstrip()
+
+
 def unquote(s):
     """Unwrap a quoted scalar and undo `\\"` / `\\\\` / `''` — see the fuller
     rationale on build-index.py's unquote(). Deliberately not a YAML unescaper."""
@@ -123,7 +184,9 @@ def parse_fm(block, path=None):
                   f"({exc.__class__.__name__}); falling back to the naive parser. "
                   "Run `validate-okf.py` to localize it.", file=sys.stderr)
     # Minimal fallback parser (no PyYAML installed): handles scalars, inline
-    # lists (`key: [a, b]`) and block-sequence lists (`key:` then `  - item`).
+    # lists (`key: [a, b]`) and block-sequence lists (`key:` then `  - item`),
+    # each with its trailing YAML comment stripped (see strip_comment) — the
+    # templates document every field with one.
     # Nested mappings (e.g. `relations:`) are NOT supported and resolve to "".
     d = {}
     lines = block.splitlines()
@@ -134,7 +197,7 @@ def parse_fm(block, path=None):
         if not ln or ln[0] in " \t#" or ":" not in ln:
             continue
         k, _, v = ln.partition(":")
-        k, v = k.strip(), v.strip()
+        k, v = k.strip(), strip_comment(v)
         if not v:
             items = []
             while i < n:
@@ -144,7 +207,7 @@ def parse_fm(block, path=None):
                     i += 1
                     continue
                 if nxt[0] in " \t" and stripped.startswith("- "):
-                    items.append(unquote(stripped[2:].strip()))
+                    items.append(unquote(strip_comment(stripped[2:])))
                     i += 1
                     continue
                 break
