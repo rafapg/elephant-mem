@@ -192,8 +192,16 @@ def strip_comment(v):
 
     A `#` opens a comment only after a space, and only outside quotes and
     inline lists: `(#9-channel)` is content, and so are `resource:
-    "slack:#channel"` and `aliases: ["a #b"]`. The rule and the quote scanning
-    are validate-okf.py's — see its strip_comment() / _closing_quote().
+    "slack:#channel"` and `aliases: ["a #b"]`.
+
+    The *rule* is validate-okf.py's strip_comment(); the *quote scanning* is its
+    _closing_quote(). They are two functions there, not one, and its own
+    strip_comment() is the bare `split(" #")` one-liner with no quote handling at
+    all — it does not need any, because classify_value() has already peeled the
+    quotes before calling it. The quote-aware composition of the two exists only
+    in this copy and briefing.py's. Chasing the pointer to that one-liner and
+    concluding the three are interchangeable is how a later "unify these" lands a
+    greedy cut that eats `resource: "slack:#channel"`.
     """
     v = v.strip()
     if not v or v[0] == "#":

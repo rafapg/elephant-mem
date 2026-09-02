@@ -240,13 +240,18 @@ def rewrite_bundle(pairs, old_link, new_link):
     return touched
 
 
-def refuse(path, exc, kept=None):
-    """Report an aborted alias merge and exit non-zero. The entity file is left
-    exactly as it was — the whole point is that we do not overwrite a line we
-    could not read."""
+def refuse(path, exc, kept=None, landed=None):
+    """Report an aborted alias merge and exit non-zero. The `aliases:` line is
+    left exactly as it was — the whole point is that we do not overwrite a line
+    we could not read. But the steps BEFORE the merge have already landed, so
+    `landed` has to say which: a bare "nothing was written" reads as "the command
+    did nothing", and what follows is a re-run with a slug that no longer
+    resolves, over a bundle whose links were in fact already rewritten."""
     print(f"refusing to rewrite aliases on {path}: {exc}", file=sys.stderr)
-    print("Nothing was written to that file. Fix the `aliases:` line by hand "
+    print("The `aliases:` line was left exactly as it was. Fix it by hand "
           "(an inline list, e.g. `aliases: [A, B]`) and re-run.", file=sys.stderr)
+    if landed:
+        print(landed, file=sys.stderr)
     if kept:
         print(f"The source entity was NOT deleted: {kept}", file=sys.stderr)
     return 1
@@ -296,7 +301,10 @@ def main():
         try:
             update_entity_fields(dst, title=args.title, desc=args.desc, aliases=args.alias)
         except AliasMergeError as exc:
-            return refuse(dst, exc, kept=src)
+            return refuse(
+                dst, exc, kept=src,
+                landed=f"Already landed before this step: {touched} file(s) had their "
+                       f"links rewritten from {old_link} to {new_link}.")
         # (c) delete the source entity file
         os.remove(src)
         # (d) summarize
@@ -319,7 +327,12 @@ def main():
     try:
         update_entity_fields(dst, title=args.title, desc=args.desc, aliases=args.alias)
     except AliasMergeError as exc:
-        return refuse(dst, exc)
+        return refuse(
+            dst, exc,
+            landed=f"Already landed before this step: the rename {old_link} -> {new_link}, "
+                   f"and {touched} file(s) had their links rewritten. Only the alias merge "
+                   f"was skipped: add it to {new_link} by hand. Do not re-run with the old "
+                   f"slug, which no longer resolves.")
 
     print(f"renamed {old_link} -> {new_link}; {touched} file(s) updated.")
     print("now run: python3 scripts/build-index.py && python3 scripts/validate-okf.py")
