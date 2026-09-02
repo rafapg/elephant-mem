@@ -86,10 +86,90 @@ def loop_expiry_days():
     return DEFAULT_EXPIRY_DAYS
 
 
+def _closing_quote(v):
+    """Index of the quote that closes the quoted scalar `v` (v[0] is the opening
+    quote), or -1 if it is never closed. Honors the escaping rules of each YAML
+    quoting style: `\\"` inside double quotes, `''` inside single quotes.
+    Mirrors build-index.py's function of the same name."""
+    q, i, n = v[0], 1, len(v)
+    while i < n:
+        c = v[i]
+        if q == '"' and c == "\\":
+            i += 2
+            continue
+        if c == q:
+            if q == "'" and i + 1 < n and v[i + 1] == "'":
+                i += 2
+                continue
+            return i
+        i += 1
+    return -1
+
+
+def _closing_bracket(v):
+    """Index of the `]` closing the inline list `v` (v[0] is `[`), or -1 if it
+    is never closed. A quoted item is skipped whole, so a `]` or a `#` inside
+    one is content. Mirrors build-index.py's function of the same name."""
+    depth, i, n = 0, 0, len(v)
+    while i < n:
+        c = v[i]
+        if c in "\"'":
+            end = _closing_quote(v[i:])
+            if end < 0:
+                return -1
+            i += end + 1
+            continue
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def strip_comment(v):
+    """The scalar `v` with its trailing YAML comment removed.
+
+    A `#` opens a comment only after a space, and only outside quotes and
+    inline lists: `(#9-channel)` is content, and so are `resource:
+    "slack:#channel"` and `owner: ["a #b"]`. Same rule and same scanning as
+    build-index.py's / validate-okf.py's strip_comment().
+    """
+    v = v.strip()
+    if not v or v[0] == "#":
+        return ""
+    if v[0] in "\"'":
+        end = _closing_quote(v)
+    elif v[0] == "[":
+        end = _closing_bracket(v)
+    else:
+        return v.split(" #", 1)[0].rstrip()
+    if end < 0:
+        return v  # never closed — no outside for a comment to live in
+    rest = v[end + 1:]
+    if not rest.strip() or rest.lstrip().startswith("#"):
+        return v[:end + 1]
+    return (v[:end + 1] + rest.split(" #", 1)[0]).rstrip()
+
+
 def field(block, key):
-    """First `key: value` scalar match in a frontmatter block, or None."""
+    """First `key: value` scalar match in a frontmatter block, without its
+    trailing YAML comment, or None.
+
+    open-loop.md ships `status: open          # open | done | dropped`, so with
+    the comment glued on `field(block, "status") != "open"` was true for every
+    loop written from the template and the whole script was a no-op — on every
+    machine, since it has no PyYAML path to fall back to. Note the asymmetry
+    with the writer below, which matches `^status:\\s*open\\b` and so already
+    tolerated the comment (and keeps it when it rewrites the line to
+    `expired`). It is the reader that was wrong.
+    """
     m = re.search(rf"^{re.escape(key)}:\s*(\S.*?)\s*$", block, re.MULTILINE)
-    return m.group(1) if m else None
+    if not m:
+        return None
+    return strip_comment(m.group(1)) or None
 
 
 def last_activity(block):

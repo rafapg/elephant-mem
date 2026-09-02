@@ -289,6 +289,51 @@ def test_build_index_excludes_expired_after_apply(root):
            manifest_post)
 
 
+# ---------------------------------------------------------------------------
+# 8. a loop written from open-loop.md — the trailing vocabulary comment
+# ---------------------------------------------------------------------------
+# open-loop.md ships `status: open          # open | done | dropped`, and the
+# model that writes a loop from it keeps that comment: it is the documentation.
+# field() read the whole line, so `field(block, "status") != "open"` was true
+# for every template-derived loop and the entire script was a no-op. On every
+# machine — this script has no PyYAML path to fall back to.
+
+STATUS_DOC = "        # open | done | dropped"
+
+
+def test_template_shaped_loop_decays(root):
+    bundle = new_bundle(root, "template-shape")
+    old = write_loop(bundle, "old.md", "Old stale loop",
+                     status="open" + STATUS_DOC,
+                     opened=days_ago(100), created=days_ago(100),
+                     updated=days_ago(100) + "  # bumped by catch-up")
+    done = write_loop(bundle, "done.md", "Long-finished loop",
+                      status="done" + STATUS_DOC,
+                      opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+
+    result = run_script(bundle, "decay-loops.py")
+    record("a loop that kept `# open | done | dropped` is seen as open and "
+           "listed as a candidate (the script used to find none, ever)",
+           "old.md" in result.stdout and "1 candidate(s)" in result.stdout, result.stdout)
+    record("…and its `updated:` is read through its own comment, so the age is "
+           "the date's, not a parse failure's",
+           "100d stale" in result.stdout, result.stdout)
+    record("…while a `done` loop carrying the same comment is still not a "
+           "candidate — the reader did not simply learn to match everything",
+           "done.md" not in result.stdout, result.stdout)
+
+    run_script(bundle, "decay-loops.py", ["--apply"])
+    status_line = next(ln for ln in old.read_text(encoding="utf-8").splitlines()
+                       if ln.startswith("status:"))
+    record("--apply expires it and keeps the vocabulary comment on the line — "
+           "the writer already tolerated the comment; it was the reader that "
+           "was wrong, and this pins the asymmetry",
+           status_line == "status: expired" + STATUS_DOC, repr(status_line))
+    record("…and the `done` loop is still untouched after --apply",
+           "status: done" in done.read_text(encoding="utf-8"),
+           done.read_text(encoding="utf-8"))
+
+
 def guarded(fn, root):
     try:
         fn(root)
@@ -313,6 +358,7 @@ def main():
         test_expired_field_written,
         test_custom_threshold,
         test_build_index_excludes_expired_after_apply,
+        test_template_shaped_loop_decays,
     ):
         guarded(fn, scratch_root)
 

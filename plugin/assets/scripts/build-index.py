@@ -136,6 +136,90 @@ FACT_HISTORY_STATUS = FACT_STATUS - {"active"}
 LOOP_HISTORY_STATUS = LOOP_STATUS - {"open"}
 
 
+def _closing_quote(v):
+    """Index of the quote that closes the quoted scalar `v` (v[0] is the opening
+    quote), or -1 if it is never closed. Honors the escaping rules of each YAML
+    quoting style: `\\"` inside double quotes, `''` inside single quotes.
+    Mirrors validate-okf.py's function of the same name."""
+    q, i, n = v[0], 1, len(v)
+    while i < n:
+        c = v[i]
+        if q == '"' and c == "\\":
+            i += 2
+            continue
+        if c == q:
+            if q == "'" and i + 1 < n and v[i + 1] == "'":
+                i += 2
+                continue
+            return i
+        i += 1
+    return -1
+
+
+def _closing_bracket(v):
+    """Index of the `]` closing the inline list `v` (v[0] is `[`), or -1 if it
+    is never closed. A quoted item is skipped whole, so a `]` or a `#` inside
+    one is content."""
+    depth, i, n = 0, 0, len(v)
+    while i < n:
+        c = v[i]
+        if c in "\"'":
+            end = _closing_quote(v[i:])
+            if end < 0:
+                return -1
+            i += end + 1
+            continue
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def strip_comment(v):
+    """The scalar `v` with its trailing YAML comment removed.
+
+    The fallback parser used to keep the comment, so every field our own
+    templates document inline was read wrong wherever PyYAML is absent:
+    `kind: concept  # person | org | ...` reached the roster with the whole
+    vocabulary glued to it, `aliases: []  # other names...` stopped matching
+    INLINE_LIST and became one long string instead of an empty list, and
+    `status: open  # open | done | dropped` no longer equalled `open`, which
+    hid every open loop from the open-loop surface.
+
+    A `#` opens a comment only after a space, and only outside quotes and
+    inline lists: `(#9-channel)` is content, and so are `resource:
+    "slack:#channel"` and `aliases: ["a #b"]`.
+
+    The *rule* is validate-okf.py's strip_comment(); the *quote scanning* is its
+    _closing_quote(). They are two functions there, not one, and its own
+    strip_comment() is the bare `split(" #")` one-liner with no quote handling at
+    all — it does not need any, because classify_value() has already peeled the
+    quotes before calling it. The quote-aware composition of the two exists only
+    in this copy and briefing.py's. Chasing the pointer to that one-liner and
+    concluding the three are interchangeable is how a later "unify these" lands a
+    greedy cut that eats `resource: "slack:#channel"`.
+    """
+    v = v.strip()
+    if not v or v[0] == "#":
+        return ""
+    if v[0] in "\"'":
+        end = _closing_quote(v)
+    elif v[0] == "[":
+        end = _closing_bracket(v)
+    else:
+        return v.split(" #", 1)[0].rstrip()
+    if end < 0:
+        return v  # never closed — no outside for a comment to live in
+    rest = v[end + 1:]
+    if not rest.strip() or rest.lstrip().startswith("#"):
+        return v[:end + 1]
+    return (v[:end + 1] + rest.split(" #", 1)[0]).rstrip()
+
+
 def unquote(s):
     """Unwrap a quoted scalar the fallback parser read, undoing the two escapes
     that quoting a free-text value actually produces.
@@ -185,6 +269,9 @@ def parse_fm(block, path=None):
     #   key:
     #     - a
     #     - b
+    # A trailing YAML comment is stripped from every value, quotes and inline
+    # lists honored (see strip_comment) — the templates document each field with
+    # one, so keeping it fed the comment into the roster and the surfaces.
     # Nested mappings (e.g. `relations:`) are NOT supported here and resolve to
     # "" — same as before this fallback grew block-sequence support.
     data = {}
@@ -196,7 +283,7 @@ def parse_fm(block, path=None):
         if not line or line[0] in " \t#" or ":" not in line:
             continue
         key, _, val = line.partition(":")
-        key, val = key.strip(), val.strip()
+        key, val = key.strip(), strip_comment(val)
         if not val:
             items = []
             while i < n:
@@ -206,7 +293,7 @@ def parse_fm(block, path=None):
                     i += 1
                     continue
                 if nxt[0] in " \t" and stripped.startswith("- "):
-                    items.append(unquote(stripped[2:].strip()))
+                    items.append(unquote(strip_comment(stripped[2:])))
                     i += 1
                     continue
                 break

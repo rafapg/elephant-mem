@@ -4,6 +4,102 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.12] - 2026-09-02
+
+0.1.0-beta.11 closed one accident and left an intent open in the same breath: the
+four templates under `assets/templates/` are copied into every new bundle by
+`init` and re-synced by `update`, and nothing validated them. Writing the check
+found the reason a check would have been worth having. `validate-okf.py` compared
+the raw frontmatter line to the controlled vocabulary, so the documenting comment
+the templates carry on each vocabulary field counted as part of the value. A
+bundle built from the four templates warned five times about itself
+(`out-of-vocab kind='concept         # person | org | …'`), and so did every file
+a model wrote keeping that comment, which is what a template is for.
+
+### Added
+
+- **`tests/test_templates.py`**, 22 checks, mounting the four templates as a
+  real bundle and driving it. That they exist and each declares the `type` its
+  filename claims: a suite that only ran the validator would pass vacuously on a
+  template deleted or renamed, the exact shape of the pass 0.1.0-beta.11 removed
+  from CI. That the bundle passes `validate-okf.py` with exit 0 **and** no
+  warnings, checked separately because a warning leaves the exit code at 0. And
+  that **every** script which reads a bundle runs over it, six of them, each
+  asserting something substantive rather than exit 0 — exit 0 while saying
+  nothing is what all six defects below looked like. A template is a contract
+  with every script that reads a bundle, so the reader list is derived from a
+  glob minus named exemptions carrying their reason, and a twelfth script is red
+  until someone writes a driver or an exemption for it. Restoring any of
+  `decay-loops.py`, `snapshot-drift.py`, `rename-entity.py` or `validate-okf.py`
+  to its pre-fix version turns the suite red; `build-index.py` and `briefing.py`
+  are held by `tests/test_frontmatter.py` instead, which forces the fallback
+  parser in-process and so catches them on both legs of the matrix rather than
+  only where PyYAML is absent. Its `- run:` line is in `ci.yml`: a glob does not
+  pick up a new suite, and `test_backlog.py` went a full release unrun for want
+  of that line.
+
+### Fixed
+
+- **`vocab_warnings()` reads a vocabulary value without its trailing YAML
+  comment.** The rule already existed one function above, in `classify_value()`,
+  and is now a shared `strip_comment()` helper: the cut is on `" #"` and never a
+  bare `#`, so `(#9-channel)` stays content. Both readings in the function were
+  wrong, not just the reported one. The second is `type_val`, which decides
+  *which* fields get checked at all, so a `type: fact  # …` misrouted the whole
+  dispatch and the file's vocabulary went unchecked in silence.
+- **The fallback frontmatter parser strips a trailing YAML comment too.** The
+  same defect as the entry above, one layer deeper and with a far wider blast
+  radius. `build-index.py` and `briefing.py` parse frontmatter with PyYAML when
+  it is installed and with a naive parser when it is not, and the naive one read
+  the documenting comment as part of the value. A bundle built from the four
+  shipped templates came out wrong three ways at once: the entity's `kind`
+  reached `roster.tsv` as `concept         # person | org | project | …`,
+  `aliases: []           # other names…` stopped matching the inline-list
+  pattern and became that whole string instead of an empty list, and
+  `status: open          # open | done | dropped` no longer equalled `open`, so
+  the open loop was invisible to the surface that lists them —
+  `1 entities, 1 facts, 0 open loops, 1 sources`. Not a template-only problem:
+  those comments are the documentation the model reads while filling the file,
+  so every user file that keeps one was misread the same way, on any machine
+  without PyYAML — which CLAUDE.md describes as the ordinary local case, and
+  which is half of CI's matrix. Both copies of the parser now mirror
+  `validate-okf.py`'s rule and its quote scanning, so a `#` opens a comment only
+  after a space and only outside quotes and inline lists: `resource:
+  "slack:#canal"` and `(#9-channel)` survive intact, and a greedy cut is the
+  regression the new cases guard against. 41 checks in
+  `tests/test_frontmatter.py` hold it, among them an oracle that parses one
+  block both ways and requires the fallback to agree with PyYAML field by field.
+  One check that used to be skipped without PyYAML — that an unquoted ` #` is
+  silently truncated before repair — now runs on both parsers, because they
+  finally damage it identically.
+
+- **The rule now reaches the regex readers, one of which was destroying data.**
+  `strip_comment()` had reached the two `parse_fm()` copies and the validator's
+  `vocab_warnings()`, and stopped there. Six other places read the same
+  frontmatter of the same files with their own regexes and none had been taught
+  it. `rename-entity.py`'s `merge_aliases()` anchored on `^aliases:\s*\[(.*)\]\s*$`,
+  which cannot match past a comment sitting after the `]`, so the existing list
+  read as empty and the merge became a replacement: `rename-entity.py t t2
+  --alias Newname` over the shipped `entity.md` turned `["Tee", "T."]` into
+  `[Newname]`, exit 0 and no warning, on the column `roster.tsv` resolves
+  against. `decay-loops.py`'s `field()` glued the comment, so a
+  template-derived loop never matched `status != "open"` and the whole decay
+  mode was a no-op — and that script has no PyYAML branch at all, so it failed
+  on every machine rather than half the matrix. `snapshot-drift.py` glued
+  `occurred`, and since `newest()` compares those as strings, a fact tended the
+  same day as the snapshot sorted *newer* and produced a false DRIFTED verdict
+  with the comment printed in the report. The validator's own
+  `alias_title_collisions()` was blind the same way through `ALIASES_KEY` and
+  `TITLE_KEY`, which is the check that exists to surface entity conflation.
+  `merge_aliases()` now also fails closed: an `aliases:` line it cannot read as
+  an inline list aborts the write instead of replacing it.
+- **`rename-entity.py` says what already landed when it refuses.** The guard
+  leaves the `aliases:` line untouched, but it reported that as "Nothing was
+  written to that file" — and in the plain rename path the move and the
+  bundle-wide link rewrite run *before* the merge, so both had already landed.
+  The message read as "the command did nothing" and sent the next run at a slug
+  that no longer resolved.
+
 ## [0.1.0-beta.11] - 2026-09-02
 
 Every script under `assets/scripts/` resolves its bundle as the parent of its own
