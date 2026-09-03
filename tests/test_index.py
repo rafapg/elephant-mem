@@ -26,6 +26,11 @@ by covering the specific bug fixes and new behavior below:
      and briefing.py's is_resolved() are hand-copied twins across scripts that
      share no module, so one bundle is rendered through both and the partitions
      compared.
+  4f. The same one-rule property for FACTS: active(), the entity hub's
+     is_history() and briefing.py's is_history() read one normalized value, so
+     `status: Superseded` cannot be current in the manifest and history on the
+     hub in the same build, and a padded `superseded ` is not published as
+     current.
   5. entities/roster.tsv: the resolution surface — one four-column row per
      ACTIVE entity, sorted by kind then title, with the trailing tab of an
      empty `aliases` column surviving, grid-breaking characters sanitized,
@@ -758,11 +763,11 @@ def test_loop_status_one_rule(root):
 
     `close-loops/procedure.md` has the model editing a loop's status by hand, so
     `status: Open` is reachable. Under an exact `== "open"` / `!= "open"` pair
-    that loop fell out of BOTH sides: absent from tracking/open-loops.md, from
+    that loop changed sides: absent from tracking/open-loops.md, from
     manifest.jsonl and from the entity hub, while being published on
     tracking/resolved-loops.md under a header reading "reached done, dropped or
-    expired". The same live commitment, invisible to every retrieval surface and
-    announced as settled."""
+    expired". A live commitment, invisible to every retrieval surface a reader
+    starts from and announced as settled on the one page that did list it."""
     mod = load_script_module("build-index.py")
     record(
         "loop_status() strips, lowercases, and defaults to `open`",
@@ -918,6 +923,135 @@ def test_loop_status_two_scripts_agree(root):
                         "--include-resolved"]).stdout.partition("## Open loops")[2]
         )) == index_open | index_resolved,
         f"build-index open+resolved={sorted(index_open | index_resolved)}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4f. the same one-rule property for FACTS: build-index.py's fact_status(),
+#     read by active() and by the hub's is_history(), and briefing.py's twin
+# ---------------------------------------------------------------------------
+
+FACT_LINK = re.compile(r"(/facts/[a-z0-9-]+\.md)")
+
+
+def test_fact_status_one_rule_two_scripts(root):
+    """The fact lane is partitioned by ONE normalized rule, in three places.
+
+    The loop lane got that property; the fact lane one screen away did not, and
+    its three sites read the raw field three different ways: active() compared
+    it with no normalization at all, build-index.py's hub is_history() lowercased
+    without stripping, briefing.py's is_history() did the same. Measured on the
+    fixture below, that produced two failures in a single build. A fact written
+    `status: Superseded` landed on BOTH sides at once: published in
+    manifest.jsonl as a current fact while the entity hub filed it under
+    "Superseded / deprecated (history)". And a fact written `status: "superseded "`
+    read as active on every surface, i.e. a superseded fact published as current,
+    because the loop rule strips and the fact rule did not.
+
+    So this check renders one bundle through both scripts and compares every
+    surface: the hub's two sections, the manifest, and the briefing with and
+    without --include-superseded. The fixture is statuses that only agree once
+    normalized (`Superseded`, a padded `superseded `) next to the plain value
+    and an active decoy. Over plain lowercase values the implementations
+    cannot disagree and the check would be vacuous."""
+    mod = load_script_module("build-index.py")
+    brief_mod = load_script_module("briefing.py")
+    record(
+        "build-index.py's fact_status() strips and lowercases, and keeps each "
+        "call site's own default for a missing status",
+        mod.fact_status({"fm": {"status": "Superseded"}}) == "superseded"
+        and mod.fact_status({"fm": {"status": "  superseded \t"}}) == "superseded"
+        and mod.fact_status({"fm": {"status": "superseded"}}) == "superseded"
+        and mod.fact_status({"fm": {}}) == "active"
+        and mod.fact_status({"fm": {}}, "") == "",
+        "",
+    )
+    record(
+        "briefing.py's twin normalizes the same field the same way",
+        brief_mod.fact_status({"status": "Superseded"}) == "superseded"
+        and brief_mod.fact_status({"status": "  superseded \t"}) == "superseded"
+        and brief_mod.fact_status({"status": "superseded"}) == "superseded"
+        and brief_mod.fact_status({}) == "active"
+        and brief_mod.fact_status({}, "") == "",
+        "",
+    )
+
+    bundle = new_bundle(root, "fact-status-one-rule")
+    write_entity(bundle, "entities/person/alice.md", "Alice")
+    ents = "entities: [/entities/person/alice.md]\n"
+    write_fact(bundle, "facts/shouted-superseded.md", "Shouted superseded", ents,
+               status="Superseded")
+    # Quoted, so the value survives as `superseded ` through BOTH frontmatter
+    # paths: a plain YAML scalar would have its trailing space eaten before
+    # either parser is even asked (see 4d).
+    write_fact(bundle, "facts/padded-superseded.md", "Padded superseded", ents,
+               status='"superseded "')
+    write_fact(bundle, "facts/plain-superseded.md", "Plain superseded", ents,
+               status="superseded")
+    write_fact(bundle, "facts/current.md", "Current fact", ents, status="active")
+
+    built = run_script(bundle, "build-index.py")
+    if not record("build-index.py exits 0 over off-case fact statuses",
+                  built.returncode == 0, built.stdout + built.stderr):
+        return
+    record("…and counts the active decoy as the only current fact",
+           "1 entities, 1 facts" in built.stdout, built.stdout)
+
+    superseded = {"/facts/shouted-superseded.md",
+                  "/facts/padded-superseded.md",
+                  "/facts/plain-superseded.md"}
+    decoy = {"/facts/current.md"}
+
+    alice = (bundle / "knowledge" / "entities" / "person" / "alice.md").read_text(encoding="utf-8")
+    current_block, sep, history_block = alice.partition("### Superseded / deprecated (history)")
+    hub_current = set(FACT_LINK.findall(current_block))
+    hub_history = set(FACT_LINK.findall(history_block)) if sep else set()
+    record(
+        "the entity hub files all three superseded facts as history, and only "
+        "the active one as current",
+        hub_current == decoy and hub_history == superseded,
+        f"current={sorted(hub_current)} history={sorted(hub_history)}\n{alice}",
+    )
+    record(
+        "…and no fact is on both sides of the hub's partition, nor off both",
+        not (hub_current & hub_history) and (hub_current | hub_history) == superseded | decoy,
+        f"current={sorted(hub_current)} history={sorted(hub_history)}",
+    )
+
+    manifest = (bundle / "knowledge" / "manifest.jsonl").read_text(encoding="utf-8")
+    manifest_facts = {json.loads(ln)["path"] for ln in manifest.splitlines()
+                      if ln.strip() and json.loads(ln)["type"] == "fact"}
+    record(
+        "manifest.jsonl carries the hub's current facts and nothing the hub "
+        "filed as history, so active() and is_history() read one rule",
+        manifest_facts == hub_current,
+        f"manifest={sorted(manifest_facts)} hub current={sorted(hub_current)}\n{manifest}",
+    )
+
+    brief = run_script(bundle, "briefing.py", ["--kind", "fact", "--days", "3650"])
+    if not record("briefing.py --kind fact exits 0 over the same bundle",
+                  brief.returncode == 0, brief.stdout + brief.stderr):
+        return
+    brief_visible = set(FACT_LINK.findall(brief.stdout))
+    hidden = re.search(r"\((\d+) superseded/deprecated fact\(s\) hidden", brief.stdout)
+    brief_hidden = int(hidden.group(1)) if hidden else 0
+    record(
+        "briefing.py hides exactly the facts the manifest left out, so the two "
+        "scripts draw the same partition over the same bundle",
+        brief_visible == manifest_facts and brief_hidden == len(superseded),
+        f"visible={sorted(brief_visible)} hidden={brief_hidden}\n{brief.stdout}",
+    )
+
+    shown = run_script(bundle, "briefing.py",
+                       ["--kind", "fact", "--days", "3650", "--include-superseded"])
+    marked_history = {ln.rsplit(" ", 1)[-1] for ln in shown.stdout.splitlines()
+                      if ln.startswith("- ") and "[history]" in ln}
+    record(
+        "…and --include-superseded brings them back marked [history], the "
+        "active decoy left unmarked",
+        set(FACT_LINK.findall(shown.stdout)) == superseded | decoy
+        and marked_history == superseded,
+        f"marked={sorted(marked_history)}\n{shown.stdout}",
     )
 
 
@@ -1122,6 +1256,7 @@ def main():
         test_resolved_overflow,
         test_loop_status_one_rule,
         test_loop_status_two_scripts_agree,
+        test_fact_status_one_rule_two_scripts,
         test_roster,
     ):
         guarded(fn, scratch_root)

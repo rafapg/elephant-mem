@@ -258,6 +258,15 @@ def load():
     return items
 
 
+def fact_status(fm, default="active"):
+    """A fact's status, normalized: stripped and lowercased. The twin of
+    build-index.py's fact_status(), restated here because these scripts share no
+    module: change one and change the other, or a `status: Superseded` fact is
+    history on the hub and current in the briefing. `default` is what each call
+    site reads for a missing status, kept per site the same way it is there."""
+    return str(fm.get("status", default)).strip().lower()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--since")
@@ -296,7 +305,9 @@ def main():
         return to_date(fm.get("occurred")) or to_date(fm.get("opened")) or to_date(fm.get("created"))
 
     def is_history(fm):
-        return str(fm.get("status", "")).lower() in FACT_HISTORY_STATUS
+        # The empty default is this site's own, from before fact_status()
+        # existed: a file with no status at all is not history here.
+        return fact_status(fm, "") in FACT_HISTORY_STATUS
 
     def is_resolved(fm):
         """A loop that has left the open lane. Tested as `status != open` rather

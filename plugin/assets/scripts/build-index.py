@@ -389,15 +389,38 @@ def resolution_sentence(body):
     return ""
 
 
+def fact_status(c, default="active"):
+    """A fact's status, normalized: stripped and lowercased. THE single rule that
+    partitions the fact lane, exactly as loop_status() partitions the loop one:
+    the catalog, the roster, the manifest and a hub's `## Related facts` on one
+    side, the hub's `### Superseded / deprecated (history)` on the other, so the
+    two sides can never disagree about one file. It reads entities too, which
+    carry the same vocabulary and leave the catalog and the roster once
+    deprecated.
+
+    Without it the three sites read the raw field three different ways, and a
+    single build both published `status: Superseded` in the manifest as current
+    while filing it under history on the hub, and published `status:
+    "superseded "` as current on every surface, since the loop rule strips and
+    this one did not. `default` is the value each site already read for a
+    missing status (`active` where the status doubles as a display field, `""`
+    on the hub); it stays per site because changing it is a separate decision.
+    Matches the normalization briefing.py's is_history() applies to the same
+    field."""
+    return str(c["fm"].get("status", default)).strip().lower()
+
+
 def loop_status(c):
     """A loop's status, normalized: stripped and lowercased, defaulting to
     `open`. THE single rule that partitions the loop lane — the board, the
     manifest and the entity hubs on one side, `tracking/resolved-loops.md` on
     the other — so the two sides can never disagree about one file. A loop
     carrying `status: Open` (close-loops/procedure.md has the model editing that
-    field by hand) used to fall out of BOTH: absent from the board, the manifest
-    and the hub, and published on the resolved page as settled. Matches the
-    normalization briefing.py's is_resolved() applies to the same field."""
+    field by hand) used to change sides rather than fall out of the partition: a
+    commitment its author means as open was silently filed as settled, absent
+    from the board, the manifest and the hub, and published on the resolved page
+    as resolved. Matches the normalization briefing.py's is_resolved() applies
+    to the same field."""
     return str(c["fm"].get("status", "open")).strip().lower()
 
 
@@ -492,7 +515,7 @@ def main():
         })
 
     def active(items):
-        return [c for c in items if c["status"] not in FACT_HISTORY_STATUS]
+        return [c for c in items if fact_status(c) not in FACT_HISTORY_STATUS]
 
     entities = [c for c in concepts if c["type"] == "entity"]
     facts = [c for c in concepts if c["type"] == "fact"]
@@ -630,8 +653,9 @@ def main():
         return str(c["fm"].get("occurred") or c["fm"].get("opened") or c["updated"] or "")
 
     def is_history(r):
-        st = str(r["fm"].get("status", "")).lower()
-        return st in HISTORY_STATUS
+        # The empty default is this site's own, from before fact_status()
+        # existed: on a hub a file with no status at all is not history.
+        return fact_status(r, "") in HISTORY_STATUS
 
     def marked(r):
         """Prefix ⚠️ for low-confidence or needs-review active items; leave others clean."""
