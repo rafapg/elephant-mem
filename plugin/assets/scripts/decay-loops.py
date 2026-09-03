@@ -3,9 +3,11 @@
 
 Philosophy (owner-approved): loops are noise that, when it keeps recurring,
 earns the right to stay alive — otherwise it should decay automatically.
-Re-mention already resets the clock elsewhere: `catch-up`/`capture` bump a
-loop's `updated:` field whenever a later source corroborates it. This script
-only reads that signal; it never itself decides what counts as re-mention.
+Re-mention resets the clock elsewhere, in exactly one place: `catch-up` step 4
+bumps a loop's `updated:` field to a source's date when that source re-raises
+the loop without showing it done. (`capture` opens loops and never returns to
+one; it writes no bump.) This script only reads the signal; it never itself
+decides what counts as re-mention.
 
 Candidate = `status: open` AND its last-activity date (the max of
 `updated`/`opened`/`created`, whichever are present, and the date

@@ -273,6 +273,19 @@ after.**
    than filing a duplicate; **close** open-loops a new source shows done (set
    `status: done`, `closed`, `closed_by`).
 
+   **A source that re-raises an open loop without closing it bumps it.** Set
+   that loop's `updated:` to **the source's own date** — not today's, so a
+   window that arrives late cannot make an old mention look fresh — and change
+   nothing else on the file. If the source carries no date, leave `updated:`
+   alone. This is the whole of what keeps a live commitment alive: `decay`
+   reads `updated` as the loop's last activity and expires anything quiet past
+   `decay.loop_expiry_days`, and this rule is its only writer on the ingest
+   side (the other is `decay`'s own review-gate snooze). Re-raised means the
+   source actually speaks to the commitment — chasing it, re-scheduling it,
+   reporting it still blocked. A source that merely names the same people or
+   the same project is not a re-mention, and bumping on that would keep every
+   loop of an active project alive forever.
+
    **Entity resolution happens here, against the roster loaded at step 3 — and
    only here.** The subagents returned names, not slugs; this is where they
    become entities. The method is `ingest` step 3: `title` first, then

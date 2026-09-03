@@ -271,7 +271,7 @@ yesterday is as examined as one examined an hour ago.
       → H8, E15, E16, E17, E18 · dep: 5, 7 · verify: `tests/test_decay.py`
 - [x] **9. The resolved surface**: `tracking/resolved-loops.md` with its cap and overflow shard; the new filename added to the derived-name set each of the four scripts keeps its own copy of (`build-index.py`, `validate-okf.py`, `briefing.py`, `rename-entity.py`); a status filter on `briefing.py`'s loop list; resolved loops dropped from entity pages; `expired` in the hardcoded status default and `vocab.json` copied by `init`
       → H9, E20, E21, E25 · dep: — · verify: `tests/test_index.py`
-- [ ] **10. Correct the false claims about loops**: delete the re-mention claim from three places and add the real bump rule to `catch-up` step 4; correct `decay/procedure.md:45-47`, which says the rebuild re-files expired loops into entity history and today does not
+- [x] **10. Correct the false claims about loops**: delete the re-mention claim from three places and add the real bump rule to `catch-up` step 4; correct `decay/procedure.md:45-47`, which says the rebuild re-files expired loops into entity history and today does not
       → E19, E21 · dep: — · verify: reading
 - [ ] **11. Release plumbing**: the bundle-scripts line in `docs/architecture.md`, CHANGELOG, `plugin.json` bump, README badge, and `close-loops` in the README's explicit-modes table alongside `decay`, which that table omits today. Each new suite registered its own CI step in the task that created it
       → E24 · dep: 1-10 · verify: every suite green

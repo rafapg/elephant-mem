@@ -82,9 +82,12 @@ it.
 4. **Rebuild + validate.** `python3 scripts/build-index.py` then
    `python3 scripts/validate-okf.py` — both must pass. This is what actually
    removes the newly-expired loops from `tracking/open-loops.md`, the
-   router's open-loop count in `knowledge/index.md`, and `manifest.jsonl`,
-   and re-files them into the history section of any entity backlinks that
-   reference them. On failure: do NOT commit; log the error and stop (the
+   router's open-loop count in `knowledge/index.md`, `manifest.jsonl`, and the
+   entity hubs that backlink them. A resolved loop is **not** re-filed as a
+   history line on those hubs — it leaves them outright, and its one listing
+   from then on is `tracking/resolved-loops.md`, which this rebuild writes
+   newest first with each loop's date, its outcome and the first sentence of
+   its `**Resolution:**`. On failure: do NOT commit; log the error and stop (the
    next run retries — loop files are already written, so nothing is lost,
    only the derived surfaces need a successful rebuild).
 
@@ -108,9 +111,11 @@ also works — the two modes share the same script and procedure, they only
 differ at the review gate in step 2.
 
 **Re-mention resets the clock — this is the whole mechanism.** A loop's
-`updated:` field is bumped by `catch-up`/`capture` whenever a later source
-corroborates the same commitment, or by this procedure's own review-gate
-snooze (step 2). `decay` only ever *reads* `updated` (falling back to
+`updated:` field has exactly two writers: `catch-up` step 4, which bumps it to
+a source's date when that source re-raises an open loop without showing it
+done, and this procedure's own review-gate snooze (step 2). `capture` is not
+one of them — it opens loops and never returns to one, so nothing it does
+resets a clock. `decay` only ever *reads* `updated` (falling back to
 `opened`/`created`) — it never decides on its own that a loop was
 re-mentioned. Use is the other half of that clock: a loop the owner's own
 answers keep citing carries a recent date in `state/recall.json`, and the scan

@@ -7,8 +7,8 @@ description: >
   activity, and no citation recorded in `state/recall.json`) for longer than
   elephant.json -> decay.loop_expiry_days (default 45 days), and only once
   `close-loops` has examined it and found nothing — every expiry writes a
-  `**Resolution:**` paragraph saying so. Re-mention
-  already resets the clock via `updated`. A deliberate
+  `**Resolution:**` paragraph saying so. Re-mention resets the clock via
+  `updated`, which `catch-up` bumps. A deliberate
   operation with side effects (edits loop files, rebuilds, validates,
   commits). Invoke only when the user explicitly asks (elephant-mem:decay),
   or unattended with --yes from a schedule.
@@ -17,10 +17,11 @@ description: >
 # elephant-mem:decay
 
 "Loops are noise that, when it keeps recurring, earns the right to stay
-alive — otherwise it decays automatically." Re-mention (a later `catch-up` /
-`capture` corroborating the same commitment) already bumps a loop's
-`updated:` field, which resets the clock; this skill only reads that signal,
-it never writes it.
+alive — otherwise it decays automatically." Re-mention resets that clock, and
+it has one writer: `catch-up` step 4 bumps a loop's `updated:` field to a
+source's date when that source re-raises the loop without closing it.
+`capture` does not — it opens loops and never revisits one. This skill only
+reads the signal, it never writes it.
 
 **Load `../_shared/core.md` first** (the shared contract; it resolves
 `<bundle>` and `elephant.json`).
