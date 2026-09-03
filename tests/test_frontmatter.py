@@ -725,7 +725,7 @@ def test_regex_readers_share_the_rule(root):
     the comment too because that script also writes the line back."""
     copies = [(name, load_script(name).strip_comment) for name in
               ("build-index.py", "briefing.py", "validate-okf.py",
-               "snapshot-drift.py", "decay-loops.py")]
+               "snapshot-drift.py", "decay-loops.py", "close-loops.py")]
     renamer = load_script("rename-entity.py")
     copies.append(("rename-entity.py", lambda v: renamer.split_comment(v)[0].strip()))
 

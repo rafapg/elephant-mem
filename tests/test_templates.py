@@ -374,6 +374,41 @@ def drive_decay_loops(root):
     )
 
 
+@drives("close-loops.py")
+def drive_close_loops(root):
+    bundle = mount_bundle(root, "close-loops")
+    loop = bundle / "knowledge" / "tracking" / "loops" / "t.md"
+
+    out = run_script(bundle, "close-loops.py")
+    text = out.stdout
+    record(
+        "close-loops.py queues the template loop, so `status: open  # open | "
+        "done | dropped` was read as `open` — a reader that keeps the comment "
+        "queues nothing at all and says so at exit 0",
+        out.returncode == 0
+        and "1 loop(s) queued of 1 open" in text
+        and "/tracking/loops/t.md" in text,
+        f"exit={out.returncode}\n{text}\n{out.stderr}",
+    )
+    record(
+        "…and reads the criterion out of the template's `**Closure signal:**` "
+        "section, the field no code opened before this build",
+        "criterion (**Closure signal:**): <what a future source would have to "
+        "show" in text,
+        text,
+    )
+    # The fact template ships `entities: []  # bundle-absolute links, e.g.
+    # [/entities/person/foo.md]` — a reader that swallows that comment files the
+    # placeholder as an entity BOTH documents share, and the template fact then
+    # ranks as evidence for the template loop.
+    record(
+        "…and proposes no evidence: the template fact's `entities: []` is read "
+        "as empty, comment and its bracketed example both",
+        "evidence: none" in text,
+        text,
+    )
+
+
 @drives("snapshot-drift.py")
 def drive_snapshot_drift(root):
     bundle = mount_bundle(root, "snapshot-drift")

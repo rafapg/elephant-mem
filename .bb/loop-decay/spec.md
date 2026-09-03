@@ -263,7 +263,7 @@ yesterday is as examined as one examined an hour ago.
       → H7 · dep: 2 · verify: reading
 - [x] **5. Recall as a fourth activity date**: `last_activity()` in `decay-loops.py`
       → H7, E2, E7, E8 · dep: 2 · verify: `tests/test_decay.py`
-- [ ] **6. `close-loops.py`**: the two-band bounded queue and the ranked capped evidence proposal, plus the suite's own `- run:` line in `.github/workflows/ci.yml`
+- [x] **6. `close-loops.py`**: the two-band bounded queue and the ranked capped evidence proposal, plus the suite's own `- run:` line in `.github/workflows/ci.yml`
       → H2, H3, E9, E10, E11, E12, E22, E24 · dep: — · verify: `tests/test_close_loops.py`
 - [ ] **7. The `close-loops` skill**: `SKILL.md` + `procedure.md`, daily unattended, the judgment, the `**Resolution:**` and `closed`/`closed_by` write, the sweep record, one commit
       → H4, H5, H6, E13, E14, E23 · dep: 6 · verify: `tests/test_close_loops.py`
