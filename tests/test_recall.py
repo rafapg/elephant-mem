@@ -387,13 +387,16 @@ def roll_and_score(tmp):
 
 
 def gitignore_guarantee(tmp):
-    """(h) — `roll` guarantees the leaking files are ignored, on any bundle.
+    """(h) — both writers guarantee the leaking files are ignored, on any bundle.
 
     The seed carries the rules, but `init` copies the seed `.gitignore` once and
-    `update` re-syncs only `scripts/` and `templates/`, while `decay`,
-    `catch-up` and `close-loops` all end in `git add -A`. So on every bundle
-    that predates a rule the roll-up — which people were looked up and when —
-    would be committed. `roll` is the writer of that file, so `roll` closes it.
+    `update` re-syncs only `scripts/` and `templates/`, while `catch-up`,
+    `decay`, `close-loops` and `ingest` all end in `git add -A`. So on every
+    bundle that predates a rule the files naming which people were looked up and
+    when would be committed. The rules used to be `roll`'s business alone, which
+    is one step too late for the file `log` writes: `catch-up` commits before it
+    rolls, and two of the four routines never roll at all. Each writer protects
+    the file it creates, `log` loudly enough to be seen only when it refuses.
     """
     rules = ("state/consumption-log.jsonl", "state/recall.json",
              "state/last-update-check.json")
@@ -409,24 +412,65 @@ def gitignore_guarantee(tmp):
         ".cache/\n"
     )
     (older / ".gitignore").write_text(before, encoding="utf-8")
-    run(older, ["log", "--mode", "query", "--item", "/facts/x.md",
-                "--at", f"{REF}T09:00:00-03:00"])
-    result = check(older, ["roll", "--at", f"{REF}T10:00:00-03:00"],
-                   "roll on a bundle whose .gitignore predates the rules exits 0")
+    logged = check(older, ["log", "--mode", "query", "--item", "/facts/x.md",
+                           "--at", f"{REF}T09:00:00-03:00"],
+                   "log on a bundle whose .gitignore predates the rules exits 0")
     text = (older / ".gitignore").read_text(encoding="utf-8")
     lines = [ln.strip() for ln in text.splitlines()]
     record(
-        "…and the missing rules are there before the record it just wrote is",
-        all(rule in lines for rule in rules)
-        and (older / "state" / "recall.json").exists(),
-        text,
+        "…having written the missing rules before the line it appended: the "
+        "writer of the file that leaks is the one that protects it",
+        all(rule in lines for rule in rules) and len(log_lines(older)) == 1,
+        text + repr(log_lines(older)),
     )
-    record("…said once on stdout, so an unattended run leaves a trace of it",
-           "state/recall.json" in result.stdout, result.stdout)
+    record("…and saying nothing at all about it, because a read's transcript "
+           "is the answer's and not the bookkeeping's",
+           silent(logged),
+           f"stdout:\n{logged.stdout}\nstderr:\n{logged.stderr}")
     record("…appending only: every line the bundle already had is still there",
            text.startswith(before), text)
     record("…and the rule it already carried was not duplicated",
            lines.count("state/consumption-log.jsonl") == 1, text)
+    frozen_by_log = text
+    run(older, ["log", "--mode", "briefing", "--item", "/facts/x.md",
+                "--at", f"{REF}T09:30:00-03:00"])
+    record(
+        "…and the read after it appends its line and nothing to .gitignore: "
+        "the rules are written once per bundle, not once per citation",
+        (older / ".gitignore").read_text(encoding="utf-8") == frozen_by_log
+        and len(log_lines(older)) == 2,
+        (older / ".gitignore").read_text(encoding="utf-8"),
+    )
+    result = check(older, ["roll", "--at", f"{REF}T10:00:00-03:00"],
+                   "the roll behind that read exits 0")
+    record("…and finds nothing left to add, so it says nothing either",
+           (older / ".gitignore").read_text(encoding="utf-8") == frozen_by_log
+           and ".gitignore" not in result.stdout,
+           result.stdout)
+
+    # the same bundle shape, but with the line written straight to disk so no
+    # read ever ran: `roll` is the first writer here, and it is the loud one.
+    # An unattended catch-up leaves a trace that the bundle was missing a rule.
+    quiet_seed = make_bundle(tmp, name="older-seed-unread")
+    (quiet_seed / "knowledge" / "facts" / "x.md").write_text("x\n", encoding="utf-8")
+    (quiet_seed / ".gitignore").write_text(before, encoding="utf-8")
+    (quiet_seed / "state" / "consumption-log.jsonl").write_text(
+        json.dumps({"ts": f"{REF}T09:00:00-03:00", "mode": "query",
+                    "entities": [], "facts_cited": ["/facts/x.md"]}) + "\n",
+        encoding="utf-8",
+    )
+    result = check(quiet_seed, ["roll", "--at", f"{REF}T10:00:00-03:00"],
+                   "roll on a bundle whose .gitignore predates the rules exits 0")
+    quiet_lines = [ln.strip() for ln in
+                   (quiet_seed / ".gitignore").read_text(encoding="utf-8").splitlines()]
+    record(
+        "…and the missing rules are there before the record it just wrote is",
+        all(rule in quiet_lines for rule in rules)
+        and (quiet_seed / "state" / "recall.json").exists(),
+        repr(quiet_lines),
+    )
+    record("…said once on stdout, so an unattended run leaves a trace of it",
+           "state/recall.json" in result.stdout, result.stdout)
 
     frozen = text
     result = check(older, ["roll", "--at", f"{REF}T11:00:00-03:00"],
@@ -475,8 +519,30 @@ def gitignore_guarantee(tmp):
     obstructed = make_bundle(tmp, name="gitignore-obstructed")
     (obstructed / "knowledge" / "facts" / "x.md").write_text("x\n", encoding="utf-8")
     (obstructed / ".gitignore").mkdir()
-    run(obstructed, ["log", "--mode", "query", "--item", "/facts/x.md",
-                     "--at", f"{REF}T09:00:00-03:00"])
+    logged = check(obstructed, ["log", "--mode", "query", "--item", "/facts/x.md",
+                                "--at", f"{REF}T09:00:00-03:00"],
+                   "log still exits 0 when the ignore rules cannot be confirmed")
+    record(
+        "…and writes no line at all: the citation is the payload, and one "
+        "written unignored is taken by the next `git add -A` for good",
+        log_lines(obstructed) == [], repr(log_lines(obstructed)),
+    )
+    record(
+        "…saying why on stderr and nothing on stdout, so the answer is untouched "
+        "while the skip is not silent",
+        "skipped one consumption line" in logged.stderr
+        and ".gitignore" in logged.stderr
+        and logged.stdout.strip() == "",
+        f"stdout:\n{logged.stdout}\nstderr:\n{logged.stderr}",
+    )
+
+    # a line that predates the obstruction, written straight to disk: `roll`
+    # refuses over it and must leave it exactly where it is.
+    (obstructed / "state" / "consumption-log.jsonl").write_text(
+        json.dumps({"ts": f"{REF}T09:00:00-03:00", "mode": "query",
+                    "entities": [], "facts_cited": ["/facts/x.md"]}) + "\n",
+        encoding="utf-8",
+    )
     result = check(obstructed, ["roll", "--at", f"{REF}T10:00:00-03:00"],
                    "roll refuses when the ignore rules cannot be confirmed",
                    expect_zero=False)
@@ -487,6 +553,31 @@ def gitignore_guarantee(tmp):
            result.stderr)
     record("…while the log it could not roll is left exactly as it was",
            len(log_lines(obstructed)) == 1, repr(log_lines(obstructed)))
+
+    # The other half of the same promise. Above, `.gitignore` is a directory,
+    # so `read_text` never runs and it is the append that fails; here it is a
+    # file of bytes that are not UTF-8, which is the read failing. That branch
+    # was unguarded: mutated to answer `(True, [])`, all eleven suites stayed
+    # green while an unreadable .gitignore read as an ignoring one.
+    unreadable = make_bundle(tmp, name="gitignore-unreadable")
+    (unreadable / "knowledge" / "facts" / "x.md").write_text("x\n", encoding="utf-8")
+    raw = b"# elephant-mem bundle\nstate/phone/\n\xff\xfe not utf-8\n"
+    (unreadable / ".gitignore").write_bytes(raw)
+    logged = check(unreadable, ["log", "--mode", "query", "--item", "/facts/x.md",
+                                "--at", f"{REF}T09:00:00-03:00"],
+                   "log exits 0 when .gitignore cannot be read either")
+    record("…and writes no line: a .gitignore that cannot be read is not a "
+           ".gitignore that ignores",
+           log_lines(unreadable) == [] and "skipped one consumption line" in logged.stderr,
+           repr(log_lines(unreadable)) + logged.stderr)
+    result = check(unreadable, ["roll", "--at", f"{REF}T10:00:00-03:00"],
+                   "roll refuses over an unreadable .gitignore too",
+                   expect_zero=False)
+    record("…writing no record, and leaving the file it could not read "
+           "byte-identical rather than appending to what it cannot parse",
+           not (unreadable / "state" / "recall.json").exists()
+           and (unreadable / ".gitignore").read_bytes() == raw,
+           repr((unreadable / ".gitignore").read_bytes()))
 
 
 def partial_write_and_report(tmp):
@@ -585,6 +676,112 @@ def partial_write_and_report(tmp):
     )
     record("…and still derives no record from it",
            not (junk / "state" / "recall.json").exists())
+
+
+def rotated_log_silence(tmp):
+    """(j) — the one branch where a dropped citation is reported by nothing.
+
+    `resume_index()` locates this run's territory by finding the row the
+    watermark names. A rotated, truncated or hand-edited log carries no such
+    row, and the tail of that function then calls the whole log already seen:
+    nothing is folded, and a line below the watermark is dropped without a word.
+    The alternative, treating the whole log as this run's news, would accuse
+    every line of a rotated log on every roll forever, so the silence is the
+    trade the docstring picks. It is pinned here because it is the branch this
+    lane set out to remove and deliberately kept: a change to that tail should
+    fail a named check rather than quietly start reporting, or quietly stop.
+    """
+    bundle = make_bundle(tmp, name="rotated")
+    (bundle / "knowledge" / "facts" / "real.md").write_text("x\n", encoding="utf-8")
+    for stamp in ("2026-09-01T10:00:00-03:00", "2026-09-01T11:00:00-03:00"):
+        run(bundle, ["log", "--mode", "query", "--item", "/facts/real.md",
+                     "--at", stamp])
+    check(bundle, ["roll", "--at", f"{REF}T12:00:00-03:00"],
+          "roll folds a two-line log")
+    watermark = recall_json(bundle)["rolled_through"]
+    record("…and watermarks the newest line it folded",
+           watermark == "2026-09-01T11:00:00-03:00", repr(watermark))
+
+    # rotation: the log is replaced wholesale, so no row carries the watermark
+    # any more, and the single line in it is backdated below it.
+    (bundle / "state" / "consumption-log.jsonl").write_text(
+        json.dumps({"ts": "2026-08-15T09:00:00-03:00", "mode": "query",
+                    "entities": [], "facts_cited": ["/facts/real.md"]}) + "\n",
+        encoding="utf-8",
+    )
+    result = check(bundle, ["roll", "--at", f"{REF}T13:00:00-03:00"],
+                   "a roll over a rotated log exits 0")
+    record("…folding nothing, because a log with no watermark row in it reads "
+           "as one this run has already seen whole",
+           "0 line(s) folded" in result.stdout, result.stdout)
+    record(
+        "…and reporting no drop at all: the run accuses no row it cannot place, "
+        "which is where a lost citation is still silent",
+        "dropped" not in result.stdout and "dropped" not in result.stderr,
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+    record("…and the citation really is lost, not merely unreported",
+           recall_json(bundle)["items"]["/facts/real.md"]["total"] == 2,
+           json.dumps(recall_json(bundle)["items"]))
+
+
+def not_committed(tmp):
+    """(k) — the leak measured where it happened: what `git add -A` takes.
+
+    Every check above is about a `.gitignore` line. This one is about the
+    consequence, and it is the check whose absence let the leak ship: a bundle
+    predating the rules, one read, then the commit its routine makes. `roll`
+    guaranteed the rules, but `catch-up` commits *before* it rolls
+    (`_shared/core.md` fixes that order) and `close-loops` and `ingest` never
+    roll, so the log went into the commit and no later rule untracked it. On a
+    bundle with a remote, that is a per-query record of which people were looked
+    up and which facts were cited, pushed.
+    """
+    git = shutil.which("git")
+    labels = (
+        "a read's citation is not in the commit that follows it",
+        "…and the line was still written, so the protection cost no recall",
+        "…nor is the roll-up, in the commit after the roll",
+    )
+    if not git:
+        for label in labels:
+            record(label, False,
+                   "git not found on PATH — expected on every GitHub-hosted runner")
+        return
+
+    bundle = make_bundle(tmp, name="git-bundle")
+    (bundle / "knowledge" / "facts" / "salary-2026.md").write_text(
+        "x\n", encoding="utf-8")
+    # the seed as it was before the rules existed: this is the bundle already
+    # on disk that `update` will never reach, since it re-syncs scripts/ and
+    # templates/ and deliberately not .gitignore.
+    (bundle / ".gitignore").write_text(
+        "# elephant-mem bundle\n.cache/\n", encoding="utf-8")
+
+    def git_run(*args):
+        return subprocess.run(
+            [git, "-c", "user.email=ci@example.com", "-c", "user.name=Elephant CI",
+             "-c", "commit.gpgsign=false"] + list(args),
+            cwd=str(bundle), capture_output=True, text=True, encoding="utf-8",
+        )
+
+    git_run("init", "-q")
+    git_run("add", "-A")
+    git_run("commit", "-qm", "initial")
+
+    run(bundle, ["log", "--mode", "query", "--item", "/facts/salary-2026.md",
+                 "--entity", "alice-smith", "--at", f"{REF}T09:00:00-03:00"])
+    git_run("add", "-A")
+    git_run("commit", "-qm", "catch-up: sweep")
+    tracked = git_run("ls-files", "state/").stdout.split()
+    record(labels[0], tracked == [], repr(tracked))
+    record(labels[1], len(log_lines(bundle)) == 1, repr(log_lines(bundle)))
+
+    run(bundle, ["roll", "--at", f"{REF}T10:00:00-03:00"])
+    git_run("add", "-A")
+    git_run("commit", "-qm", "catch-up: roll")
+    tracked = git_run("ls-files", "state/").stdout.split()
+    record(labels[2], tracked == [], repr(tracked))
 
 
 def guarded(fn, tmp):
@@ -800,7 +997,8 @@ def main():
         (bundle / "state" / "recall.json").unlink()
 
         for group in (roll_and_score, gitignore_guarantee,
-                      partial_write_and_report):
+                      partial_write_and_report, rotated_log_silence,
+                      not_committed):
             guarded(group, tmp)
 
         # --- (a) E1: state/ absent, then unwritable -------------------------

@@ -20,8 +20,11 @@ after the answer is decided, so it can never change or delay an answer:
 
 **Failure is silent by contract.** A missing or unwritable `state/` makes `log`
 exit 0 and write nothing. A read must never fail, and must never emit anything
-of its own into the transcript, because of telemetry. `show` is how you check
-whether the record is being written.
+of its own into the transcript, because of telemetry. The single exception is
+the line `log` prints when it skips a citation it could not protect, described
+below: it names nothing that was read, and the alternative is writing the
+citation into a file git is about to take. `show` is how you check whether the
+record is being written.
 
 **`state/recall.json` is disposable.** It is derived from a git-ignored log and
 rebuildable only forward, so every consumer must behave correctly when it is
@@ -31,13 +34,16 @@ warning once on stderr for the malformed case rather than raising.
 **The record is sensitive.** It holds which entities were consulted and when,
 which exposes query patterns over named people. Nothing here prints a path or a
 slug except `show`, which is the operator deliberately asking to see it, and
-`roll` guarantees the two files are git-ignored before it writes either of them
-— see `ensure_gitignore()`. A roll that cannot confirm those rules, because
-`.gitignore` is unreadable or unwritable, refuses the whole run and exits
-non-zero rather than writing an unprotected record. The seed `.gitignore` carries
-the rules, but `init` copies that file once and `update` re-syncs only `scripts/` and `templates/`, so
-every bundle created before the rules existed would otherwise commit the roll-up
-on the next `decay` or `catch-up` run, both of which end in `git add -A`.
+each of the two writers confirms the two files are git-ignored *before* it
+writes: `log` before it appends a line, `roll` before it saves the record. See
+`ensure_gitignore()`. On a bundle where the rules cannot be confirmed, because
+`.gitignore` is unreadable or unwritable, `roll` refuses the whole run and exits
+non-zero, while `log` skips the line, says so on stderr and still exits 0: a
+read may never be failed by its own bookkeeping. The seed `.gitignore` carries
+the rules, but `init` copies that file once and `update` re-syncs only
+`scripts/` and `templates/`, so every bundle created before the rules existed
+would otherwise commit the log and the roll-up on the next `catch-up`, `decay`,
+`close-loops` or `ingest`, all four of which end in `git add -A`.
 
 **The pyramid is bought for read cost, not for disk.** 26 lines over 33 days is
 26.8 KB; even twenty times that coverage is half a megabyte a year. What does
@@ -60,15 +66,19 @@ Subcommands:
                             append one line to the consumption log. Silent,
                             always exits 0. `--item` and `--entity` repeat;
                             both are normalized and de-duplicated here so the
-                            caller never has to.
+                            caller never has to. Confirms the bundle ignores
+                            the log before appending to it, and skips the line
+                            rather than write one the next commit would take.
   roll                      fold the consumption log into `state/recall.json`'s
                             pyramid, coarsen the aged buckets, and drop items
                             whose file is gone. Idempotent: `rolled_through`
                             watermarks the last line folded, so re-running over
                             the same log adds nothing. The only writer of
-                            `state/recall.json`, and the one place that keeps
-                            the bundle's `.gitignore` covering `state/`'s
-                            machine-local files.
+                            `state/recall.json`, and the loud one of the two
+                            writers that keep the bundle's `.gitignore`
+                            covering `state/`'s machine-local files: it says
+                            what it added, and refuses to write anything at all
+                            when it cannot confirm the rules.
   score [--item <path>]... [--entity <slug>]... [--json]
                             the lookup decay reads: per key, the date it was
                             last cited and how often. Absent, empty or
@@ -343,21 +353,35 @@ IGNORE_BLANKET = {"state", "state/", "state/*", "/state", "/state/", "/state/*"}
 
 IGNORE_HEADER = "# elephant-mem: machine-local state, never committed"
 
+# Set once the rules are confirmed in this process. See `ensure_gitignore()`.
+_IGNORE_CONFIRMED = False
+
 
 def ensure_gitignore():
     """Make sure the bundle's `.gitignore` covers `state/`'s local files.
 
     The seed carries these rules, but `init` copies the seed `.gitignore` once
     and `update` re-syncs **only** `scripts/` and `templates/`. So a bundle
-    created before a rule existed never receives it, while `decay`, `catch-up`
-    and `close-loops` all end in `git add -A && git commit`: the roll-up
-    recording which people were looked up and when would be committed, and on
-    a bundle with a remote, pushed. `roll` is where this belongs because it is
-    the writer of the file that leaks.
+    created before a rule existed never receives it, while `catch-up`, `decay`,
+    `close-loops` and `ingest` all end in `git add -A && git commit`: the files
+    recording which people were looked up and when would be committed, and on a
+    bundle with a remote, pushed.
+
+    **Every writer calls this before it writes**, and that is the whole point of
+    the function. Living in `roll` alone reads as enough, because `roll` writes
+    `state/recall.json`, and is not: `log` writes
+    `state/consumption-log.jsonl` at the end of a read, `catch-up` runs its
+    `git add -A` *before* the roll (`_shared/core.md` fixes that order), and
+    `close-loops` and `ingest` never roll at all. A rule added after the commit
+    does not untrack what the commit already took, so the first run committed
+    the log and every later run kept it committed, with the roll's refusal
+    landing one step too late to stop any of it. The writer that creates a file
+    is the one that has to protect it.
 
     Appends, never rewrites. Only the rules that are actually missing are
-    written, so a second roll adds nothing, and no line this function did not
-    write is touched.
+    written, so a second call adds nothing, and no line this function did not
+    write is touched. It prints nothing itself: the caller decides what to say,
+    because `roll` may speak on stdout and `log` may not.
 
     Returns `(covered, added)`: `covered` says the rules are **confirmed** in
     place, either because they were already there or because this call wrote
@@ -366,9 +390,22 @@ def ensure_gitignore():
     could not say. An unreadable `.gitignore` and a `.gitignore` that needed
     nothing returned the same value, so `roll` wrote the record naming which
     people were looked up either way, and on the failing bundle it wrote it
-    unprotected. The caller refuses to roll on a False, so the protection is
-    never merely attempted.
+    unprotected. Both callers treat a False as "do not write", so the protection
+    is never merely attempted.
+
+    **A confirmation is memoized for the life of the process**, because this is
+    now on the read path: the call costs a stat plus a read of `.gitignore`
+    every time, which is nothing against a subprocess launch but is not nothing
+    against a helper a caller may loop over. Correct because it caches only the
+    positive: this function is the only thing here that writes those lines and
+    nothing here removes them, so once they are confirmed present they stay
+    present for as long as the process lives. A failure is deliberately not
+    memoized, so a `.gitignore` that becomes readable again is picked up on the
+    next call instead of being written off for the run.
     """
+    global _IGNORE_CONFIRMED
+    if _IGNORE_CONFIRMED:
+        return True, []
     path = BUNDLE / ".gitignore"
     try:
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
@@ -380,12 +417,14 @@ def ensure_gitignore():
         if line.strip() and not line.strip().startswith("#")
     }
     if present & IGNORE_BLANKET:
+        _IGNORE_CONFIRMED = True
         return True, []
     missing = [
         rule for rule in IGNORE_RULES
         if rule not in present and "/" + rule not in present
     ]
     if not missing:
+        _IGNORE_CONFIRMED = True
         return True, []
     addition = ""
     if text and not text.endswith("\n"):
@@ -398,9 +437,7 @@ def ensure_gitignore():
             fh.write(addition)
     except OSError:
         return False, []
-    print(
-        f"added {len(missing)} ignore rule(s) to .gitignore: " + ", ".join(missing)
-    )
+    _IGNORE_CONFIRMED = True
     return True, missing
 
 
@@ -605,9 +642,18 @@ def resume_index(rows, watermark):
     worth naming, a citation dropped for arriving late.
 
     0 when nothing was ever folded, so every row is this run's. When no row
-    carries the watermark at all, which takes a hand-edited or truncated log,
-    the prefix cannot be located: the whole log reads as already seen, and this
-    run accuses no row it cannot place.
+    carries the watermark at all, which takes a rotated, truncated or
+    hand-edited log, the prefix cannot be located: the whole log reads as
+    already seen, so this run folds nothing and, by returning `len(rows)`,
+    reports nothing either. **A citation below the watermark is dropped in
+    silence in that one branch, and that is the chosen trade.** The alternative
+    is to call the whole log this run's territory and accuse every row in it,
+    which on a rotated log means a false "dropped for arriving late" per line,
+    on every roll, forever. A count that lies on the case that recurs is worse
+    than a count that is missing on the case that does not, so this run accuses
+    no row it cannot place. `tests/test_recall.py` pins the silence, so a change
+    to this tail shows up as a failing check rather than as new noise in the
+    field.
     """
     if watermark is None:
         return 0
@@ -618,7 +664,15 @@ def resume_index(rows, watermark):
 
 
 def cmd_roll(args):
-    covered, _added = ensure_gitignore()
+    covered, added = ensure_gitignore()
+    if added:
+        # Said on stdout, and only by `roll`: an unattended `catch-up` or
+        # `decay` leaves a trace that the bundle was missing a rule. `log`
+        # writes the same rules from inside a read and stays mute about it,
+        # because a read's transcript is the user's, not the bookkeeping's.
+        print(
+            f"added {len(added)} ignore rule(s) to .gitignore: " + ", ".join(added)
+        )
     if not covered:
         # The record names which entities were consulted and when, and `decay`,
         # `catch-up` and `close-loops` all end in `git add -A`. Writing it into
@@ -770,7 +824,31 @@ def cmd_log(args):
     mode = (args.mode or "").strip()
     if not mode:
         # Not a usage error worth failing a read over: a line with no mode is
-        # simply not worth writing.
+        # simply not worth writing. Checked before `.gitignore` is touched, so
+        # a no-op call stays a no-op on disk too.
+        return 0
+    covered, _added = ensure_gitignore()
+    if not covered:
+        # The one thing a read's bookkeeping may refuse to do is write. The
+        # line names which people were looked up and which facts were cited,
+        # `catch-up`, `decay`, `close-loops` and `ingest` all end in
+        # `git add -A`, and a `.gitignore` rule does not untrack a file an
+        # earlier commit already took: an unprotected line written now is
+        # committed by the next routine and stays committed. Skipping costs one
+        # citation, which the pyramid absorbs. So: no line, a word on stderr,
+        # and exit 0 all the same, because several procedures call this and
+        # treat a non-zero as nothing to handle. Failing the read to protect
+        # its bookkeeping would be the tail wagging the dog.
+        print(
+            "recall: skipped one consumption line. The bundle's .gitignore "
+            "could not be read or written, so state/consumption-log.jsonl "
+            "cannot be confirmed ignored, and it records which entities were "
+            "consulted and when. The next `git add -A` in catch-up, decay, "
+            "close-loops or ingest would commit it. Make .gitignore a writable "
+            "file (or add a `state/` rule by hand). The answer itself is "
+            "unaffected.",
+            file=sys.stderr,
+        )
         return 0
     append(
         {
