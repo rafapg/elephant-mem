@@ -113,6 +113,11 @@ EVIDENCE_CAP = 10
 
 FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# What may legally follow the date in an examination value: nothing, or a time
+# of day. The twin of decay-loops.py's DATE_TAIL, and the two have to agree:
+# a date sitting in prose is not a record of an examination on either side.
+# See examined_on().
+DATE_TAIL = re.compile(r"(?:[T ][0-9:.+\-Z]*)?")
 # The closure criterion as the template writes it: a bolded lead-in, then a
 # paragraph. It ends at a blank line, at the next bolded lead-in, or at EOF.
 #
@@ -128,17 +133,39 @@ DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 #
 # What `\s*` alone would do is run past an *empty* `**Closure signal:**` heading
 # and return the next section labelled as the closure criterion, the one thing
-# this script exists to read, silently wrong. Two guards refuse that:
-# `(?!\*\*[^*\n]+:\*\*)` refuses a bolded lead-in as the criterion, and the `(\S`
-# anchor refuses whitespace as its first character. With the
-# `(?=\n\s*\n|\n\*\*…:\*\*|\Z)` terminator, an empty section then matches
-# nothing and falls back to the `description` (E12), a criterion whose
-# provenance the proposal can name. An empty section and a criterion in the
-# paragraph below are byte-identical up to those guards, which is exactly why
-# they carry the whole distinction. Case-insensitive because 2025 loop bodies
-# were written by hand and nothing has ever checked the capital C.
+# this script exists to read, silently wrong. An empty section and a criterion
+# written in the paragraph below are byte-identical up to the first characters
+# of that next block, so the lookahead names the block shapes a criterion is
+# not, and refuses them one at a time:
+#
+#   \*\*[^*\n]+:\*\*   a bolded lead-in, `**Blocked by:** legal review`
+#   \*\*[^*:\n]+\*\*   a bolded run with no colon, `**Background** prose`
+#   #{1,6}[ \t]        an ATX heading, `## Context`. An issue reference carries
+#                      no space after the `#`, so `#4711 shipped` is still a
+#                      criterion
+#   [-*+][ \t]         a list item, `- background`. The space is what keeps
+#                      `**bold**` out of this alternative and in the one above
+#   ``` / ~~~          a fenced block
+#
+# and the `(\S` anchor refuses whitespace as the criterion's first character,
+# which is what stops those same shapes when they are indented: `\s*` backtracks
+# off the refused block and the anchor then has nothing but whitespace left to
+# start on. With the `(?=\n\s*\n|\n\*\*…:\*\*|\Z)` terminator, an empty section
+# matches nothing and the loop falls back to its `description` (E12), a
+# criterion whose provenance the proposal can name.
+#
+# The ambiguity is genuine and is decided this way on purpose. Nothing in the
+# bytes separates "an empty section, then a heading" from "the criterion written
+# as a heading", and a criterion the proposal can name the provenance of beats a
+# background heading printed as the closure criterion. So the refusal is
+# unconditional, on the lead-in's own line too: `**Closure signal:** **the PR**
+# merged` falls back as well, by the same alternative that refuses
+# `**Background**`. Case-insensitive because 2025 loop bodies were written by
+# hand and nothing has ever checked the capital C.
 CLOSURE_SIGNAL = re.compile(
-    r"\*\*Closure signal:\*\*\s*(?!\*\*[^*\n]+:\*\*)(\S.*?)"
+    r"\*\*Closure signal:\*\*\s*"
+    r"(?!\*\*[^*\n]+:\*\*|\*\*[^*:\n]+\*\*|#{1,6}[ \t]|[-*+][ \t]|```|~~~)"
+    r"(\S.*?)"
     r"(?=\n\s*\n|\n\*\*[^*\n]+:\*\*|\Z)",
     re.DOTALL | re.IGNORECASE,
 )
@@ -625,9 +652,16 @@ def examined_on(sweep, link):
 
     Validating the **matched group** rather than the whole value, again like
     decay: `datetime.date.fromisoformat()` over the whole thing would reject the
-    `2026-09-01T09:00:00-03:00` shape `load_sweep()` tolerates on purpose. An
-    unreadable value reads as "never examined", which returns that one loop to
-    band 2 rather than dropping it.
+    `2026-09-01T09:00:00-03:00` shape `load_sweep()` tolerates on purpose. What
+    the group alone cannot say is *where* it was found, which is the anchor's
+    half: matching from the start and allowing only a time of day after it means
+    the value has to **be** a date to count as one, so `"could not decide on
+    2026-09-02"`, a human writing a refusal into the record, is not read as an
+    examination, and `"2026-09-02 then 2025-07-30"` does not let the first of two
+    dates win silently. Decay refuses both and parks the loop; this queue has to
+    refuse both too, or the deadlock is back on a different input. An unreadable
+    value reads as "never examined", which returns that one loop to band 2
+    rather than dropping it.
     """
     entry = (sweep.get("loops") or {}).get(link)
     if isinstance(entry, str):
@@ -636,9 +670,10 @@ def examined_on(sweep, link):
         value = entry.get("examined") or entry.get("date") or entry.get("last")
     else:
         return None
-    m = DATE.search(value) if isinstance(value, str) else None
-    if not m:
-        return None
+    value = value.strip() if isinstance(value, str) else None
+    m = DATE.match(value) if value else None
+    if not m or not DATE_TAIL.fullmatch(value[m.end():]):
+        return None  # not a date, or a date buried in something else
     try:
         parsed = datetime.date.fromisoformat(m.group(0))
     except ValueError:
@@ -673,8 +708,14 @@ def new_material(loop, material, examined):
 def build_queue(loops, sweep, material, cap):
     """The run's queue: band 1 first, band 2 guaranteed a slice, capped at `cap`.
 
-    Band 1 takes at most four fifths of the run so band 2 always advances; the
-    slots band 2 cannot fill go back to band 1, so the run is never short.
+    A fifth of every run, `max(1, cap // 5)`, is reserved for band 2 so it
+    always advances; the slots band 2 cannot fill go back to band 1, so the run
+    is never short. The floor is what makes the reserve exist below a cap of 5,
+    where a plain fifth rounds to zero: at a cap of 4 the split is 3 and 1, at 2
+    it is 1 and 1. A cap of 1 is the single exception and band 1 keeps it, since
+    one slot cannot serve both bands and band 1 is the priority lane. So band 1
+    takes at most four fifths only from a cap of 5 up; at 2, 3 and 4 it takes a
+    half, two thirds and three quarters.
 
     Band 2 is "everything else still unsettled" — never examined, or examined
     before its own last activity. A loop examined on or after its last activity

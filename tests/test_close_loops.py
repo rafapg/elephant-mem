@@ -70,6 +70,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "plugin" / "assets" / "scripts" / "close-loops.py"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 SKILL_DIR = REPO_ROOT / "plugin" / "skills" / "close-loops"
+DECAY_SKILL_DIR = REPO_ROOT / "plugin" / "skills" / "decay"
 
 OWNER = "jane-doe"
 
@@ -113,9 +114,11 @@ def write_loop(bundle, name, description="a commitment", owner=(OWNER,),
                status="open", signal="a source showing it shipped", body="Details."):
     """A loop in the shape open-loop.md ships — trailing comments and all.
 
-    The comments are not decoration: `status: open  # open | done | dropped` is
-    what every loop written from the template carries, and it is what a naive
-    reader glues onto the value.
+    The comments are not decoration: `status: open  # open | done | dropped |
+    expired` is what every loop written from the template carries, and it is
+    what a naive reader glues onto the value. The fixtures below build the
+    three-value comment the template used to ship, which is what the loops
+    already on disk carry, so both spellings are exercised.
     """
     dates = ""
     for key, value in (("opened", opened), ("created", created or opened),
@@ -436,6 +439,68 @@ def test_unreadable_examination_date(root):
            and by_path.get("/tracking/loops/nonsense.md", {}).get("reason")
            == "never examined",
            json.dumps(sorted(by_path)))
+
+    # The other half of the mirror: the shape tolerances survive. The date is
+    # validated on the **matched group** and not on the whole value, because
+    # `datetime.date.fromisoformat()` over the whole thing rejects the
+    # `2026-09-01T09:00:00-03:00` shape `load_sweep()` documents and tolerates on
+    # purpose, and a loop the routine did examine would then read as never
+    # examined and be queued forever. tests/test_decay.py [109] pins the same
+    # shape at the other end of the pair; validating the whole value survives
+    # every suite without this check.
+    iso = make_bundle(root, "iso-datetime-examination")
+    write_loop(iso, "examined", description="Examined at 09:00, not at midnight",
+               opened="2026-01-01", entities=("acme",))
+    write_sweep(iso, {"/tracking/loops/examined.md": "2026-01-05T09:00:00-03:00"})
+    payload_iso, result_iso = proposal(iso)
+    record("an ISO datetime is still read as its date — validating the whole "
+           "value would have rejected the shape load_sweep() tolerates on "
+           "purpose, and the loop the routine examined would come back as never "
+           "examined",
+           payload_iso is not None and queued_paths(payload_iso) == []
+           and payload_iso["counts"]["band2"] == 0,
+           f"exit={result_iso.returncode}\n{result_iso.stdout}\n{result_iso.stderr}")
+
+    # And the third shape of the same mirror: a date sitting inside prose. A
+    # human writing a refusal into the sweep record leaves a readable past date
+    # in it, and finding ten digits anywhere in the value read that as an
+    # examination. decay-loops.py anchors the match at position 0 and allows
+    # only a time of day after it, so it parks both of these; this reader has to
+    # park them too, or the two disagree again and the loop deadlocks: decay
+    # waits for an examination this queue already counted.
+    prose = make_bundle(root, "prose-examination")
+    write_loop(prose, "refused", description="A refusal written into the record",
+               opened="2026-01-01", entities=("acme",))
+    write_loop(prose, "twodates", description="Two dates in one value",
+               opened="2026-01-02", entities=("acme",))
+    write_sweep(prose, {
+        "/tracking/loops/refused.md": "could not decide on 2026-01-05",
+        "/tracking/loops/twodates.md": "2026-01-05 then 2025-07-30",
+    })
+    payload_prose, result_prose = proposal(prose)
+    if payload_prose is None:
+        record("close-loops.py runs over a sweep carrying dates buried in prose",
+               False,
+               f"exit={result_prose.returncode}\n{result_prose.stdout}"
+               f"\n{result_prose.stderr}")
+    else:
+        by_prose = {lp["path"]: lp for lp in payload_prose["loops"]}
+        record("a past date written inside a sentence is not an examination "
+               "here either, so the loop is queued as never examined instead of "
+               "being dropped as settled on a record nobody wrote",
+               by_prose.get("/tracking/loops/refused.md", {}).get("examined")
+               is None
+               and by_prose.get("/tracking/loops/refused.md", {}).get("reason")
+               == "never examined",
+               json.dumps([{"path": p, "examined": lp["examined"],
+                            "reason": lp["reason"]}
+                           for p, lp in by_prose.items()], indent=2))
+        record("…and two dates in one value do not let the first win silently",
+               by_prose.get("/tracking/loops/twodates.md", {}).get("examined")
+               is None
+               and by_prose.get("/tracking/loops/twodates.md", {}).get("reason")
+               == "never examined",
+               json.dumps(sorted(by_prose)))
 
 
 def test_band_two_quota_at_every_reachable_cap(root):
@@ -811,6 +876,21 @@ def test_closure_signal_shapes(root):
         # lookahead no longer sits on the `**` and only `(\\S` refuses it
         "anchor-indented": "Details.\n\n**Closure signal:**\n\n"
                            "  **Context:** background that is not the criterion.",
+        # One fixture per remaining block shape the lookahead refuses. All four
+        # fell through it while the bolded-lead-in guard was the only one, and
+        # came back as the closure criterion: the heading was printed as the
+        # criterion's provenance and its words entered `terms`, which lifted a
+        # noise fact's score. Only hand-written bodies reach this, since the
+        # shipped template writes the criterion inline, and that is the same
+        # population `re.IGNORECASE` exists for.
+        "heading-below": "Details.\n\n**Closure signal:**\n\n"
+                         "## Context that is not the criterion\n\nBackground.",
+        "bullet-below": "Details.\n\n**Closure signal:**\n\n"
+                        "- background that is not the criterion",
+        "bold-no-colon": "Details.\n\n**Closure signal:**\n\n"
+                         "**Background** that is not the criterion.",
+        "fence-below": "Details.\n\n**Closure signal:**\n\n"
+                       "```\nbackground that is not the criterion\n```",
     }
     for name, body in {**parsed_shapes, **fallback_shapes}.items():
         write_loop(bundle, name, description=f"Ship {name}", signal=None,
@@ -844,6 +924,18 @@ def test_closure_signal_shapes(root):
            "legal review" not in (got.get("guard-adjacent", {}).get("criterion")
                                   or ""),
            json.dumps(got.get("guard-adjacent", {}).get("criterion")))
+    record("no other block shape is returned as the criterion either: not a "
+           "heading, not a list item, not a bolded run without a colon, and not "
+           "a fenced block. Each is refused by its own alternative of the same "
+           "lookahead, so dropping any one of them turns this check and that "
+           "shape's own red, and leaves the other three shapes green",
+           all("not the criterion"
+               not in (got.get(name, {}).get("criterion") or "")
+               for name in ("heading-below", "bullet-below", "bold-no-colon",
+                            "fence-below")),
+           json.dumps({name: got.get(name, {}).get("criterion")
+                       for name in ("heading-below", "bullet-below",
+                                    "bold-no-colon", "fence-below")}, indent=2))
 
     # The other half of the regression: the criterion's words are what identify
     # the right fact. Read from the paragraph below the lead-in, the fact that
@@ -1005,8 +1097,8 @@ def test_owner_is_what_the_file_declares(root):
 # --- (h) the routine --------------------------------------------------------
 
 
-def read_skill(name):
-    path = SKILL_DIR / name
+def read_skill(name, directory=SKILL_DIR):
+    path = directory / name
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
@@ -1090,14 +1182,29 @@ def test_procedure_contract():
            "bundle-absolute loop path" in low and "nothing was written" in low
            and "actually recorded" in low)
 
-    # Theme: the boundary of an irreversible operation, stated in prose five
+    # Theme: the boundary of an irreversible operation, stated in prose four
     # times and implemented as on-or-after at both ends. A document that says
     # "after" invites a maintainer to "fix" the code and invert it, with the
     # whole suite still green.
-    flat = " ".join((p + read_skill("SKILL.md")).replace("**", "").lower().split())
-    record("the sweep gate's boundary reads `on or after` wherever the skill "
-           "states it, which is what both scripts implement",
-           "examined after" not in flat and flat.count("on or after") >= 3,
+    #
+    # `decay`'s two files are flattened in with `close-loops`' because the
+    # sentence that matters most is over there: `plugin/skills/decay/
+    # procedure.md` states the gate for `--apply`, the irreversible end of the
+    # pair, and nothing sensed it. Flipping that one line to "after" left
+    # test_decay, this suite and smoke all green, and test_decay.py reads no
+    # procedure at all. The count is what catches it: the decay line spells the
+    # boundary "examined it on or after", so a flip there reads "examined it
+    # after" and slips past the substring test.
+    flat = " ".join("\n".join((
+        p,
+        read_skill("SKILL.md"),
+        read_skill("procedure.md", DECAY_SKILL_DIR),
+        read_skill("SKILL.md", DECAY_SKILL_DIR),
+    )).replace("**", "").lower().split())
+    record("the sweep gate's boundary reads `on or after` wherever either skill "
+           "of the pair states it, `decay`'s own gate included, which is what "
+           "both scripts implement",
+           "examined after" not in flat and flat.count("on or after") >= 4,
            flat.count("on or after"))
 
     record("H6: the run rebuilds, validates, writes one log.md line and makes "

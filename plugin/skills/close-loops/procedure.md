@@ -28,9 +28,13 @@ only in a diff. Interactive and scheduled runs follow exactly the same steps.
    fact or a source since that examination, then everything else still
    unsettled, oldest last activity first — capped at `elephant.json` →
    `close_loops.max` (default 25, with `decay.close_loops_max` as a fallback).
-   The first band is served first but takes at most four fifths of the run, so
-   the cold end of the lane advances even on a day when new material lands
-   everywhere. For each queued loop it prints the closure criterion and up to 10
+   The first band is served first but not absolutely: a fifth of every run,
+   `max(1, cap // 5)`, is reserved for the cold end of the lane, so it advances
+   even on a day when new material lands everywhere. The floor is what makes
+   that reserve exist below a cap of 5, where a plain fifth rounds to zero: at a
+   cap of 4 the split is 3 and 1, at 2 it is 1 and 1. A cap of 1 is the single
+   exception and the first band keeps it, since one slot cannot serve both. So
+   the first band takes at most four fifths only from a cap of 5 up. For each queued loop it prints the closure criterion and up to 10
    evidence candidates, ranked by a score that adds 2 a shared non-owner entity
    to 1 a shared content word and prints that score next to each one. It reads
    only: no loop file changes, and `state/closure-sweep.json` is not touched by

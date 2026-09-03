@@ -382,13 +382,14 @@ def test_build_index_excludes_expired_after_apply(root):
 # ---------------------------------------------------------------------------
 # 8. a loop written from open-loop.md — the trailing vocabulary comment
 # ---------------------------------------------------------------------------
-# open-loop.md ships `status: open          # open | done | dropped`, and the
-# model that writes a loop from it keeps that comment: it is the documentation.
-# field() read the whole line, so `field(block, "status") != "open"` was true
-# for every template-derived loop and the entire script was a no-op. On every
-# machine — this script has no PyYAML path to fall back to.
+# open-loop.md ships `status: open          # open | done | dropped | expired`,
+# and the model that writes a loop from it keeps that comment: it is the
+# documentation. field() read the whole line, so
+# `field(block, "status") != "open"` was true for every template-derived loop
+# and the entire script was a no-op. On every machine — this script has no
+# PyYAML path to fall back to.
 
-STATUS_DOC = "        # open | done | dropped"
+STATUS_DOC = "        # open | done | dropped | expired"
 
 
 def test_template_shaped_loop_decays(root):
@@ -402,7 +403,7 @@ def test_template_shaped_loop_decays(root):
                       opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
 
     result = run_script(bundle, "decay-loops.py")
-    record("a loop that kept `# open | done | dropped` is seen as open and "
+    record("a loop that kept `# open | done | dropped | expired` is seen as open and "
            "listed as a candidate (the script used to find none, ever)",
            "old.md" in result.stdout and "1 candidate(s)" in result.stdout, result.stdout)
     record("…and its `updated:` is read through its own comment, so the age is "
@@ -844,38 +845,66 @@ def test_gate_refuses_an_unvalidated_examination(root):
     """The gate used to accept any ten digits shaped like a date, and only
     *forward* junk cleared it — `resolution_paragraph()` then wrote that junk
     verbatim into the loop file and `build-index.py` printed it onto
-    `tracking/resolved-loops.md`. Each shape below must park its loop."""
+    `tracking/resolved-loops.md`. Each shape below must park its loop.
+
+    Validating the matched group closed the forward half only: a *past* date
+    sitting in prose still parsed, so `"could not decide on 2026-09-02"`, the
+    shape a human writing a refusal into the record leaves behind, expired the
+    loop irreversibly and had the resolution paragraph assert that an
+    examination on that date did not close it, which never happened. Same for
+    two dates in one value, where the first won silently. Anchoring the match at
+    the start and allowing only a time of day after it is what refuses those,
+    and the two kept shapes below are the ceiling on that strictness."""
     refused = [
-        ("an impossible date", "2026-99-99"),
-        ("a future date", days_ahead(30)),
-        ("forward junk sitting in prose", f"see notes {days_ahead(400)}"),
+        ("impossible", "an impossible date", "2026-99-99"),
+        ("future", "a future date", days_ahead(30)),
+        ("forward-prose", "forward junk sitting in prose",
+         f"see notes {days_ahead(400)}"),
+        ("past-prose", "a past date sitting in prose",
+         f"could not decide on {days_ago(4)}"),
+        ("two-dates", "two dates in one value",
+         f"{days_ago(4)} then {days_ago(400)}"),
     ]
-    for label, examined in refused:
-        bundle = new_bundle(root, "gate-junk-" + label.split()[1])
+    for slug, label, examined in refused:
+        bundle = new_bundle(root, "gate-junk-" + slug)
         p = write_loop(bundle, "old.md", "Old stale loop",
-                       opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+                       opened=days_ago(120), created=days_ago(120), updated=days_ago(120))
         write_sweep(bundle, {"/tracking/loops/old.md": examined})
+        before = p.read_text(encoding="utf-8")
 
         result = run_script(bundle, "decay-loops.py", ["--apply"])
+        after = p.read_text(encoding="utf-8")
         record(f"an examination recorded as {label} reads as never examined",
-               "status: open" in p.read_text(encoding="utf-8")
-               and "0 loop(s) expired" in result.stdout,
-               result.stdout + "\n---\n" + p.read_text(encoding="utf-8"))
-        record(f"…so {label} never reaches the loop file",
-               examined not in p.read_text(encoding="utf-8"),
-               p.read_text(encoding="utf-8"))
+               "status: open" in after and "0 loop(s) expired" in result.stdout,
+               result.stdout + "\n---\n" + after)
+        # Not just "the junk is absent": a date read out of prose reaches the
+        # file as the date alone, so the value being missing proves nothing.
+        # The whole file has to be untouched.
+        record(f"…so neither {label} nor any date read out of it reaches the "
+               "loop file, which is byte-for-byte what it was",
+               after == before and examined not in after, after)
 
-    # The shape tolerances survive: an ISO *datetime* is still a valid record,
-    # which is why the date is validated on the matched group and not on the
-    # whole value.
-    bundle = new_bundle(root, "gate-iso-datetime")
-    p = write_loop(bundle, "old.md", "Old stale loop",
-                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
-    write_sweep(bundle, {"/tracking/loops/old.md": days_ago(4) + "T09:00:00-03:00"})
-    result = run_script(bundle, "decay-loops.py", ["--apply"])
-    record("an ISO datetime is still read as its date — validating the whole "
-           "value would have rejected the shape load_sweep() tolerates on purpose",
-           "status: expired" in p.read_text(encoding="utf-8"), result.stdout)
+    # The shape tolerances survive: a bare date and an ISO *datetime* are both
+    # valid records, which is why the date is validated on the matched group and
+    # not on the whole value, and why the anchor allows a time of day after it.
+    kept = [
+        ("bare-date", "a bare ISO date", days_ago(4),
+         "a bare date is what the record normally holds — the anchor must not "
+         "have made the ordinary shape unreadable"),
+        ("iso-datetime", "an ISO datetime", days_ago(4) + "T09:00:00-03:00",
+         "an ISO datetime is still read as its date — validating the whole "
+         "value would have rejected the shape load_sweep() tolerates on purpose"),
+    ]
+    for slug, label, examined, why in kept:
+        bundle = new_bundle(root, "gate-" + slug)
+        p = write_loop(bundle, "old.md", "Old stale loop",
+                       opened=days_ago(120), created=days_ago(120), updated=days_ago(120))
+        write_sweep(bundle, {"/tracking/loops/old.md": examined})
+        result = run_script(bundle, "decay-loops.py", ["--apply"])
+        record(why,
+               "status: expired" in p.read_text(encoding="utf-8")
+               and "1 loop(s) expired" in result.stdout,
+               f"{label}: {examined}\n" + result.stdout)
 
 
 def test_gate_outcome_is_a_whitelist(root):

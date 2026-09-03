@@ -112,6 +112,11 @@ DEFAULT_EXPIRY_DAYS = 45
 
 FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# What may legally follow the date in an examination value: nothing, or a time
+# of day (`T09:00:00-03:00`, or the same after a space). Anything else is prose,
+# and prose around a date is not a record of an examination. See
+# examination_date().
+DATE_TAIL = re.compile(r"(?:[T ][0-9:.+\-Z]*)?")
 
 
 def loop_expiry_days():
@@ -204,8 +209,9 @@ def field(block, key):
     """First `key: value` scalar match in a frontmatter block, without its
     trailing YAML comment, or None.
 
-    open-loop.md ships `status: open          # open | done | dropped`, so with
-    the comment glued on `field(block, "status") != "open"` was true for every
+    open-loop.md ships the status field with its vocabulary glued on as a
+    comment, `status: open          # open | done | dropped | expired`, and with
+    it there `field(block, "status") != "open"` was true for every
     loop written from the template and the whole script was a no-op — on every
     machine, since it has no PyYAML path to fall back to. Note the asymmetry
     with the writer below, which matches `^status:\\s*open\\b` and so already
@@ -319,7 +325,7 @@ def load_sweep():
 
 
 def examination_date(value):
-    """The ISO date inside `value`, or None if it is not a readable past date.
+    """The ISO date `value` records, or None if it is not a readable past date.
 
     `DATE.search` alone finds ten digits in the right shape and nothing more, so
     `2026-99-99`, `2099-01-01` and a date sitting in prose all reached the gate;
@@ -331,13 +337,26 @@ def examination_date(value):
     Deliberately validating the **matched group**, not the whole value:
     `datetime.date.fromisoformat()` over the whole thing rejects the
     `2026-09-01T09:00:00-03:00` shape `load_sweep()` tolerates on purpose, and
-    would still accept `2099-01-01`. This refuses the value, not the record —
-    every shape tolerance survives and every unreadable value reads as "never
-    examined", which parks that one loop rather than expiring it.
+    would still accept `2099-01-01`. What the group alone cannot say is *where*
+    it was found, and that half is the anchor's: a **past** date inside prose
+    parsed and expired the loop irreversibly, so `"could not decide on
+    2026-09-02"`, a human writing a refusal into the record, was read as an
+    examination that cleared the loop, and the resolution paragraph then
+    asserted onto `tracking/resolved-loops.md` that "the `close-loops`
+    examination on 2026-09-02 did not close it", which never happened. Matching
+    from the start and allowing only a time of day after it means the value has
+    to *be* a date to count as one, so prose around it parks the loop instead,
+    and `"2026-09-02 then 2025-07-30"` no longer lets the first of two dates win
+    silently.
+
+    This refuses the value, not the record: every shape tolerance survives and
+    every unreadable value reads as "never examined", which parks that one loop
+    rather than expiring it.
     """
-    m = DATE.search(value) if isinstance(value, str) else None
-    if not m:
-        return None
+    value = value.strip() if isinstance(value, str) else None
+    m = DATE.match(value) if value else None
+    if not m or not DATE_TAIL.fullmatch(value[m.end():]):
+        return None  # not a date, or a date buried in something else
     try:
         parsed = datetime.date.fromisoformat(m.group(0))
     except ValueError:
@@ -458,7 +477,7 @@ def loop_files():
 # loop_status() reads as open, because a loop this script accepts as a candidate
 # has to be one it can also rewrite. Group 1 keeps the key, the spacing and an
 # opening quote; everything after `open` (a closing quote, the template's
-# `# open | done | dropped` comment) is left where it is.
+# `# open | done | dropped | expired` comment) is left where it is.
 OPEN_LINE = re.compile(r"^(status:\s*[\"']?)open\b", re.IGNORECASE)
 
 
