@@ -89,15 +89,37 @@ same shape as `catch-up` and `decay`: no review gate, permissive permissions,
 commits in place, never pushes.
 
 Its queue is bounded rather than exhaustive, and ordered so the loops blocking
-decay are reached first. Each run takes, in order: loops examined before whose
-entities have gained a fact or a source since that examination; then everything
-else, **oldest last activity first**, up to `close_loops_max` (default 25).
+decay are reached first. Each run draws from two bands: loops examined before
+whose entities have gained a fact or a source since that examination, then
+everything else still unsettled, **oldest last activity first**, up to
+`close_loops_max` (default 25). "Unsettled" is never examined, or examined
+before its own last activity; a loop examined on or after its last activity with
+nothing new since waits for material instead of being re-read every run.
 Ordering that second band by last activity rather than by last examination puts
 the 735 already-stale loops at its front, and gives a never-examined loop a
-defined position, which a last-examination date cannot. At 25 per run the stale
-backlog is examined in about a month and the whole open lane in about two and a
-half. A verdict is never permanent: new material returns a loop to the first
-band.
+defined position, which a last-examination date cannot. A verdict is never
+permanent: new material returns a loop to the first band.
+
+**The first band is served first but not absolutely.** A fifth of every run,
+`max(1, cap // 5)`, is reserved for the cold end and the first band takes the
+rest. Absolute precedence starved that end for as long as the first band kept
+overflowing: 0 of 40 cold loops examined over 30 simulated runs, over the very
+loops decay is waiting on. The reservation is only ever as large as the second
+band can fill, so slots the second band cannot use go back to the first and a
+run is never short. The floor is what makes the reserve exist below a cap of 5,
+where a fifth would round to zero: at a cap of 4 the split is 3 and 1, at 2 it
+is 1 and 1. A cap of 1 is the single exception, and the first band keeps it,
+since one slot cannot serve both and that band is the priority lane.
+
+A run still examines `close_loops_max` loops, so the reserve changes how the run
+is split rather than how much it does, and it never slows the cold end. While
+the first band stays under the four fifths it may take, the allocation is
+identical to absolute precedence and a run of 25 examines the stale backlog in
+about a month and the whole open lane in about two and a half. Once the first
+band saturates, the cold end advances at the reserved fifth and no faster, 5
+loops a run, so the 735 already-stale loops take about 147 runs, roughly five
+months. Either figure holds only if a run reaches loops the last one did not,
+which is what settling a loop out of the queue buys.
 
 Its bar is the judgment of the evidence set as a whole, not the literal
 satisfaction of the closure criterion. That is a deliberate trade: it closes
@@ -139,9 +161,15 @@ yesterday is as examined as one examined an hour ago.
   carries. Bought for read cost, not disk.
 - **`close-loops` is its own skill, daily and unattended**, not a step of
   `catch-up` and not a review-gated mode.
-- **Evidence ranking**: facts sharing the loop's non-owner entities first, then
-  content-word overlap against the loop's `description` plus its closure signal,
-  then recency. Capped at 10 per loop. Ranking on the owner's entity alone is why
+- **Evidence ranking is additive, not lexicographic**: a candidate scores two
+  points per shared non-owner entity plus one per content word shared with the
+  loop's `description` and its closure signal, ties broken by recency and then
+  by path. A candidate scoring zero shares only the owner and is dropped rather
+  than padded in, which is what makes "no evidence" a real answer. Capped at 10
+  per loop. Ranking the entity count first made it absolute, because the two
+  counts have incomparable ranges: the one fact that quoted the closure
+  criterion back, sharing a single entity, lost all ten slots to facts that
+  shared two entities and not a word. Ranking on the owner's entity alone is why
   the median candidate count is 684.
 - **Resolution is written as prose in the loop file's body**, under a
   `**Resolution:**` heading, by both `close-loops` and `decay`, identically. Not
@@ -160,7 +188,7 @@ yesterday is as examined as one examined an hour ago.
   weeks to earn expiry again. `--skip-sweep` is the deliberate way out, and it
   is the same flag that restores today's behavior.
 - **`--apply` gates per loop on that record**: a loop is expirable only if it
-  was examined after its own last activity and was not closed. The gate only
+  was examined on or after its own last activity and was not closed. The gate only
   ever meets loops that are already decay candidates, so a loop whose `updated:`
   was just bumped is out of scope for a different reason before the gate is
   consulted.
@@ -216,9 +244,9 @@ yesterday is as examined as one examined an hour ago.
 - **H7** — It runs `recall.py roll`, folding the log into `state/recall.json`'s
   buckets, then scans for candidates with the citation date as a fourth
   activity date.
-- **H8** — It expires only loops examined after their own last activity and not
-  closed, writing `expired`, the date and a `**Resolution:**` paragraph of its
-  own.
+- **H8** — It expires only loops examined on or after their own last activity
+  and not closed, writing `expired`, the date and a `**Resolution:**` paragraph
+  of its own.
 - **H9** — Either run's rebuild writes `tracking/resolved-loops.md`, newest
   first, with date, outcome and the first sentence of each resolution; resolved
   loops no longer appear on entity pages.

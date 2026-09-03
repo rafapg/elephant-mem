@@ -34,15 +34,24 @@ closes loops by evidence in front of the one that expires them by silence.
   `close-loops.py` behind it. Each run takes a bounded, ordered slice of
   `tracking/loops/` — first the loops examined before whose entities have gained
   a fact or a source since that examination, then everything else oldest last
-  activity first, up to `close_loops_max` (default 25). The second band is
+  activity first, up to `close_loops_max` (default 25), with a fifth of every
+  run held back for that second band. Absolute precedence starved it for as
+  long as the first band kept overflowing: 0 of 40 cold loops examined over 30
+  simulated runs, over the very loops decay is waiting on. The second band is
   ordered by activity rather than by last examination on purpose: it puts the 735
   already-stale loops at the front, and gives a never-examined loop a defined
   position, which a last-examination date cannot. For each queued loop the script
   emits its closure criterion (its `description` when it carries no
-  `**Closure signal:**`, saying so) and up to 10 ranked evidence candidates —
-  facts sharing the loop's non-owner entities first, then content-word overlap,
-  then recency. The cap and the non-owner rule are the whole point of the
-  ranking: on the owner's entity alone the median candidate count is 684. The
+  `**Closure signal:**`, saying so) and up to 10 ranked evidence candidates,
+  scored two points per shared non-owner entity plus one per content word the
+  candidate shares with the criterion, ties broken by recency. The score is
+  additive rather than lexicographic because the two counts have incomparable
+  ranges: a loop names one to three non-owner entities and carries fifteen-odd
+  content words, so comparing the entity count first made it absolute, and the
+  one fact that quoted the closure criterion back lost all ten slots to facts
+  that shared two entities and not a word. The cap and the non-owner rule are
+  the whole point of the ranking: on the owner's entity alone the median
+  candidate count is 684. The
   mode judges each evidence set as a whole rather than matching the criterion
   literally, and every closure writes its own justification, so a wrong `done` is
   legible where it was written and not only in a diff.
@@ -67,17 +76,17 @@ closes loops by evidence in front of the one that expires them by silence.
   loop paths are cited 4136 times from durable, non-regenerated text — 2784 in
   source bodies, 745 in facts, 603 in `log.md` — and `validate-okf.py` requires
   every one of them to resolve before any routine commits.
-- **`tests/test_recall.py` (81 checks) and `tests/test_close_loops.py` (69)**,
+- **`tests/test_recall.py` (115 checks) and `tests/test_close_loops.py` (119)**,
   each with its own `- run:` line in `ci.yml`, added in the same change that
   created the suite. A glob does not pick up a new suite; `test_backlog.py` went
-  a full release unrun for want of that line. `tests/test_decay.py` grew to 84
-  checks and `tests/test_index.py` to 80.
+  a full release unrun for want of that line. `tests/test_decay.py` grew to 126
+  checks, `tests/test_index.py` to 94 and `tests/test_templates.py` to 27.
 
 ### Changed
 
 - **`decay` expires only what `close-loops` has already read, and says why.**
-  A candidate is expirable only if it was examined after its own last activity
-  and was not closed; a candidate never examined is refused by name, with the
+  A candidate is expirable only if it was examined on or after its own last
+  activity and was not closed; a candidate never examined is refused by name, with the
   `close-loops` command printed, exit 0. The gate only ever meets loops that are
   already stale, so a freshly bumped loop is out of scope before it is consulted.
 - **Recall enters decay as a fourth activity date** inside `last_activity()`,
@@ -136,12 +145,35 @@ closes loops by evidence in front of the one that expires them by silence.
   `state/last-update-check.json`) to the bundle's `.gitignore` before it writes
   anything, printing one line when it does; it appends only, skips a rule
   already covered in any form (`state/` as a blanket included), and never
-  raises. `roll` owns this rather than `update` because it is the writer of the
+  raises. What it does do is stop: a roll that cannot confirm the rules, an
+  unreadable `.gitignore` or an append that failed, writes no record and exits
+  non-zero, because the alternative is creating that file unprotected in front
+  of the next `git add -A`. `roll` owns this rather than `update` because it is the writer of the
   file that leaks. **If you ran a routine between installing this release and
   the first `roll`**, check `git -C <bundle> log --oneline -- state/recall.json`
   — if it was committed, `git rm --cached state/recall.json` and commit; the
   file is derived and rebuilds forward on the next roll. On a bundle with a
   remote, rewrite the history that carries it.
+- **A loop whose `status` was written `Open` fell out of both sides of the
+  partition.** `build-index.py` compared the field exactly, so a value with a
+  capital, a trailing space or surrounding quotes was neither open nor
+  resolved: absent from the board, from the manifest and from the entity hub,
+  and published on the resolved page as settled. The field is reachable by
+  hand, since `close-loops` has the model editing `status: done` itself, and
+  2025 of the 2036 loop bodies were written by hand to begin with. A shared
+  `loop_status()` now normalizes once and both partitions read it, with the
+  same rule restated and cross-checked in `briefing.py` and `decay-loops.py`;
+  decay's writer was widened to match its reader, so a `status: Open` loop is
+  no longer listed as a candidate and then skipped with a warning.
+- **The sweep command validated nothing.** Step 4 of `close-loops` records
+  what was examined by hand, and a mistyped loop path or an invented outcome
+  was written into `state/closure-sweep.json` in silence, where it reads back
+  as a loop that was never examined and decay holds forever. It now refuses a
+  path that is not `/tracking/loops/<name>.md`, refuses an outcome outside
+  `done|open`, refuses to run outside the bundle root at all, and writes
+  through a temporary file so an interrupted run cannot truncate the record it
+  is replacing. Nothing is written on any refusal. `close_loops_max` also
+  refuses a cap below 1 rather than running an empty queue.
 - **`decay/procedure.md` said the rebuild re-files an expired loop into entity
   history.** It did not, and after this release it deliberately does the
   opposite: a resolved loop leaves the hubs outright and
