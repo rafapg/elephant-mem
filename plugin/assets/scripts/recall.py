@@ -33,12 +33,38 @@ which exposes query patterns over named people. Both files are git-ignored in
 the bundle's `.gitignore`; nothing here prints a path or a slug except `show`,
 which is the operator deliberately asking to see it.
 
+**The pyramid is bought for read cost, not for disk.** 26 lines over 33 days is
+26.8 KB; even twenty times that coverage is half a megabyte a year. What does
+not scale is the question decay asks: "was this item cited lately?", asked once
+per open loop — 1784 of them — against a log that only grows. `roll` folds the
+log into fixed-size per-item buckets so that question is a dict lookup:
+day-by-day for the last 14 days, week-by-week out to 90, month-by-month out to
+365, and one `older` aggregate beyond. Buckets coarsen as they age and never
+refine, so an item's record converges to at most 14 + 12 + 12 + 1 keys however
+long the bundle lives.
+
+**It is item-agnostic on purpose.** The log records facts, loops and sources in
+one `facts_cited` array, so the roll-up covers all of them at no extra cost.
+What differs is the consumer: a loop is a claim about the future that can die,
+so recall feeds its expiry; a fact is a claim about the past that silence
+cannot falsify, so recall may only ever feed its ranking.
+
 Subcommands:
   log --mode <mode> [--item <bundle path>]... [--entity <slug>]...
                             append one line to the consumption log. Silent,
                             always exits 0. `--item` and `--entity` repeat;
                             both are normalized and de-duplicated here so the
                             caller never has to.
+  roll                      fold the consumption log into `state/recall.json`'s
+                            pyramid, coarsen the aged buckets, and drop items
+                            whose file is gone. Idempotent: `rolled_through`
+                            watermarks the last line folded, so re-running over
+                            the same log adds nothing. The only writer of
+                            `state/recall.json`.
+  score [--item <path>]... [--entity <slug>]... [--json]
+                            the lookup decay reads: per key, the date it was
+                            last cited and how often. Absent, empty or
+                            malformed record — all three report no citation.
   show                      dump the canonical `state/recall.json`.
 
 Every mutating subcommand accepts `--at <iso>` to override "now" (tests, and
@@ -47,10 +73,12 @@ replaying a run). Timestamps are generated in Python, never shelled out to
 which is not parseable ISO 8601.
 """
 import argparse
+import calendar
 import json
 import posixpath
+import re
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 # Windows consoles default to a legacy codepage (cp1252); force UTF-8 on the
@@ -86,6 +114,25 @@ LOG = STATE / "consumption-log.jsonl"
 RECALL = STATE / "recall.json"
 
 SCHEMA = 1
+
+# The pyramid's three steps, in days of age. Inside DAY_SPAN a citation keeps
+# its own date; past it the day folds into its ISO week, past WEEK_SPAN the week
+# folds into its calendar month, past MONTH_SPAN the month folds into one
+# aggregate. Bounds an item at 14 + 12 + 12 + 1 keys, forever.
+DAY_SPAN = 14
+WEEK_SPAN = 90
+MONTH_SPAN = 365
+AGGREGATE = "older"
+
+DAY_KEY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+WEEK_KEY = re.compile(r"^(\d{4})-W(\d{2})$")
+MONTH_KEY = re.compile(r"^(\d{4})-(\d{2})$")
+
+# Coarseness order. Re-bucketing may only ever move a key rightwards along it:
+# a week bucket holds days as new as its Sunday, so classifying it by that
+# Sunday alone would "refine" it back into a single day and lie about the other
+# six. GRAIN is what forbids that.
+GRAIN = {"day": 0, "week": 1, "month": 2, AGGREGATE: 3}
 
 COMMENT = (
     "Rolled-up recall record — which bundle items and entities the owner's "
@@ -244,6 +291,287 @@ def save(data):
     )
 
 
+# --- the pyramid -----------------------------------------------------------
+
+
+def bucket_key(day, ref):
+    """The bucket a citation on `day` belongs in, seen from `ref`.
+
+    A future-dated line (a clock skew, a hand-written `--at`) is clamped to
+    age 0 rather than dropped: it is still a citation, and inventing a negative
+    age would sort it ahead of everything real.
+    """
+    age = max((ref - day).days, 0)
+    if age < DAY_SPAN:
+        return day.isoformat()
+    if age < WEEK_SPAN:
+        iso_year, iso_week, _ = day.isocalendar()
+        return f"{iso_year}-W{iso_week:02d}"
+    if age < MONTH_SPAN:
+        return f"{day.year}-{day.month:02d}"
+    return AGGREGATE
+
+
+def key_grain(key):
+    """Which step of the pyramid a bucket key is on, or None if it is garbage."""
+    if key == AGGREGATE:
+        return AGGREGATE
+    if DAY_KEY.match(key):
+        return "day"
+    if WEEK_KEY.match(key):
+        return "week"
+    if MONTH_KEY.match(key):
+        return "month"
+    return None
+
+
+def key_span_end(key):
+    """The newest date a bucket key can hold, or None if it is garbage.
+
+    The newest rather than the oldest, so a bucket coarsens only once every
+    citation inside it has aged out of the finer step.
+    """
+    grain = key_grain(key)
+    try:
+        if grain == "day":
+            return date.fromisoformat(key)
+        if grain == "week":
+            iso_year, iso_week = (int(g) for g in WEEK_KEY.match(key).groups())
+            return date.fromisocalendar(iso_year, iso_week, 7)
+        if grain == "month":
+            year, month = (int(g) for g in MONTH_KEY.match(key).groups())
+            return date(year, month, calendar.monthrange(year, month)[1])
+    except ValueError:
+        return None
+    return None
+
+
+def rebucket(buckets, ref):
+    """Coarsen aged buckets, merging any that now land on the same key.
+
+    Monotone by construction: a key never moves to a finer step, so a roll is
+    lossy exactly once per boundary crossed and never re-splits what it merged.
+    An unparseable key is folded into the aggregate rather than dropped — the
+    count is real even when the label is not.
+    """
+    out = {}
+    for key, count in buckets.items():
+        span_end = key_span_end(key)
+        if span_end is None:
+            target = AGGREGATE
+        else:
+            target = bucket_key(span_end, ref)
+            if GRAIN[key_grain(target)] < GRAIN[key_grain(key)]:
+                target = key
+        out[target] = out.get(target, 0) + count
+    return out
+
+
+def entry(raw=None):
+    """One item's or entity's record, coerced into shape.
+
+    `state/recall.json` is disposable and hand-editable-by-accident, so every
+    field is rebuilt from what is actually there: `total` falls back to the sum
+    of the buckets, a `last` that is not a date falls back to None.
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    buckets = raw.get("buckets")
+    buckets = buckets if isinstance(buckets, dict) else {}
+    clean = {}
+    for key, count in buckets.items():
+        if isinstance(count, bool) or not isinstance(count, (int, float)):
+            continue
+        key = str(key).strip()
+        if key:
+            clean[key] = clean.get(key, 0) + int(count)
+    total = raw.get("total")
+    if isinstance(total, bool) or not isinstance(total, (int, float)):
+        total = sum(clean.values())
+    last = raw.get("last")
+    if not (isinstance(last, str) and DAY_KEY.match(last)):
+        last = None
+    return {"total": int(total), "last": last, "buckets": clean}
+
+
+def bump(table, key, day):
+    """Record one citation of `key` on `day`, in its own day bucket.
+
+    Always the day bucket, never the aged one: `rebucket` runs over the whole
+    table afterwards and coarsens it in one place, so a backdated line and a
+    bucket that aged out of the finer step take the same code path.
+    """
+    item = entry(table.get(key))
+    iso = day.isoformat()
+    item["buckets"][iso] = item["buckets"].get(iso, 0) + 1
+    item["total"] += 1
+    if item["last"] is None or iso > item["last"]:
+        item["last"] = iso
+    table[key] = item
+
+
+def parse_ts(value):
+    """An ISO timestamp as an aware datetime, or None.
+
+    A naive timestamp gets the local zone, so a hand-written `--at` without an
+    offset still compares against a watermark that has one.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed
+
+
+def log_rows():
+    """Every parseable line of the consumption log, oldest first as written.
+
+    Never raises. A line that is not JSON, is not an object, or carries no
+    parseable `ts` is skipped: the log is appended by a best-effort writer and
+    one bad line must not cost a roll the other 25.
+    """
+    rows = []
+    try:
+        raw = LOG.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return rows
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        ts = parse_ts(row.get("ts"))
+        if ts is None:
+            continue
+        rows.append((ts, row))
+    return rows
+
+
+def prune_missing(items):
+    """Drop items whose file is gone. Returns (kept, dropped count).
+
+    Skipped entirely when `knowledge/` is not a directory: that is a bundle
+    mid-move or a partial checkout, and reading it as "every cited file was
+    deleted" would empty the record over an accident of timing.
+    """
+    if not KNOWLEDGE.is_dir():
+        return items, 0
+    kept = {}
+    for key, item in items.items():
+        norm = normalize_item(key)
+        if norm and (KNOWLEDGE / norm.lstrip("/")).exists():
+            kept[key] = item
+    return kept, len(items) - len(kept)
+
+
+def cmd_roll(args):
+    rows = log_rows()
+    if not rows:
+        # E5. Nothing to derive from, so nothing is written — not even the
+        # empty record. `roll` is the only writer of state/recall.json, and a
+        # bundle that has never been read should not carry a derived file
+        # saying so.
+        print("0 line(s) folded — the consumption log is empty or absent")
+        return 0
+
+    data = load()
+    ref = datetime.fromisoformat(now_iso(args.at)).date()
+    watermark = parse_ts(data.get("rolled_through"))
+    newest = watermark
+    folded = 0
+
+    for ts, row in rows:
+        # Strictly greater: the watermark is the last line already folded, and
+        # re-reading the log whole every run is what makes E4 hold. The cost is
+        # that a line backdated to at-or-before the watermark is skipped, which
+        # is the same trade every watermark makes.
+        if watermark is not None and ts <= watermark:
+            continue
+        day = ts.date()
+        for item in dedupe(row.get("facts_cited"), normalize_item):
+            bump(data["items"], item, day)
+        for slug in dedupe(row.get("entities"), normalize_entity):
+            bump(data["entities"], slug, day)
+        folded += 1
+        if newest is None or ts > newest:
+            newest = ts
+
+    data["items"], pruned = prune_missing(data["items"])
+    for table in (data["items"], data["entities"]):
+        for key, item in list(table.items()):
+            item = entry(item)
+            item["buckets"] = rebucket(item["buckets"], ref)
+            table[key] = item
+
+    data["rolled_through"] = newest.isoformat() if newest else None
+    data["generated"] = now_iso(args.at)
+    save(data)
+    print(
+        f"{folded} line(s) folded, {len(data['items'])} item(s) and "
+        f"{len(data['entities'])} entity(ies) in the pyramid"
+        + (f", {pruned} pruned" if pruned else "")
+    )
+    return 0
+
+
+def scores(data, items=None, entities=None):
+    """The recall lookup, as `{"items": {...}, "entities": {...}}`.
+
+    A key that was asked for and never cited comes back as a zeroed entry
+    rather than missing, so a consumer never branches on absence — which is
+    what makes an absent, empty or malformed `recall.json` degrade to "nothing
+    was ever cited" instead of to a crash (E2, E3).
+    """
+    out = {}
+    for field_name, asked in (("items", items), ("entities", entities)):
+        table = data.get(field_name)
+        table = table if isinstance(table, dict) else {}
+        if asked is None:
+            out[field_name] = {k: entry(v) for k, v in table.items()}
+        else:
+            out[field_name] = {k: entry(table.get(k)) for k in asked}
+    return out
+
+
+def last_cited(data, key, kind="items"):
+    """The ISO date `key` was last cited, or None. The one call decay makes.
+
+    Read the record once with `load()` and call this per loop: that is the
+    fixed-size lookup the pyramid was built to be. Calling the `score`
+    subcommand per loop would re-read the file 1784 times.
+    """
+    table = data.get(kind)
+    table = table if isinstance(table, dict) else {}
+    return entry(table.get(key))["last"]
+
+
+def cmd_score(args):
+    asked_items = dedupe(args.item, normalize_item) if args.item else None
+    asked_entities = dedupe(args.entity, normalize_entity) if args.entity else None
+    if asked_items is None and asked_entities is None:
+        result = scores(load())
+    else:
+        result = scores(load(), asked_items or [], asked_entities or [])
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    for kind, label in (("items", "item"), ("entities", "entity")):
+        rows = sorted(
+            result[kind].items(), key=lambda kv: (-kv[1]["total"], kv[0])
+        )
+        for key, item in rows:
+            print(f"{label}\t{key}\t{item['last'] or '—'}\t{item['total']}")
+    return 0
+
+
 def cmd_log(args):
     mode = (args.mode or "").strip()
     if not mode:
@@ -292,6 +620,30 @@ def build_parser():
     )
     sp.add_argument("--at", help="override 'now' with an ISO timestamp")
     sp.set_defaults(func=cmd_log)
+
+    sp = sub.add_parser(
+        "roll", help="fold the consumption log into recall.json's pyramid"
+    )
+    sp.add_argument("--at", help="override 'now' with an ISO timestamp")
+    sp.set_defaults(func=cmd_roll)
+
+    sp = sub.add_parser("score", help="what a key was last cited, and how often")
+    sp.add_argument(
+        "--item",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="score this path; repeat per item. Default: every key on record",
+    )
+    sp.add_argument(
+        "--entity",
+        action="append",
+        default=[],
+        metavar="SLUG",
+        help="score this entity slug; repeat per entity",
+    )
+    sp.add_argument("--json", action="store_true", help="emit JSON instead of rows")
+    sp.set_defaults(func=cmd_score)
 
     sub.add_parser("show", help="dump the canonical recall.json").set_defaults(
         func=cmd_show
