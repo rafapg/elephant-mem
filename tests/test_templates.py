@@ -33,9 +33,17 @@ What is checked, in the order the templates are used:
      motivated dropping the CI step that ran `validate-okf.py` straight from the
      checkout (0.1.0-beta.11): it walked an accidental `plugin/assets/knowledge/`
      of four empty files instead of the templates.
-  2. Every bundle reader has a driver below, so a new script under
+  2. The vocabulary a template documents in a trailing `#` comment covers what
+     the writers actually produce. That comment is the only place a bundle
+     owner learns which values a field takes, and nothing else asserts it:
+     reverting `open-loop.md`'s `status:` line to the old three-value form, so
+     that it no longer names `expired`, left every suite in this repo green.
+     Both sides are derived, the enum out of the code and the vocabulary out of
+     the comment, so a value added later is covered without anyone editing this
+     file.
+  3. Every bundle reader has a driver below, so a new script under
      `assets/scripts/` fails this suite until someone writes one or exempts it.
-  3. One check per reader, mounting the templates as a real bundle and asserting
+  4. One check per reader, mounting the templates as a real bundle and asserting
      something **substantive** about the output. Not `returncode == 0`: a script
      can exit 0 while saying nothing, and silence is precisely what all six of
      those defects looked like.
@@ -54,6 +62,9 @@ resolve `plugin/assets/` as its bundle.
 
 Exit code 0 only if every check below passes.
 """
+import ast
+import importlib.util
+import json
 import shutil
 import subprocess
 import sys
@@ -206,7 +217,83 @@ def test_templates_wellformed():
 
 
 # ---------------------------------------------------------------------------
-# 2. every bundle reader is driven
+# 2. the vocabulary a template documents covers what the writers produce
+# ---------------------------------------------------------------------------
+
+def _loop_statuses_produced():
+    """Every value a writer can leave in a loop's `status:`, derived from the
+    code rather than listed here, so a value added later is picked up on its
+    own. Three sources, because three vocabularies genuinely run in the field:
+
+      * `LOOP_STATUS` as build-index.py computes it when imported out of this
+        checkout, which is the shipped vocab.json fed through `vocab_set()`;
+      * the literal default that same call falls back to, which is what runs in
+        every bundle predating the release that copies vocab.json in (the
+        comment above LOOP_STATUS says so itself);
+      * `loop_status` in plugin/assets/vocab.json, read straight off disk
+        instead of through the module that consumes it.
+    """
+    build_index = ASSETS / "scripts" / "build-index.py"
+    source = build_index.read_text(encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location("build_index_py", build_index)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    produced = set(mod.LOOP_STATUS)
+
+    # The fallback list, taken from the call itself: `LOOP_STATUS =
+    # vocab_set("loop_status", [...])`. A bundle with no vocab.json runs this
+    # one, so a value present only here still reaches a loop file.
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(tgt, ast.Name) and tgt.id == "LOOP_STATUS"
+            for tgt in node.targets
+        ):
+            continue
+        call = node.value
+        if isinstance(call, ast.Call) and len(call.args) == 2:
+            produced |= set(ast.literal_eval(call.args[1]))
+
+    vocab = json.loads((ASSETS / "vocab.json").read_text(encoding="utf-8"))
+    produced |= set(vocab.get("loop_status", []))
+    return produced
+
+
+def _documented_enum(path, key):
+    """The vocabulary a template documents in the trailing comment of its
+    `<key>:` line, e.g. `status: open  # open | done | dropped | expired`, as a
+    set. Empty when the line carries no comment, which is itself a failure: a
+    field whose values went undocumented is the drift this check exists for."""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.lstrip()
+        if not stripped.startswith(f"{key}:"):
+            continue
+        _value, sep, comment = stripped.partition("#")
+        if not sep:
+            return set()
+        return {v.strip() for v in comment.split("|") if v.strip()}
+    raise AssertionError(f"{path.name} has no `{key}:` line")
+
+
+def test_documented_vocabularies():
+    template = TEMPLATES / "open-loop.md"
+    produced = _loop_statuses_produced()
+    documented = _documented_enum(template, "status")
+    missing = sorted(produced - documented)
+    record(
+        "open-loop.md documents every `status:` value the writers produce, in "
+        "the comment on its own `status:` line",
+        not missing,
+        f"produced but undocumented: {missing}\n"
+        f"produced: {sorted(produced)}\n"
+        f"documented: {sorted(documented)}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3. every bundle reader is driven
 # ---------------------------------------------------------------------------
 
 def test_reader_coverage():
@@ -221,7 +308,7 @@ def test_reader_coverage():
 
 
 # ---------------------------------------------------------------------------
-# 3. the templates as a real bundle, one reader at a time
+# 4. the templates as a real bundle, one reader at a time
 # ---------------------------------------------------------------------------
 
 def mount_bundle(root, name):
@@ -511,6 +598,7 @@ def main():
 
     try:
         test_templates_wellformed()
+        test_documented_vocabularies()
         test_reader_coverage()
     except Exception:  # noqa: BLE001 - report as a failed check, not a traceback
         record("test_templates raised an unexpected exception", False,

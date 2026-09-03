@@ -71,13 +71,16 @@ entity-centric (see below).
 An **open-loop** is a commitment/action-item ("the owner will produce the
 planning materials"). It is NOT a durable fact — it completes. Give it a `status`
 (`open|done|dropped|expired`) and a `**Closure signal:**`. `close-loops` reads
-that signal against the evidence and writes `status: done` itself; `decay` flips
-a loop that went quiet and survived examination to `status: expired`; `dropped`
-stays a hand-set state. Those are the only writers, and `maintain` never touches
-a loop. Any status other than `open` takes the loop off the board, out of the
+that signal against the evidence and writes `status: done` itself; `catch-up`
+step 4 does the same for a loop a new source shows done; `decay` flips a loop
+that went quiet and survived examination to `status: expired`; `dropped` stays a
+hand-set state. Those are the only writers, and `maintain` never touches a
+loop. Any status other than `open` takes the loop off the board, out of the
 manifest and out of the entity hubs, and `build-index.py` lists it on
-`tracking/resolved-loops.md`, its one archive. Use open-loops to track "what got
-done vs not".
+`tracking/resolved-loops.md`, newest first, capped at `index.resolved_max`
+(default 200) with the older ones spilling into a linked sibling shard. So a
+resolved loop older than that cap is on the shard, not on the page. Use
+open-loops to track "what got done vs not".
 
 ## Aggregator facts (the rollup rule)
 

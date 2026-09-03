@@ -76,11 +76,16 @@ closes loops by evidence in front of the one that expires them by silence.
   loop paths are cited 4136 times from durable, non-regenerated text — 2784 in
   source bodies, 745 in facts, 603 in `log.md` — and `validate-okf.py` requires
   every one of them to resolve before any routine commits.
-- **`tests/test_recall.py` (115 checks) and `tests/test_close_loops.py` (119)**,
+- **`tests/test_recall.py` (137 checks) and `tests/test_close_loops.py` (127)**,
   each with its own `- run:` line in `ci.yml`, added in the same change that
   created the suite. A glob does not pick up a new suite; `test_backlog.py` went
-  a full release unrun for want of that line. `tests/test_decay.py` grew to 126
-  checks, `tests/test_index.py` to 94 and `tests/test_templates.py` to 27.
+  a full release unrun for want of that line, and inside this release two check
+  groups sat written but unregistered in `test_recall.py`'s `main()`, which is
+  the same failure one level down. `tests/test_decay.py` grew to 131 checks,
+  `tests/test_index.py` to 104 and `tests/test_templates.py` to 28. `smoke.py`
+  now reads these five numbers back out of this file and fails when they drift:
+  four of them were wrong here for a day, in the text that becomes the release
+  notes.
 
 ### Changed
 
@@ -113,9 +118,10 @@ closes loops by evidence in front of the one that expires them by silence.
 - **Resolved loops leave the entity hubs.** `build-index.py` no longer re-files
   a non-`open` loop as a history line, and `briefing.py` no longer prints one
   under `## Open loops` because its `opened` date fell in the window
-  (`--include-resolved` shows them). `tracking/resolved-loops.md` is their one
-  listing. Both surfaces are derived, so this is one line to reverse and loses
-  no data.
+  (`--include-resolved` shows them). `tracking/resolved-loops.md` is their
+  listing, with the overflow past `index.resolved_max` on the linked sibling
+  shard: at this bundle's 242 resolved loops the two pages already exist. Both
+  surfaces are derived, so this is one line to reverse and loses no data.
 - **`expired` joined `build-index.py`'s hardcoded `loop_status` default, and
   `init` now copies `vocab.json` into new bundles.** Not defensive: no bundle had
   ever received that file, so the hardcoded fallback is what runs in the field,
@@ -133,7 +139,8 @@ closes loops by evidence in front of the one that expires them by silence.
   when the source has no date. That plus `decay`'s review-gate snooze are the two
   documented writers of the field, and `capture` is named as not being one — it
   opens loops and never revisits one.
-- **Every bundle already on disk was about to commit `state/recall.json`.** The
+- **Every bundle already on disk was about to commit the record of what its
+  owner reads.** Two files, not one, and the second is the worse of them. The
   seed `.gitignore` carries the rule, but `init` copies that file exactly once
   and `update` re-syncs **only** `scripts/` and `templates/`, so no existing
   bundle would ever have received it — while `decay`, `catch-up` and
@@ -148,23 +155,59 @@ closes loops by evidence in front of the one that expires them by silence.
   raises. What it does do is stop: a roll that cannot confirm the rules, an
   unreadable `.gitignore` or an append that failed, writes no record and exits
   non-zero, because the alternative is creating that file unprotected in front
-  of the next `git add -A`. `roll` owns this rather than `update` because it is the writer of the
+  of the next `git add -A`. **`log` protects its own file the same way**, and
+  putting the guarantee only in `roll` was not enough: `log` writes
+  `state/consumption-log.jsonl` at the end of a read, `catch-up` runs its
+  `git add -A` before the roll, and `close-loops` and `ingest` never roll at
+  all, so the rules arrived one step late and a rule does not untrack what an
+  earlier commit already took. Measured on a bundle seeded from the previous
+  release, the committed blob carried `entities` and `facts_cited` per query,
+  which is a per-question record of which people were looked up. `log` now
+  confirms the rules before it appends and, when it cannot, skips the line,
+  says why on stderr and still exits 0: a read is never failed by its own
+  bookkeeping, and one missing citation is a cost the pyramid absorbs. **The
+  migration check above applies to `state/consumption-log.jsonl` too**, and it
+  is the one more likely to have been committed already. `roll` owns this rather than `update` because it is the writer of the
   file that leaks. **If you ran a routine between installing this release and
   the first `roll`**, check `git -C <bundle> log --oneline -- state/recall.json`
   — if it was committed, `git rm --cached state/recall.json` and commit; the
   file is derived and rebuilds forward on the next roll. On a bundle with a
   remote, rewrite the history that carries it.
-- **A loop whose `status` was written `Open` fell out of both sides of the
-  partition.** `build-index.py` compared the field exactly, so a value with a
-  capital, a trailing space or surrounding quotes was neither open nor
-  resolved: absent from the board, from the manifest and from the entity hub,
-  and published on the resolved page as settled. The field is reachable by
+- **A loop whose `status` was written `Open` changed sides silently.**
+  `build-index.py` compared the field exactly, so a value with a capital, a
+  trailing space or surrounding quotes fell on the resolved side of a partition
+  its author meant as open: absent from the board, from the manifest and from
+  the entity hub, and published on `tracking/resolved-loops.md` as settled. The
+  two predicates were exact complements, so nothing was lost, which is what
+  made it quiet: a commitment stopped being tracked and was filed as kept. The
+  field is reachable by
   hand, since `close-loops` has the model editing `status: done` itself, and
   2025 of the 2036 loop bodies were written by hand to begin with. A shared
   `loop_status()` now normalizes once and both partitions read it, with the
   same rule restated and cross-checked in `briefing.py` and `decay-loops.py`;
   decay's writer was widened to match its reader, so a `status: Open` loop is
   no longer listed as a candidate and then skipped with a warning.
+- **A past date written inside a sentence expired a loop.** `decay` reads the
+  examination date out of `state/closure-sweep.json`, and finding ten digits in
+  the right shape anywhere in the value was enough. A human writing a refusal
+  into the record, `"could not decide on 2026-09-02"`, was read as an
+  examination that cleared the loop; `--apply` then expired it irreversibly and
+  wrote onto `tracking/resolved-loops.md` that an examination on that date had
+  not closed it, which never happened. Two dates in one value let the first win
+  the same way. Both readers now require the value to **be** a date, allowing
+  only a time of day after it, and an unreadable value parks that one loop
+  instead of expiring it. `close-loops.py` validates identically, since the two
+  disagreeing is the deadlock this release already fixed once on a different
+  input.
+- **A fact's status was read three different ways in one build.**
+  `status: Superseded` landed on both sides of the same partition inside a
+  single run, written into the manifest as current by one reader and filed
+  under history on the hub by another, and `status: "superseded "` read as
+  current on every surface, because the loop rule strips and the fact rule did
+  not. One normalizer now partitions the fact lane the way `loop_status()`
+  partitions the loop one, and the three sites read it instead of restating it.
+  Older than this release and found by looking one screen over from its own
+  fix.
 - **The sweep command validated nothing.** Step 4 of `close-loops` records
   what was examined by hand, and a mistyped loop path or an invented outcome
   was written into `state/closure-sweep.json` in silence, where it reads back
