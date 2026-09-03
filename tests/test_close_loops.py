@@ -33,6 +33,18 @@ decisions are observable at all. What is covered:
   (g) the suite is registered in CI by its own `- run:` line (E24) — the
       workflow has no glob, and `test_backlog.py` went a whole release unrun
       because of exactly that.
+  (h) **the routine that consumes all of it** — `plugin/skills/close-loops/`
+      is the write half, and it is prose, so what a suite can pin is the
+      contract that prose carries: the judgment of the evidence set as a whole,
+      the `status: done` / `closed` / `closed_by` / `**Resolution:**` write, the
+      sweep entry for every examined loop whether it closed or not, the
+      rebuild-validate-log-commit tail and its don't-commit-on-failure branch
+      (H4, H5, H6, E13, E14, E23). One piece of that prose is executable and is
+      executed here: the procedure prescribes the exact command that writes
+      `state/closure-sweep.json`, and this suite lifts it out of the markdown,
+      runs it, and hands the result back to `close-loops.py` — so a recipe that
+      writes a shape the script cannot read fails here rather than in the field,
+      where it would silently park `decay` instead.
 
 Pure stdlib, Python 3.10+, mirroring `tests/test_recall.py`'s conventions: a
 throwaway bundle in a tempdir, subprocess calls into a copy of the real
@@ -40,6 +52,7 @@ throwaway bundle in a tempdir, subprocess calls into a copy of the real
 every check passes. Dates are fixed rather than relative to today: this script
 has no staleness threshold, it only orders, so nothing here needs the calendar.
 """
+import datetime
 import json
 import shutil
 import subprocess
@@ -50,6 +63,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "plugin" / "assets" / "scripts" / "close-loops.py"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+SKILL_DIR = REPO_ROOT / "plugin" / "skills" / "close-loops"
 
 OWNER = "jane-doe"
 
@@ -561,6 +575,187 @@ def test_named_loop_bypasses_the_queue(root):
            queued_paths(payload) == ["/tracking/loops/b.md"], queued_paths(payload))
 
 
+# --- (h) the routine --------------------------------------------------------
+
+
+def read_skill(name):
+    path = SKILL_DIR / name
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def sweep_recipe():
+    """The python the procedure tells the routine to run, lifted out of it.
+
+    The block is a heredoc inside a fenced ```bash example: everything between
+    the line opening `<<'PY'` and the line that closes it. Returned with the
+    sample argv pairs the procedure shows, so a drift in either half is visible
+    from one place.
+    """
+    text = read_skill("procedure.md")
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("python3 -") and line.rstrip().endswith("<<'PY'"):
+            body = []
+            for follow in lines[i + 1:]:
+                if follow.strip() == "PY":
+                    pairs = [tok for tok in line.split()[2:] if tok != "<<'PY'"]
+                    return "\n".join(body) + "\n", pairs
+                body.append(follow)
+            break
+    return "", []
+
+
+def test_skill_shape():
+    """The skill ships in the same shape as catch-up and decay."""
+    skill = read_skill("SKILL.md")
+    procedure = read_skill("procedure.md")
+    record("plugin/skills/close-loops/ ships a SKILL.md and a procedure.md",
+           bool(skill) and bool(procedure), str(SKILL_DIR))
+    record("SKILL.md declares `name: close-loops` and blocks model invocation, "
+           "so the routine only ever starts from an explicit call or a schedule",
+           "name: close-loops" in skill
+           and "disable-model-invocation: true" in skill, skill[:200])
+    record("SKILL.md points at procedure.md and at the shared contract",
+           "procedure.md" in skill and "_shared/core.md" in skill)
+    low = skill.lower()
+    record("it is scheduled daily and unattended, with no review gate",
+           "daily" in low and "unattended" in low and "review gate" in low, low[:400])
+
+
+def test_procedure_contract():
+    """H4/H5/H6, E13, E14, E23 — what the prose has to commit the routine to."""
+    p = read_skill("procedure.md")
+    low = p.lower()
+
+    record("H4: the bar is the evidence set judged as a whole, not a criterion "
+           "matched literally",
+           "as a whole" in low and "not** whether some candidate" in low,
+           low[:0])
+    record("H4/E13: the closing write is the three frontmatter fields plus the "
+           "prose paragraph — status: done, closed, closed_by, **Resolution:**",
+           all(tok in p for tok in ("status: done", "closed: <today",
+                                    "closed_by:", "**Resolution:**")))
+    record("E13: closed_by has to resolve on disk, which is what validate-okf.py "
+           "checks and what a hand-written link gets wrong",
+           "must resolve on disk" in low and "validate-okf.py" in p)
+    record("the resolution is prose in the body and never a frontmatter field — "
+           "a sentence of judgment carries `: ` and ` #`",
+           "never a frontmatter field" in low)
+    record("…and its first sentence stands alone, because that is all "
+           "tracking/resolved-loops.md prints of it",
+           "first sentence" in low and "resolved-loops.md" in p)
+
+    record("E14: evidence that does not show delivery leaves the loop open, "
+           "recorded, and queued for nobody",
+           "undecided is" in low and "needs-review" in low
+           and "no write at all" in low)
+    record("E14: and explicitly does not bump `updated:`, which would hand the "
+           "loop immortality from the routine meant to resolve it",
+           "updated:" in p and "immortal" in low)
+
+    record("H5: every examined loop is recorded, closed or not",
+           "closed or not" in low and "closure-sweep.json" in p)
+    record("H5: the outcome vocabulary is the one close-loops.py reads back",
+           "=done" in p and "=open" in p)
+
+    record("H6: the run rebuilds, validates, writes one log.md line and makes "
+           "one commit",
+           all(tok in p for tok in ("scripts/build-index.py",
+                                    "scripts/validate-okf.py",
+                                    "knowledge/log.md",
+                                    "git -C <bundle> add -A"))
+           and "one commit for the run" in low)
+    record("H6: and never pushes", "never push" in low)
+    record("E23: a failed rebuild or validation commits nothing, and the next "
+           "run continues because the files are already written",
+           "do **not** commit" in low and "already" in low
+           and "next run" in low)
+    record("the empty run is a stop, not an empty commit",
+           "0 loop(s) queued" in p)
+
+
+def test_sweep_recipe_writes_what_the_script_reads(root):
+    """The one executable line of the procedure, executed.
+
+    A recipe that writes a shape `close-loops.py` cannot read would not fail
+    anywhere: the routine would report loops examined, `decay` would read an
+    empty record, and expiry would park with nothing in any output saying so.
+    """
+    body, pairs = sweep_recipe()
+    if not body:
+        record("procedure.md carries the closure-sweep write as a runnable block",
+               False, "no `python3 - … <<'PY'` heredoc found in procedure.md")
+        return
+    record("procedure.md carries the closure-sweep write as a runnable block, "
+           "with its sample pairs", bool(body) and len(pairs) == 2, str(pairs))
+
+    bundle = make_bundle(root, "sweep-recipe")
+    recipe = bundle / "recipe.py"
+    recipe.write_text(body, encoding="utf-8")
+
+    write_loop(bundle, "closed-one", opened="2026-01-01", entities=("acme",))
+    write_loop(bundle, "left-open", opened="2026-01-02", entities=("beta",))
+    write_loop(bundle, "untouched", opened="2026-01-03", entities=("gamma",))
+
+    def sweep(*args):
+        return subprocess.run([sys.executable, str(recipe), *args],
+                              cwd=str(bundle), capture_output=True, text=True,
+                              encoding="utf-8")
+
+    first = sweep("/tracking/loops/closed-one.md=done")
+    record("the block runs from <bundle> with no state file present and reports "
+           "its count",
+           first.returncode == 0 and "1 loop(s) recorded" in first.stdout,
+           f"exit={first.returncode}\n{first.stdout}\n{first.stderr}")
+
+    second = sweep("/tracking/loops/left-open.md=open")
+    data = json.loads((bundle / "state" / "closure-sweep.json").read_text(
+        encoding="utf-8"))
+    record("a second run merges rather than clobbers — the earlier run's entry "
+           "survives, which is the difference between a record and a log of the "
+           "last 25 loops",
+           second.returncode == 0 and set(data["loops"]) == {
+               "/tracking/loops/closed-one.md", "/tracking/loops/left-open.md"},
+           json.dumps(data, indent=2))
+    record("…in the schema close-loops.py documents: schema, generated, and one "
+           "{examined, outcome} entry per loop",
+           data.get("schema") == 1 and isinstance(data.get("generated"), str)
+           and data["loops"]["/tracking/loops/closed-one.md"]["outcome"] == "done"
+           and data["loops"]["/tracking/loops/left-open.md"]["outcome"] == "open",
+           json.dumps(data, indent=2))
+
+    today = datetime.date.today().isoformat()
+    record("the examination is dated today, which is what the settled rule and "
+           "decay's per-loop gate both compare against",
+           {e["examined"] for e in data["loops"].values()} == {today},
+           json.dumps(data, indent=2))
+
+    payload, result = proposal(bundle)
+    if payload is None:
+        record("close-loops.py reads the record the procedure wrote", False,
+               f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+        return
+    record("close-loops.py reads the record the procedure wrote: both examined "
+           "loops are settled and only the untouched one is still queued",
+           queued_paths(payload) == ["/tracking/loops/untouched.md"],
+           queued_paths(payload))
+
+    # And the record is not a wall: new material returns an examined loop to
+    # band 1, so "left open" is a state the routine revisits by itself (E14).
+    # Dated the day after the examination, because material has to be strictly
+    # newer to count — a fact filed the same day is what the examination read.
+    tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+    write_fact(bundle, "beta-shipped", description="beta shipped the migration",
+               entities=("beta",), occurred=tomorrow)
+    payload, _ = proposal(bundle)
+    band1 = [lp for lp in payload["loops"] if lp["band"] == 1]
+    record("…and a loop left open returns to band 1 the moment its entities "
+           "gain material, which is why nothing is queued for a human",
+           [lp["path"] for lp in band1] == ["/tracking/loops/left-open.md"],
+           json.dumps([{"path": lp["path"], "band": lp["band"]}
+                       for lp in payload["loops"]], indent=2))
+
+
 # --- (f) (g) the guard, the shipping surface ------------------------------
 
 
@@ -601,7 +796,8 @@ def test_shipping_surface():
 
 
 def main():
-    print("elephant-mem test_close_loops — the queue and the evidence proposal")
+    print("elephant-mem test_close_loops — the queue, the evidence proposal, "
+          "and the routine that writes the verdict")
     print(f"python:   {sys.version.splitlines()[0]}")
     print(f"platform: {sys.platform}")
     print()
@@ -613,13 +809,17 @@ def main():
                      test_bands, test_band_one_fills_the_cap_first,
                      test_evidence_ranking, test_evidence_cap, test_no_evidence,
                      test_criterion_fallback, test_degraded_inputs,
-                     test_named_loop_bypasses_the_queue, test_checkout_guard):
+                     test_named_loop_bypasses_the_queue,
+                     test_sweep_recipe_writes_what_the_script_reads,
+                     test_checkout_guard):
             try:
                 test(root)
             except Exception as exc:  # noqa: BLE001 - one broken case must not hide the rest
                 import traceback
                 record(f"{test.__name__} raised {exc.__class__.__name__}", False,
                        traceback.format_exc())
+        test_skill_shape()
+        test_procedure_contract()
         test_shipping_surface()
     finally:
         shutil.rmtree(root, ignore_errors=True)
