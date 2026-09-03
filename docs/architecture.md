@@ -25,6 +25,7 @@ machine, and never travels except by you moving the folder.
     index.md                          # derived: thin router (reserved, no frontmatter)
     log.md                            # episodic ledger (reserved, no frontmatter)
   elephant.json                       # bundle config: owner, languages, timezone, sources
+  vocab.json                          # controlled vocabulary; yours to extend, never re-synced
   config.md                           # bundle conventions (human + agent readable)
   raw/                                # optional unprocessed capture of a source
   state/                              # incremental-routine cursors (NOT part of the OKF bundle)
@@ -56,9 +57,11 @@ Why three lanes instead of one big pile:
 - **A durable fact and a commitment are different things.** A fact ("the billing
   service runs on Acme Cloud") stays true; a commitment ("Jane will draft the
   migration plan") *completes*. Open loops carry a `status` (`open | done |
-  dropped`) and a **closure signal**; when a later source shows the work was done,
-  `maintain` flips it to `done`. The lane is what lets you answer "what got done
-  vs. what's still hanging".
+  dropped | expired`) and a **closure signal**; `close-loops` reads that signal
+  against the evidence and flips the loop to `done`, and `decay` flips one that
+  went quiet and survived examination to `expired`. Those two are the writers —
+  `maintain` never touches a loop. The lane is what lets you answer "what got
+  done vs. what's still hanging".
 
 ### event time vs. record time
 

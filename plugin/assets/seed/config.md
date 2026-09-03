@@ -56,6 +56,7 @@ knowledge/                   # OKF v0.1 bundle (the queryable surface)
   manifest.jsonl             # derived: triage surface, one line per fact/loop
   log.md                     # episodic ledger (reserved, no frontmatter)
 elephant.json                # bundle config: owner, languages, timezone, sources
+vocab.json                   # controlled vocabulary; yours to extend, never re-synced
 config.md                    # this file
 raw/                         # optional unprocessed capture of a source
 state/                       # incremental-routine cursors (NOT in the OKF bundle)

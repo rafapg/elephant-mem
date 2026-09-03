@@ -3,8 +3,8 @@
 elephant-mem has **two layers**:
 
 - **Core modes need zero connectors.** `query`, `briefing`, `capture`, `ingest`,
-  `maintain`, `expand`, `review`, `start-day`, and `end-day` all operate on the
-  local markdown bundle alone. You can run the whole system this way, adding
+  `maintain`, `close-loops`, `decay`, `expand`, `review`, `start-day`, and
+  `end-day` all operate on the local markdown bundle alone. You can run the whole system this way, adding
   knowledge by hand with `ingest` and `capture`.
 - **Automatic ingestion is optional** and driven by the `sources` block in
   `elephant.json`. `catch-up` (scheduled autonomous ingestion) and
@@ -257,8 +257,13 @@ These are orthogonal, and it's worth understanding why:
 Don't raise the cadence to "cover" being offline — it can't. The cursor already
 handles it.
 
-Run `maintain` on a slower cadence (e.g. daily) and `review` whenever the
-`needs-review` queue grows.
+Run `close-loops` daily and unattended, in the same shape as `catch-up`
+(permissive permission mode, worktree off, one "Run once" to pre-approve the
+prompts) — it examines a bounded slice of the open loops and closes the ones
+the evidence shows delivered. Run `decay` every three days, after it, so it
+only ever expires loops `close-loops` has already read. Run `maintain` on a
+slower cadence (e.g. daily) and `review` whenever the `needs-review` queue
+grows.
 
 ## Bring your own MCP source
 

@@ -124,6 +124,24 @@ closes loops by evidence in front of the one that expires them by silence.
   when the source has no date. That plus `decay`'s review-gate snooze are the two
   documented writers of the field, and `capture` is named as not being one — it
   opens loops and never revisits one.
+- **Every bundle already on disk was about to commit `state/recall.json`.** The
+  seed `.gitignore` carries the rule, but `init` copies that file exactly once
+  and `update` re-syncs **only** `scripts/` and `templates/`, so no existing
+  bundle would ever have received it — while `decay`, `catch-up` and
+  `close-loops` all end in `git add -A && git commit`. Measured on a bundle
+  seeded from the previous release, one `log` and one `roll` was enough:
+  `git add -A` staged `state/recall.json`, and `git show :state/recall.json`
+  read back the names of the people who had been looked up. `roll` now appends
+  the three missing rules (`state/consumption-log.jsonl`, `state/recall.json`,
+  `state/last-update-check.json`) to the bundle's `.gitignore` before it writes
+  anything, printing one line when it does; it appends only, skips a rule
+  already covered in any form (`state/` as a blanket included), and never
+  raises. `roll` owns this rather than `update` because it is the writer of the
+  file that leaks. **If you ran a routine between installing this release and
+  the first `roll`**, check `git -C <bundle> log --oneline -- state/recall.json`
+  — if it was committed, `git rm --cached state/recall.json` and commit; the
+  file is derived and rebuilds forward on the next roll. On a bundle with a
+  remote, rewrite the history that carries it.
 - **`decay/procedure.md` said the rebuild re-files an expired loop into entity
   history.** It did not, and after this release it deliberately does the
   opposite: a resolved loop leaves the hubs outright and
