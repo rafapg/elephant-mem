@@ -927,7 +927,7 @@ def test_sweep_recipe_writes_what_the_script_reads(root):
     def sweep(*args):
         return subprocess.run([sys.executable, str(recipe), *args],
                               cwd=str(bundle), capture_output=True, text=True,
-                              encoding="utf-8")
+                              encoding="utf-8", errors="replace")
 
     first = sweep("/tracking/loops/closed-one.md=done")
     record("the block runs from <bundle> with no state file present and reports "
@@ -976,7 +976,7 @@ def test_sweep_recipe_writes_what_the_script_reads(root):
         got = sweep(bad)
         record(f"the recipe refuses {label} — loudly, and writes nothing",
                got.returncode != 0
-               and "closure-sweep" in (got.stdout + got.stderr)
+               and "closure-sweep" in ((got.stdout or "") + (got.stderr or ""))
                and state_file.read_text(encoding="utf-8") == intact,
                f"exit={got.returncode}\n{got.stdout}\n{got.stderr}")
 
@@ -992,7 +992,7 @@ def test_sweep_recipe_writes_what_the_script_reads(root):
     record("the count is the entries actually recorded, not the arguments "
            "passed — otherwise a run that recorded one loop reports two",
            repeated.returncode == 0 and "1 loop(s) recorded" in repeated.stdout,
-           repeated.stdout + repeated.stderr)
+           (repeated.stdout or "") + (repeated.stderr or ""))
 
     # Undo that last write so the queue assertions below read the two-entry
     # record the earlier calls built.

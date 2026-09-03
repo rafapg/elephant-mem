@@ -181,10 +181,10 @@ for pair in sys.argv[1:]:
     outcome = outcome if sep else "open"
     if not (link.startswith("/tracking/loops/") and link.endswith(".md")):
         sys.exit(f"closure-sweep: {pair!r} is not a bundle-absolute loop path "
-                 "(/tracking/loops/<name>.md) — nothing was written")
+                 "(/tracking/loops/<name>.md). Nothing was written.")
     if outcome not in OUTCOMES:
         sys.exit(f"closure-sweep: {pair!r} has outcome {outcome!r}, not one of "
-                 f"{sorted(OUTCOMES)} — nothing was written")
+                 f"{sorted(OUTCOMES)}. Nothing was written.")
     recorded[link] = {"examined": today, "outcome": outcome}
 data["loops"].update(recorded)
 path.parent.mkdir(parents=True, exist_ok=True)
