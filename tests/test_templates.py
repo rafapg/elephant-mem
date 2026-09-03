@@ -361,8 +361,11 @@ def drive_decay_loops(root):
     )
 
     # --apply writes, so it runs last in this driver's bundle and nothing else
-    # reads it afterwards.
-    applied = run_script(bundle, "decay-loops.py", ["--apply"])
+    # reads it afterwards. --skip-sweep because this check is about the template
+    # being read, not about the closure sweep: without it the gate would hold
+    # the loop back (no `close-loops` run ever examined it) and the check would
+    # fail for a reason that has nothing to do with the templates.
+    applied = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
     text = loop.read_text(encoding="utf-8")
     record(
         "decay-loops.py --apply flips the template loop to `status: expired`",

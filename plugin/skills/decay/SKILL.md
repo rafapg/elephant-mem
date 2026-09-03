@@ -5,7 +5,9 @@ description: >
   Automatic decay of stale open loops: expire a `status: open` loop into
   `status: expired` once it has gone quiet (no `updated`/`opened`/`created`
   activity, and no citation recorded in `state/recall.json`) for longer than
-  elephant.json -> decay.loop_expiry_days (default 45 days). Re-mention
+  elephant.json -> decay.loop_expiry_days (default 45 days), and only once
+  `close-loops` has examined it and found nothing — every expiry writes a
+  `**Resolution:**` paragraph saying so. Re-mention
   already resets the clock via `updated`. A deliberate
   operation with side effects (edits loop files, rebuilds, validates,
   commits). Invoke only when the user explicitly asks (elephant-mem:decay),

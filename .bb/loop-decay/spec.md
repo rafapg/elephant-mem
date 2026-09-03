@@ -267,7 +267,7 @@ yesterday is as examined as one examined an hour ago.
       → H2, H3, E9, E10, E11, E12, E22, E24 · dep: — · verify: `tests/test_close_loops.py`
 - [x] **7. The `close-loops` skill**: `SKILL.md` + `procedure.md`, daily unattended, the judgment, the `**Resolution:**` and `closed`/`closed_by` write, the sweep record, one commit
       → H4, H5, H6, E13, E14, E23 · dep: 6 · verify: `tests/test_close_loops.py`
-- [ ] **8. Decay's half**: `**Resolution:**` on expiry, the per-loop gate, `--skip-sweep`
+- [x] **8. Decay's half**: `**Resolution:**` on expiry, the per-loop gate, `--skip-sweep`
       → H8, E15, E16, E17, E18 · dep: 5, 7 · verify: `tests/test_decay.py`
 - [ ] **9. The resolved surface**: `tracking/resolved-loops.md` with its cap and overflow shard; the new filename added to the derived-name set each of the four scripts keeps its own copy of (`build-index.py`, `validate-okf.py`, `briefing.py`, `rename-entity.py`); a status filter on `briefing.py`'s loop list; resolved loops dropped from entity pages; `expired` in the hardcoded status default and `vocab.json` copied by `init`
       → H9, E20, E21, E25 · dep: — · verify: `tests/test_index.py`

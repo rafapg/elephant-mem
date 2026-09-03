@@ -25,8 +25,12 @@ it.
    records the loop as cited by an answer), and lists every one older than
    `elephant.json` -> `decay.loop_expiry_days` (default 45 — same defensive
    fallback as `hub_max_facts`) as a candidate, one per line with its age in
-   days, plus a trailing count. The scan is read-only, and the roll before it
-   writes only `state/recall.json` — no knowledge file changes yet.
+   days, plus a trailing count. Each line also says whether
+   `state/closure-sweep.json` clears that loop for expiry or holds it back, and
+   the trailing count is followed by the split — the dry run is where you see
+   how much of this run's lane `close-loops` has actually examined. The scan is
+   read-only, and the roll before it writes only `state/recall.json` — no
+   knowledge file changes yet.
 
    If the count is 0, say so and stop — there is nothing to do this run.
 
@@ -46,9 +50,34 @@ it.
 
 3. **Apply.** Run `python3 scripts/decay-loops.py --apply`. It re-scans (so
    any snooze from step 2 already took effect) and, for every remaining
-   candidate, flips `status: open` → `status: expired` and stamps
-   `expired: YYYY-MM-DD`. It never deletes a file and never touches
-   `done` / `dropped` / already-`expired` loops.
+   candidate the gate below clears, flips `status: open` → `status: expired`,
+   stamps `expired: YYYY-MM-DD`, and appends a `**Resolution:**` paragraph to
+   the body saying what the silence was — the same place and the same shape
+   `close-loops` writes its closure paragraph in, so
+   `tracking/resolved-loops.md` reads both the same way. It never deletes a
+   file and never touches `done` / `dropped` / already-`expired` loops.
+
+   **The gate.** `--apply` expires a candidate only if
+   `state/closure-sweep.json` shows `close-loops` examined it on or after its
+   own last activity and did not close it. That record is written by the
+   `close-loops` routine — see `../close-loops/procedure.md` → **The sweep
+   record** for its shape and the one command that writes it; nothing here
+   writes it, and it must not be hand-edited. A candidate the record does not
+   cover is **held back**: the script names it, prints
+   `python3 scripts/close-loops.py`, and exits 0. That is not a failure, and
+   not something to work around — expiry is a verdict of silence, and silence
+   no routine has read is not evidence. Report the held-back count to the user
+   and let the next run take them, once `close-loops` has been round.
+
+   Losing the record therefore parks decay rather than corrupting it: every
+   loop reads as never examined and nothing expires. `--skip-sweep` is the
+   deliberate way out, and the only one — it bypasses the gate entirely and
+   expires every candidate on its dates alone, which is what this script did
+   before the gate existed. Use it when the record is genuinely gone, say so
+   in the run's report, and never as the default of a scheduled run.
+
+   **If everything was held back, nothing was written.** Skip steps 4 and 5:
+   there is no rebuild to do and nothing to commit.
 
 4. **Rebuild + validate.** `python3 scripts/build-index.py` then
    `python3 scripts/validate-okf.py` — both must pass. This is what actually
@@ -61,7 +90,8 @@ it.
 
 5. **Log + commit.** Append one dated line to `knowledge/log.md`:
    `**Decay**: N loops expired (>Xd stale)` (X = the effective
-   `loop_expiry_days`). Then `git -C <bundle> add -A && git -C <bundle>
+   `loop_expiry_days`; N is what was actually written, held-back candidates
+   excluded). Then `git -C <bundle> add -A && git -C <bundle>
    commit -m "decay: N loops expired (>Xd stale)"`. **Never push.** If step 1
    found 0 candidates, there is nothing to commit — skip this step entirely.
 
