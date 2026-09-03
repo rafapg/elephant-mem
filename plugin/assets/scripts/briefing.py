@@ -15,6 +15,10 @@ no bodies, no embeddings). It answers things like:
 Time is filtered on `occurred` (when it happened), falling back to `created`
 (ingestion date) when a file has no `occurred`. Channel is resolved by joining a
 fact to its `sources` and reading each source's `channel`.
+
+Status is filtered on both lanes: superseded/deprecated facts and done / dropped
+/ expired loops are hidden by default, since a resolved item keeps the date that
+put it in the window. `--include-superseded` and `--include-resolved` show them.
 """
 import argparse
 import datetime
@@ -51,7 +55,7 @@ if __name__ == "__main__" and os.path.basename(ROOT) == "assets" and os.path.isd
         "is plugin/assets/, and it would write into the assets the marketplace\n"
         "publishes. Run it from an installed bundle instead."
     )
-RESERVED = {"index.md", "log.md", "open-loops.md"}
+RESERVED = {"index.md", "log.md", "open-loops.md", "resolved-loops.md"}
 ARCHIVE_SUFFIX = ".facts-archive.md"  # regenerated hub shard — no frontmatter, not a fact/open-loop
 FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 INLINE_LIST = re.compile(r"^\[(.*)\]$")
@@ -265,6 +269,8 @@ def main():
     ap.add_argument("--kind", choices=["fact", "open-loop", "all"], default="all")
     ap.add_argument("--include-superseded", action="store_true",
                     help="include deprecated/superseded facts (marked as history); hidden by default")
+    ap.add_argument("--include-resolved", action="store_true",
+                    help="include done/dropped/expired loops (marked as resolved); hidden by default")
     ap.add_argument("--min-confidence", choices=["low", "medium", "high"], default="low",
                     help="drop rows below this confidence (default low = show all)")
     args = ap.parse_args()
@@ -292,8 +298,16 @@ def main():
     def is_history(fm):
         return str(fm.get("status", "")).lower() in FACT_HISTORY_STATUS
 
+    def is_resolved(fm):
+        """A loop that has left the open lane. Tested as `status != open` rather
+        than against a resolved vocabulary, so it agrees exactly with the
+        partition build-index.py's board and manifest already draw — and so a
+        loop whose status is a typo is not silently reported as open."""
+        return str(fm.get("status", "open")).strip().lower() != "open"
+
     facts, loops = [], []
     hidden_superseded = 0
+    hidden_resolved = 0
     for fm in items:
         t = fm.get("type")
         if t not in TRACKED_TYPES:
@@ -321,6 +335,12 @@ def main():
                 continue
             facts.append((ed, fm))
         else:
+            # A resolved loop keeps its `opened` date, so without this it kept
+            # showing up under `## Open loops` for every window that date falls
+            # in, forever — the one filter the loop list never had.
+            if is_resolved(fm) and not args.include_resolved:
+                hidden_resolved += 1
+                continue
             loops.append((ed, fm))
 
     flt = []
@@ -350,6 +370,9 @@ def main():
         print(f"## Open loops ({len(loops)})")
         for ed, fm in sorted(loops, key=lambda x: x[0], reverse=True):
             print(f"- {ed} [{fm.get('status','open')}] {fm.get('description','')}  {fm['_link']}")
+        if hidden_resolved and not args.include_resolved:
+            print(f"\n_({hidden_resolved} resolved loop(s) hidden — pass --include-resolved "
+                  f"to show, or read /tracking/resolved-loops.md)_")
     return 0
 
 

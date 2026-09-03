@@ -11,10 +11,14 @@ by covering the specific bug fixes and new behavior below:
   3. Hub sharding: an entity/source referenced by more than `hub_max_facts`
      active facts keeps only the N most recent inline and moves the rest
      (older actives + all history) to a sibling `<slug>.facts-archive.md`.
-  4. vocab.json: validate-okf.py WARNs (never fails) on out-of-vocab values,
-     and build-index.py's status-set dispatch changes behavior when
-     vocab.json declares a value the hardcoded fallback doesn't know about
-     (loop_status "expired").
+  4. vocab.json: validate-okf.py WARNs (never fails) on out-of-vocab values;
+     an `expired` loop reads as history with AND without vocab.json (the
+     hardcoded loop_status default is what runs in the field, since no bundle
+     had ever received the file), and `init` is the procedure that copies it.
+  4c. tracking/resolved-loops.md: the archive of done/dropped/expired loops —
+     newest first, date + outcome + the first sentence of the resolution, the
+     loops gone from the entity hubs and from briefing.py's `## Open loops`,
+     and the overflow past `index.resolved_max` in a sibling archive shard.
   5. entities/roster.tsv: the resolution surface — one four-column row per
      ACTIVE entity, sorted by kind then title, with the trailing tab of an
      empty `aliases` column surviving, grid-breaking characters sanitized,
@@ -64,7 +68,7 @@ def run_script(bundle, script_name, args=None):
     )
 
 
-def new_bundle(root, name, with_vocab=False, hub_max_facts=None):
+def new_bundle(root, name, with_vocab=False, hub_max_facts=None, resolved_max=None):
     """Minimal throwaway bundle: shipped scripts + a reserved log.md, nothing
     else — each test seeds only the knowledge/ files it needs."""
     bundle = root / name
@@ -73,13 +77,25 @@ def new_bundle(root, name, with_vocab=False, hub_max_facts=None):
         shutil.copy2(ASSETS / "scripts" / f, bundle / "scripts" / f)
     if with_vocab:
         shutil.copy2(ASSETS / "vocab.json", bundle / "vocab.json")
-    if hub_max_facts is not None:
-        (bundle / "elephant.json").write_text(
-            json.dumps({"index": {"hub_max_facts": hub_max_facts}}) + "\n", encoding="utf-8"
-        )
+    if hub_max_facts is not None or resolved_max is not None:
+        write_index_config(bundle, hub_max_facts=hub_max_facts, resolved_max=resolved_max)
     (bundle / "knowledge").mkdir(parents=True, exist_ok=True)
     (bundle / "knowledge" / "log.md").write_text("# Log\n", encoding="utf-8")
     return bundle
+
+
+def write_index_config(bundle, hub_max_facts=None, resolved_max=None):
+    """(Re)write elephant.json's `index` section. Its own function because the
+    overflow test rebuilds the SAME bundle under a larger `resolved_max`, to
+    prove a shard that is no longer needed is deleted rather than left behind."""
+    index = {}
+    if hub_max_facts is not None:
+        index["hub_max_facts"] = hub_max_facts
+    if resolved_max is not None:
+        index["resolved_max"] = resolved_max
+    (bundle / "elephant.json").write_text(
+        json.dumps({"index": index}) + "\n", encoding="utf-8"
+    )
 
 
 MARKER = (
@@ -170,7 +186,12 @@ def write_fact(bundle, rel, desc, entities_yaml, status="active", confidence="hi
     return path
 
 
-def write_open_loop(bundle, rel, desc, entities_yaml, status="open"):
+def write_open_loop(bundle, rel, desc, entities_yaml, status="open",
+                    closed=None, expired=None, updated=None, resolution=None):
+    """A loop file. `closed` / `expired` are the frontmatter dates the two
+    writers stamp; `resolution` is the `**Resolution:**` body paragraph they
+    append after it — prose, never a frontmatter field (see the loop template's
+    three lines of warning about `: ` and ` #`)."""
     text = (
         "---\n"
         "type: open-loop\n"
@@ -178,12 +199,15 @@ def write_open_loop(bundle, rel, desc, entities_yaml, status="open"):
         f"{entities_yaml}"
         f"status: {status}\n"
         f"opened: {TODAY}\n"
-        "tags: []\n"
+        + (f"closed: {closed}\n" if closed else "")
+        + (f"expired: {expired}\n" if expired else "")
+        + "tags: []\n"
         f"created: {TODAY}\n"
-        f"updated: {TODAY}\n"
+        f"updated: {updated or TODAY}\n"
         f"timestamp: {TODAY}\n"
         "---\n\n"
         f"{desc}\n"
+        + (f"\n**Resolution:** {resolution}\n" if resolution else "")
     )
     path = bundle / "knowledge" / rel
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -482,7 +506,8 @@ def test_vocab_warnings(root):
 
 
 # ---------------------------------------------------------------------------
-# 4b. vocab.json — build-index.py status-set dispatch changes with vocab.json
+# 4b. an `expired` loop reads as history with AND without vocab.json (E21):
+#     off the entity hub, onto tracking/resolved-loops.md, out of the briefing
 # ---------------------------------------------------------------------------
 
 def _expired_loop_bundle(root, name, with_vocab):
@@ -491,43 +516,233 @@ def _expired_loop_bundle(root, name, with_vocab):
     write_open_loop(
         bundle, "tracking/loops/l1.md", "Carol's old commitment",
         entities_yaml="entities: [/entities/person/carol.md]\n",
-        status="expired",
+        status="expired", expired=TODAY,
+        resolution="Expired on {} after 100 days of silence.".format(TODAY),
     )
     return bundle
 
 
-def test_vocab_dispatch_expired_loop(root):
-    bundle_absent = _expired_loop_bundle(root, "dispatch-absent", with_vocab=False)
-    result_a = run_script(bundle_absent, "build-index.py")
-    carol_a = (bundle_absent / "knowledge" / "entities" / "person" / "carol.md").read_text(encoding="utf-8")
-    record("(no vocab.json) build-index.py exits 0", result_a.returncode == 0,
-           result_a.stdout + result_a.stderr)
+def test_expired_loop_is_history(root):
+    """No bundle has ever received vocab.json — `init` copied scripts,
+    templates, config.md, README.md and cursors.json and nothing else — so the
+    hardcoded loop_status default is what runs in the field. Until this build it
+    was {open, done, dropped}, which put an expired loop in NEITHER bucket:
+    is_history() said false and decay's own output rendered on the hub as a
+    current item, eating a slot of hub_max_facts. Both bundles must now agree."""
+    for label, with_vocab in (("no vocab.json", False), ("vocab.json present", True)):
+        bundle = _expired_loop_bundle(root, "expired-" + ("vocab" if with_vocab else "novocab"),
+                                      with_vocab=with_vocab)
+        result = run_script(bundle, "build-index.py")
+        carol = (bundle / "knowledge" / "entities" / "person" / "carol.md").read_text(encoding="utf-8")
+        resolved = (bundle / "knowledge" / "tracking" / "resolved-loops.md").read_text(encoding="utf-8")
+        record(f"({label}) build-index.py exits 0", result.returncode == 0,
+               result.stdout + result.stderr)
+        record(
+            f"({label}) the expired loop is OFF Carol's hub — not as a current item, "
+            "and not re-filed into its history section either",
+            "Carol's old commitment" not in carol,
+            carol,
+        )
+        record(
+            f"({label}) …and ON tracking/resolved-loops.md, with its date and its outcome",
+            "Carol's old commitment" in resolved and TODAY in resolved and "expired" in resolved,
+            resolved,
+        )
+
+    # E25: the loop keeps its `opened` date, so every window that date falls in
+    # used to list it under `## Open loops` — with its status in brackets — for
+    # the rest of the bundle's life.
+    bundle = _expired_loop_bundle(root, "expired-briefing", with_vocab=False)
+    run_script(bundle, "build-index.py")
+    brief = run_script(bundle, "briefing.py", ["--days", "3650"])
     record(
-        "(no vocab.json) an 'expired' loop is NOT treated as history — matches pre-vocab behavior",
-        "Carol's old commitment" in carol_a and "Superseded / deprecated (history)" not in carol_a,
-        carol_a,
+        "briefing.py drops the resolved loop from `## Open loops` and says how many it hid",
+        brief.returncode == 0
+        and "Carol's old commitment" not in brief.stdout
+        and "## Open loops (0)" in brief.stdout
+        and "1 resolved loop(s) hidden" in brief.stdout,
+        brief.stdout + brief.stderr,
+    )
+    brief_all = run_script(bundle, "briefing.py", ["--days", "3650", "--include-resolved"])
+    record(
+        "…and --include-resolved brings it back, so the filter hides rather than forgets",
+        brief_all.returncode == 0 and "Carol's old commitment" in brief_all.stdout,
+        brief_all.stdout + brief_all.stderr,
     )
 
-    bundle_present = _expired_loop_bundle(root, "dispatch-present", with_vocab=True)
-    result_b = run_script(bundle_present, "build-index.py")
-    carol_b = (bundle_present / "knowledge" / "entities" / "person" / "carol.md").read_text(encoding="utf-8")
-    record("(vocab.json present) build-index.py exits 0", result_b.returncode == 0,
-           result_b.stdout + result_b.stderr)
+
+def test_init_copies_vocab(root):
+    """`vocab.json` reached no bundle for the life of the plugin: `init` copied
+    scripts, templates, config.md, README.md and cursors.json, and nothing
+    copied the vocabulary. `update` must still leave it alone — a bundle may
+    have extended its own."""
+    init = (REPO_ROOT / "plugin" / "skills" / "init" / "procedure.md").read_text(encoding="utf-8")
+    update = (REPO_ROOT / "plugin" / "skills" / "update" / "SKILL.md").read_text(encoding="utf-8")
     record(
-        "(vocab.json present, loop_status includes 'expired') the loop moves to the history section",
-        "Superseded / deprecated (history)" in carol_b and "Carol's old commitment" in carol_b,
-        carol_b,
+        "init/procedure.md copies assets/vocab.json into the new bundle",
+        "assets/vocab.json" in init and "<bundle>/vocab.json" in init,
+        init[:0],
+    )
+    record(
+        "update/SKILL.md still names vocab.json among the files it never re-syncs",
+        "vocab.json" in update and "cp ${CLAUDE_PLUGIN_ROOT}/assets/vocab.json" not in update,
+        update[:0],
     )
 
-    brief_a = run_script(bundle_absent, "briefing.py", ["--days", "3650"])
-    brief_b = run_script(bundle_present, "briefing.py", ["--days", "3650"])
+
+# ---------------------------------------------------------------------------
+# 4c. tracking/resolved-loops.md — the resolved surface (H9, E20)
+# ---------------------------------------------------------------------------
+
+FIRST = "Alice shipped the export and the ticket was closed."
+SECOND = "The evidence is /facts/export-shipped.md, cited by decay.loop_expiry_days in elephant.json."
+
+
+def test_resolution_sentence_unit(root):
+    """The first sentence is split on `. ` only: a bundle path and a dotted
+    config key are not sentence ends, and both appear in every resolution the
+    two writers produce."""
+    mod = load_script_module("build-index.py")
+    body = f"\nSome body text.\n\n**Closure signal:** something.\n\n**Resolution:** {FIRST} {SECOND}\n"
     record(
-        "briefing.py runs clean with and without vocab.json (dispatch fallback-parity)",
-        brief_a.returncode == 0 and brief_b.returncode == 0
-        and "Carol's old commitment" in brief_a.stdout
-        and "Carol's old commitment" in brief_b.stdout,
-        f"absent:\n{brief_a.stdout}{brief_a.stderr}\npresent:\n{brief_b.stdout}{brief_b.stderr}",
+        "resolution_sentence() returns the first sentence alone, keeping its period",
+        mod.resolution_sentence(body) == FIRST,
+        repr(mod.resolution_sentence(body)),
     )
+    wrapped = "**Resolution:** Expired on 2026-09-03 after 100\ndays of silence. And more.\n"
+    record(
+        "…collapsing a paragraph wrapped across lines first",
+        mod.resolution_sentence("\n\n" + wrapped) == "Expired on 2026-09-03 after 100 days of silence.",
+        repr(mod.resolution_sentence("\n\n" + wrapped)),
+    )
+    record(
+        "…and returns \"\" for a loop resolved before the paragraph existed",
+        mod.resolution_sentence("\nJust a body.\n") == "",
+        repr(mod.resolution_sentence("\nJust a body.\n")),
+    )
+    record(
+        "resolved_on() prefers `closed`, then `expired`, then the file's own dates",
+        mod.resolved_on({"fm": {"closed": "2026-01-02", "expired": "2026-03-04"}}) == "2026-01-02"
+        and mod.resolved_on({"fm": {"expired": "2026-03-04"}}) == "2026-03-04"
+        and mod.resolved_on({"fm": {"updated": "2026-05-06"}}) == "2026-05-06",
+        "",
+    )
+
+
+def _resolved_bundle(root, name, resolved_max=None):
+    bundle = new_bundle(root, name, resolved_max=resolved_max)
+    write_entity(bundle, "entities/person/alice.md", "Alice")
+    ents = "entities: [/entities/person/alice.md]\n"
+    write_open_loop(bundle, "tracking/loops/done.md", "Ship the export", ents,
+                    status="done", closed="2026-03-04", resolution=f"{FIRST} {SECOND}")
+    write_open_loop(bundle, "tracking/loops/expired.md", "Chase the invoice", ents,
+                    status="expired", expired="2026-01-02",
+                    resolution="Expired on 2026-01-02 after 100 days of silence. Nothing cited it.")
+    write_open_loop(bundle, "tracking/loops/dropped.md", "Abandoned idea", ents,
+                    status="dropped", updated="2026-02-03")
+    write_open_loop(bundle, "tracking/loops/open.md", "Still open", ents)
+    return bundle
+
+
+def test_resolved_surface(root):
+    bundle = _resolved_bundle(root, "resolved-surface")
+    result = run_script(bundle, "build-index.py")
+    record("build-index.py exits 0 with resolved loops in the bundle",
+           result.returncode == 0, result.stdout + result.stderr)
+    record("…and reports the resolved count next to the open one",
+           "1 open loops, 3 resolved loops" in result.stdout, result.stdout)
+
+    page = (bundle / "knowledge" / "tracking" / "resolved-loops.md").read_text(encoding="utf-8")
+    lines = [ln for ln in page.splitlines() if ln.startswith("- ")]
+    record(
+        "the page lists every resolved loop, newest first by the date it was resolved",
+        [ln.split(" · ")[0] for ln in lines] == ["- 2026-03-04", "- 2026-02-03", "- 2026-01-02"],
+        page,
+    )
+    record(
+        "each line carries the date, the outcome and a link to the loop, which never moved",
+        lines[0] == f"- 2026-03-04 · done · [Ship the export](/tracking/loops/done.md) — {FIRST}",
+        lines[0],
+    )
+    record(
+        "only the FIRST sentence of the resolution reaches the page",
+        SECOND not in page,
+        page,
+    )
+    record(
+        "a loop resolved before the resolution paragraph existed ends at its link",
+        lines[1] == "- 2026-02-03 · dropped · [Abandoned idea](/tracking/loops/dropped.md)",
+        lines[1],
+    )
+    record("the open loop is not on the resolved page",
+           "Still open" not in page, page)
+
+    board = (bundle / "knowledge" / "tracking" / "open-loops.md").read_text(encoding="utf-8")
+    record("…and is still the only one on the board",
+           "Still open" in board and "Ship the export" not in board, board)
+
+    alice = (bundle / "knowledge" / "entities" / "person" / "alice.md").read_text(encoding="utf-8")
+    record(
+        "resolved loops leave the entity hub; the open one stays",
+        "Still open" in alice and "Ship the export" not in alice
+        and "Chase the invoice" not in alice and "Abandoned idea" not in alice,
+        alice,
+    )
+
+    router = (bundle / "knowledge" / "index.md").read_text(encoding="utf-8")
+    record(
+        "the router points at the resolved archive with its count, next to the board",
+        "[archive](/tracking/resolved-loops.md) (3 resolved)" in router,
+        router,
+    )
+
+    val = run_script(bundle, "validate-okf.py")
+    record(
+        "validate-okf.py exits 0 — resolved-loops.md is a RESERVED name, so it is not "
+        "read as a file missing its frontmatter",
+        val.returncode == 0 and "resolved-loops.md" not in val.stdout,
+        val.stdout + val.stderr,
+    )
+
+    before = page
+    run_script(bundle, "build-index.py")
+    record("a second build writes the same page byte for byte (idempotent)",
+           (bundle / "knowledge" / "tracking" / "resolved-loops.md").read_text(encoding="utf-8") == before,
+           "")
+
+
+def test_resolved_overflow(root):
+    """E20: past `index.resolved_max` the older resolutions move to the sibling
+    archive shard — the same ARCHIVE_SUFFIX mechanism hub sharding uses, so the
+    shard needs no name of its own in the four RESERVED copies and validate-okf
+    already exempts it from the frontmatter rule."""
+    bundle = _resolved_bundle(root, "resolved-overflow", resolved_max=2)
+    run_script(bundle, "build-index.py")
+    page = (bundle / "knowledge" / "tracking" / "resolved-loops.md").read_text(encoding="utf-8")
+    shard = bundle / "knowledge" / "tracking" / "resolved-loops.facts-archive.md"
+    record("the two newest resolutions stay inline",
+           "Ship the export" in page and "Abandoned idea" in page
+           and "Chase the invoice" not in page, page)
+    record("…and the page points at the shard by count",
+           "→ 1 older resolved loop(s): [archive](/tracking/resolved-loops.facts-archive.md)" in page,
+           page)
+    record("the shard exists and carries the overflow",
+           shard.is_file() and "Chase the invoice" in shard.read_text(encoding="utf-8"),
+           shard.read_text(encoding="utf-8") if shard.is_file() else "<missing>")
+
+    val = run_script(bundle, "validate-okf.py")
+    record("validate-okf.py exits 0 over the shard — it carries no frontmatter, by design",
+           val.returncode == 0, val.stdout + val.stderr)
+
+    # The archive cleanup in section 4 deletes every ARCHIVE_SUFFIX file this run
+    # did not write. The resolved shard is written BEFORE that sweep, so it has
+    # to be registered as written or the same build that creates it removes it.
+    write_index_config(bundle, resolved_max=10)
+    run_script(bundle, "build-index.py")
+    page2 = (bundle / "knowledge" / "tracking" / "resolved-loops.md").read_text(encoding="utf-8")
+    record("raising the cap folds the shard back inline and deletes it",
+           not shard.exists() and "Chase the invoice" in page2 and "archive]" not in page2,
+           page2)
 
 
 # ---------------------------------------------------------------------------
@@ -724,7 +939,11 @@ def main():
         test_marker_injection,
         test_hub_sharding,
         test_vocab_warnings,
-        test_vocab_dispatch_expired_loop,
+        test_expired_loop_is_history,
+        test_init_copies_vocab,
+        test_resolution_sentence_unit,
+        test_resolved_surface,
+        test_resolved_overflow,
         test_roster,
     ):
         guarded(fn, scratch_root)

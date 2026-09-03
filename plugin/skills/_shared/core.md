@@ -59,7 +59,7 @@ multiple-times-daily ingestion:
 | Lane | Type / location | Lifetime | Reached via |
 |------|-----------------|----------|-------------|
 | **Durable** | `type: fact` in `facts/` | grows slowly (dedup bounds it) | entity backlinks |
-| **Open loop** | `type: open-loop` in `tracking/loops/` | bounded — closes & archives | `tracking/open-loops.md` board |
+| **Open loop** | `type: open-loop` in `tracking/loops/` | bounded — closes & archives | `tracking/open-loops.md` board, then `tracking/resolved-loops.md` |
 | **Episodic** | `type: source` in `sources/<YYYY-MM>/` + `log.md` | linear with volume; archival | only by date |
 
 Why this scales: input volume ≠ fact count. The same fact re-observed across many
@@ -102,7 +102,8 @@ A `snapshot` fact is a **point-in-time editorial rollup**:
 - **Write knowledge in `knowledge_language`; converse in `conversation_language`**
   (see Languages above).
 - Non-reserved `.md` files MUST have frontmatter with a non-empty `type`.
-  Reserved files (`index.md`, `log.md`, `open-loops.md`) have **no** frontmatter.
+  Reserved files (`index.md`, `log.md`, `open-loops.md`, `resolved-loops.md`) have
+  **no** frontmatter.
 - **Quote every free-text frontmatter scalar** (`description`, `title`) and
   **escape inner `"` as `\"`** — or single-quote the value instead:
   `description: "Angelo asked for help: the export was failing"`. Unquoted, a
@@ -123,9 +124,11 @@ A `snapshot` fact is a **point-in-time editorial rollup**:
   commit. (`python3` throughout this plugin means the bundle's Python 3
   interpreter — on Windows, substitute `python` or `py -3` if `python3` isn't on
   PATH.)
-- `index.md`, `entities/index.md`, `tracking/open-loops.md`, and entity/source
-  backlinks are **derived** — never hand-edit; regenerate them.
-- Reserved (no frontmatter): `index.md`, `log.md`, `open-loops.md`.
+- `index.md`, `entities/index.md`, `tracking/open-loops.md`,
+  `tracking/resolved-loops.md`, and entity/source backlinks are **derived** —
+  never hand-edit; regenerate them.
+- Reserved (no frontmatter): `index.md`, `log.md`, `open-loops.md`,
+  `resolved-loops.md`.
 - Episodic files are partitioned by month: `sources/<YYYY-MM>/<date>-slug.md`.
 - **Local commits only — never push.** The bundle holds sensitive private data;
   it stays on the machine.

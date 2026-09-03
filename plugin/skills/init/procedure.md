@@ -103,10 +103,20 @@ mkdir -p <bundle>/knowledge/facts \
 
 cp ${CLAUDE_PLUGIN_ROOT}/assets/scripts/*.py       <bundle>/scripts/
 cp ${CLAUDE_PLUGIN_ROOT}/assets/templates/*.md     <bundle>/templates/
+cp ${CLAUDE_PLUGIN_ROOT}/assets/vocab.json         <bundle>/vocab.json
 cp ${CLAUDE_PLUGIN_ROOT}/assets/seed/config.md     <bundle>/config.md
 cp ${CLAUDE_PLUGIN_ROOT}/assets/seed/README.md     <bundle>/README.md
 cp ${CLAUDE_PLUGIN_ROOT}/assets/seed/state/cursors.json <bundle>/state/cursors.json
 ```
+
+`vocab.json` is the bundle's controlled vocabulary — the value lists
+`build-index.py`, `briefing.py` and `validate-okf.py` read for `kind`,
+`confidence`, `fact_status`, `loop_status` and `source-kind`. It had never been
+copied anywhere, so every bundle ran on each script's hardcoded fallback
+instead. It is **the bundle's file to edit**: `update` re-syncs `scripts/` and
+`templates/` and deliberately never this, so a vocabulary the owner extends is
+never overwritten. Each script still carries a fallback for a bundle that
+predates this copy.
 
 Then generate the files that depend on the user's answers:
 

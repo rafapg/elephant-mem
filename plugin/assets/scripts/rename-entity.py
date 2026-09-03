@@ -64,7 +64,7 @@ if __name__ == "__main__" and os.path.basename(ROOT) == "assets" and os.path.isd
         "is plugin/assets/, and it would write into the assets the marketplace\n"
         "publishes. Run it from an installed bundle instead."
     )
-RESERVED = {"index.md", "log.md", "open-loops.md"}
+RESERVED = {"index.md", "log.md", "open-loops.md", "resolved-loops.md"}
 FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 

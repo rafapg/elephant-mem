@@ -276,7 +276,7 @@ def drive_build_index(root):
     # parse and reporting success over an empty walk.
     record(
         "…and counts one document of each type, so no template was silently skipped",
-        "1 entities, 1 facts, 1 open loops, 1 sources" in idx.stdout,
+        "1 entities, 1 facts, 1 open loops, 0 resolved loops, 1 sources" in idx.stdout,
         idx.stdout + idx.stderr,
     )
 

@@ -50,6 +50,7 @@ knowledge/                   # OKF v0.1 bundle (the queryable surface)
   entities/roster.tsv        # derived: the RESOLUTION surface (one row/entity)
   tracking/loops/<slug>.md   # open-loops (type: open-loop)
   tracking/open-loops.md     # derived: board of open loops
+  tracking/resolved-loops.md # derived: archive of resolved loops
   sources/<YYYY-MM>/<date>-<slug>.md  # provenance, one per source, month-partitioned
   index.md                   # derived: thin router (reserved, no frontmatter)
   manifest.jsonl             # derived: triage surface, one line per fact/loop

@@ -75,7 +75,7 @@ if __name__ == "__main__" and os.path.basename(ROOT) == "assets" and os.path.isd
         "is plugin/assets/, and it would write into the assets the marketplace\n"
         "publishes. Run it from an installed bundle instead."
     )
-RESERVED = {"index.md", "log.md", "open-loops.md"}
+RESERVED = {"index.md", "log.md", "open-loops.md", "resolved-loops.md"}
 # Regenerated hub-sharding shard (see build-index.py) — has no frontmatter by
 # design, so it's exempt from rule 1 (frontmatter + `type`) but still subject
 # to the wikilink / broken-link checks below.
