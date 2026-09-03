@@ -10,12 +10,18 @@ decisions are observable at all. What is covered:
       before whose entities gained material since that examination, band 2 is
       everything else still unsettled, oldest last activity first, and the run
       stops at `close_loops_max` (H2, E9, E10). The band-2 order is the whole
-      reason a run reaches the stale end of the lane first, and the settling
-      rule is the whole reason run N+1 reaches loops run N did not;
-  (b) **the evidence is ranked and capped** — shared non-owner entities, then
-      content-word overlap, then recency, capped at 10, with the noise dropped
-      rather than padded in (H3). The owner is on nearly every fact in a real
-      bundle, which is why sharing only the owner ranks as nothing;
+      reason a run reaches the stale end of the lane first, the settling rule is
+      the whole reason run N+1 reaches loops run N did not, and band 2's
+      reserved fifth is the whole reason it is reached at all while band 1
+      overflows;
+  (b) **the evidence is scored additively and capped** — 2 a shared non-owner
+      entity plus 1 a shared content word, then recency, then path, capped at 10,
+      with the noise dropped rather than padded in (H3). The owner is on nearly
+      every fact in a real bundle, which is why sharing only the owner ranks as
+      nothing. The score's *composition* is pinned, not only its direction: the
+      two counts have incomparable ranges, so nesting them reads as a working
+      ranking right up to the point where it cuts the one fact that satisfies
+      the criterion;
   (c) **the two degenerate readings answer in words** — a loop with no evidence
       is examined and left alone (E11), and a loop with no `**Closure signal:**`
       section is judged against its `description`, with the proposal saying so
@@ -359,43 +365,69 @@ def test_bands(root):
            json.dumps(payload2["loops"][0] if payload2["loops"] else {}))
 
 
-def test_band_one_fills_the_cap_first(root):
-    """E9: when band 1 alone overflows the cap, band 2 gets nothing this run."""
+def test_band_one_does_not_starve_band_two(root):
+    """E9: band 1 is served first but takes at most four fifths of the run.
+
+    Absolute precedence is what it looked like at first, and it starves the
+    cold end for as long as band 1 keeps overflowing — measured on the owner's
+    bundle, 0 of 40 never-examined loops were reached over 30 simulated runs,
+    while band 2 is precisely where the loops `decay` is waiting on live.
+    """
     bundle = make_bundle(root, "band1-overflow")
-    for i in range(4):
+    for i in range(10):
         write_loop(bundle, f"revisit-{i}", opened="2026-05-01", entities=("acme",))
     write_loop(bundle, "ancient", opened="2020-01-01", entities=("nobody",))
+    write_loop(bundle, "old", opened="2021-01-01", entities=("nobody",))
     write_fact(bundle, "new-acme", entities=("acme",), occurred="2026-08-20")
     write_sweep(bundle, {f"/tracking/loops/revisit-{i}.md": "2026-08-01"
-                         for i in range(4)})
+                         for i in range(10)})
 
-    payload, _ = proposal(bundle, ["--max", "2"])
+    payload, _ = proposal(bundle, ["--max", "5"])
     paths = queued_paths(payload)
-    record("band 1 fills the cap before band 2 is reached — the oldest loop in "
-           "the bundle waits behind the loops with new evidence",
-           len(paths) == 2 and all(p.startswith("/tracking/loops/revisit-")
-                                   for p in paths),
-           paths)
+    band1 = [p for p in paths if p.startswith("/tracking/loops/revisit-")]
+    record("band 1 is served first and takes the bulk of the run",
+           len(paths) == 5 and paths[:4] == band1 and len(band1) == 4, paths)
+    record("…but a fifth of the run is reserved for band 2, so the cold end of "
+           "the lane advances even while band 1 overflows every time",
+           paths[4:] == ["/tracking/loops/ancient.md"], paths)
     record("…and the counts still report the whole of both bands, not just what fit",
-           payload["counts"]["band1"] == 4 and payload["counts"]["band2"] == 1,
+           payload["counts"]["band1"] == 10 and payload["counts"]["band2"] == 2,
            json.dumps(payload["counts"]))
+
+    # The reservation is not a hole: with no band 2 to fill it, band 1 takes the
+    # whole run rather than the run coming up short.
+    solo = make_bundle(root, "band1-only")
+    for i in range(10):
+        write_loop(solo, f"revisit-{i}", opened="2026-05-01", entities=("acme",))
+    write_fact(solo, "new-acme", entities=("acme",), occurred="2026-08-20")
+    write_sweep(solo, {f"/tracking/loops/revisit-{i}.md": "2026-08-01"
+                       for i in range(10)})
+    payload2, _ = proposal(solo, ["--max", "5"])
+    record("with band 2 empty the reserved slots go back to band 1 — the run is "
+           "never short of its cap",
+           payload2["counts"]["queued"] == 5 and payload2["counts"]["band2"] == 0,
+           json.dumps(payload2["counts"]))
 
 
 # --- (b) the evidence -----------------------------------------------------
 
 
 def test_evidence_ranking(root):
-    """H3: shared non-owner entities, then word overlap, then recency, cap 10."""
+    """H3: an additive score — 2 per shared non-owner entity, 1 per shared
+    content word — then recency, then path. Capped at 10."""
     bundle = make_bundle(root, "ranking")
     write_loop(bundle, "export", description="Ship the export pipeline fix to Acme",
                entities=("acme", "angelo"),
                signal="a source showing the export pipeline released to Acme")
 
+    # 2 entities, no wording → 4. The newest fact in the bundle, so recency
+    # cannot be what puts the criterion match ahead of it.
     write_fact(bundle, "two-shared", description="unrelated wording entirely",
-               entities=("acme", "angelo"), occurred="2026-01-01")
+               entities=("acme", "angelo"), occurred="2026-09-01")
+    # 1 entity + {export, pipeline, acme} → 5. The oldest, and still first.
     write_fact(bundle, "one-shared-overlap",
-               description="the export pipeline shipped to production",
-               entities=("acme",), occurred="2026-02-01")
+               description="the export pipeline shipped to Acme",
+               entities=("acme",), occurred="2026-01-01")
     write_fact(bundle, "one-shared-recent", description="unrelated wording entirely",
                entities=("acme",), occurred="2026-09-01")
     write_fact(bundle, "owner-noise", description="unrelated wording entirely",
@@ -412,11 +444,22 @@ def test_evidence_ranking(root):
         return
     loop = payload["loops"][0]
     order = [c["path"] for c in loop["evidence"]]
-    record("the fact sharing two non-owner entities ranks first, however old it is",
-           order and order[0] == "/facts/two-shared.md", order)
-    record("…then word overlap decides between facts sharing one entity, ahead "
-           "of the more recent one that shares no wording",
-           order[1:3] == ["/facts/one-shared-overlap.md",
+    scored = {c["path"]: c["score"] for c in loop["evidence"]}
+    record("the score is additive — 2 a shared non-owner entity plus 1 a shared "
+           "content word — and every candidate carries it",
+           all(c["score"] == 2 * len(c["shared_entities"]) + len(c["overlap"])
+               for c in loop["evidence"]) and len(scored) == len(order),
+           json.dumps(scored, indent=2))
+    record("the fact that quotes the criterion back outranks the fact sharing "
+           "two entities and not one word, though it is the older of the two — "
+           "nesting the two counts made the entity count absolute",
+           order and order[0] == "/facts/one-shared-overlap.md"
+           and scored["/facts/one-shared-overlap.md"] == 5
+           and scored["/facts/two-shared.md"] == 4,
+           json.dumps(scored, indent=2))
+    record("…and a shared entity is still worth more than a single word: two "
+           "entities and no wording beat one entity and no wording",
+           order[1:3] == ["/facts/two-shared.md",
                           "/facts/one-shared-recent.md"], order)
     record("a fact sharing only the owner and no content word is dropped, not "
            "padded in — the owner is on nearly every fact, so it ranks nothing",
@@ -435,6 +478,62 @@ def test_evidence_ranking(root):
     record("each candidate carries the sources that would become `closed_by`",
            all("sources" in c for c in loop["evidence"]),
            json.dumps(loop["evidence"][:1]))
+
+
+def test_evidence_score_composes_not_nests(root):
+    """The blocker, pinned by composition rather than by direction.
+
+    Reversing a comparator is caught by test_evidence_ranking. *Nesting* the
+    two counts instead of adding them is not: it preserves every pairwise order
+    those checks assert, and only shows itself where the ranges diverge. A loop
+    names one to three entities and carries fifteen-odd content words, so a
+    nested key lets the entity count decide absolutely. Here one fact quotes the
+    closure criterion back and shares a single entity; twelve share all three of
+    the loop's entities and not one word. Nested, all twelve outrank it and the
+    cap of 10 cuts the only useful candidate out of the proposal entirely.
+    """
+    bundle = make_bundle(root, "additive")
+    write_loop(
+        bundle, "migration",
+        description="Ship the export pipeline migration fix to Acme before the "
+                    "audit deadline",
+        entities=("acme", "angelo", "beta"),
+        signal="a source showing the export pipeline migration released to Acme "
+               "customers after the audit",
+        opened="2026-01-01",
+    )
+    write_fact(bundle, "the-match",
+               description="the export pipeline migration released to Acme "
+                           "customers, closing the audit deadline fix",
+               entities=("acme",), occurred="2026-01-02")
+    for i in range(12):
+        write_fact(bundle, f"decoy-{i:02d}", description="unrelated wording entirely",
+                   entities=("acme", "angelo", "beta"), occurred=f"2026-09-{i + 1:02d}")
+
+    payload, result = proposal(bundle)
+    if payload is None:
+        record("close-loops.py ranks a 13-candidate pool", False,
+               f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+        return
+    loop = payload["loops"][0]
+    order = [c["path"] for c in loop["evidence"]]
+    by_path = {c["path"]: c for c in loop["evidence"]}
+    record("all 13 candidates are pooled and the proposal is capped at 10",
+           loop["candidates_total"] == 13 and len(order) == 10, order)
+    record("the one fact that satisfies the closure criterion is in the "
+           "proposal at all — three shared entities do not get to be absolute, "
+           "which is the whole reason the criterion is read",
+           "/facts/the-match.md" in order, order)
+    record("…and it is first: 1 entity + 10 words scores 12, three entities and "
+           "no wording score 6",
+           order and order[0] == "/facts/the-match.md"
+           and by_path["/facts/the-match.md"]["score"]
+           > max(c["score"] for p, c in by_path.items() if p != "/facts/the-match.md"),
+           json.dumps({p: c["score"] for p, c in by_path.items()}, indent=2))
+    record("the decoys still rank above nothing — a shared entity is evidence, "
+           "it is just not a veto",
+           all(by_path[p]["score"] == 6 for p in order if p != "/facts/the-match.md"),
+           json.dumps({p: c["score"] for p, c in by_path.items()}, indent=2))
 
 
 def test_evidence_cap(root):
@@ -523,6 +622,39 @@ def test_criterion_fallback(root):
            payload2["loops"][0]["criterion"] == "a source showing it shipped",
            json.dumps(payload2["loops"][0]["criterion"]))
 
+    # An EMPTY heading is the reverse mistake and the worse one: the reader ran
+    # past the blank line and returned the NEXT section, labelled as the closure
+    # criterion. Nothing downstream can tell a criterion from a background note,
+    # so the routine judges delivery against the wrong sentence and says nothing.
+    b3 = make_bundle(root, "criterion-empty")
+    write_loop(b3, "empty", description="Ship the thing", signal=None,
+               body="Details.\n\n**Closure signal:**\n\n"
+                    "**Context:** background that is not the criterion.")
+    write_loop(b3, "empty-eof", description="Ship the other thing", signal=None,
+               body="Details.\n\n**Closure signal:**")
+    payload3, _ = proposal(b3)
+    empty = {lp["path"]: lp for lp in payload3["loops"]}
+    record("an empty `**Closure signal:**` heading does not swallow the section "
+           "after it — the loop falls back to its description, and says so",
+           all(empty[p]["criterion_source"] == "description"
+               for p in ("/tracking/loops/empty.md",
+                         "/tracking/loops/empty-eof.md"))
+           and empty["/tracking/loops/empty.md"]["criterion"] == "Ship the thing",
+           json.dumps({p: (lp["criterion"], lp["criterion_source"])
+                       for p, lp in empty.items()}, indent=2))
+
+    # 2025 loop bodies were written by hand and nothing has ever checked the
+    # capital C.
+    b4 = make_bundle(root, "criterion-case")
+    write_loop(b4, "lower", description="Ship it", signal=None,
+               body="Details.\n\n**closure signal:** a release note naming it")
+    payload4, _ = proposal(b4)
+    record("the heading is matched case-insensitively — a hand-typed `**closure "
+           "signal:**` is the same section",
+           payload4["loops"][0]["criterion"] == "a release note naming it"
+           and payload4["loops"][0]["criterion_source"] == "closure-signal",
+           json.dumps(payload4["loops"][0]["criterion"]))
+
 
 # --- (d) degraded inputs --------------------------------------------------
 
@@ -573,6 +705,86 @@ def test_named_loop_bypasses_the_queue(root):
     payload, _ = proposal(bundle, ["--loop", "/tracking/loops/b.md"])
     record("--loop proposes for the named loop even when the queue has settled it",
            queued_paths(payload) == ["/tracking/loops/b.md"], queued_paths(payload))
+
+    # An empty proposal and an exit code of 0 read, to the routine, exactly like
+    # a loop with no evidence. It cannot tell that from a typo or from a loop
+    # that closed last week, and it would record an examination that never
+    # happened — which is what `decay` then acts on.
+    write_loop(bundle, "shipped", status="done", opened="2026-01-03")
+    missing = run(bundle, ["--loop", "/tracking/loops/nope.md"])
+    record("--loop over a path that does not exist warns instead of exiting 0 "
+           "in silence",
+           missing.returncode == 0 and "warning" in missing.stderr
+           and "nope" in missing.stderr, missing.stderr or missing.stdout)
+    closed = run(bundle, ["--loop", "/tracking/loops/shipped.md"])
+    record("--loop over a loop that is no longer open says so, and names the "
+           "status it found",
+           closed.returncode == 0 and "warning" in closed.stderr
+           and "done" in closed.stderr, closed.stderr or closed.stdout)
+    both = run(bundle, ["--loop", "/tracking/loops/nope.md",
+                        "--loop", "/tracking/loops/a.md", "--json"])
+    record("…and one bad name does not cost the run: the good loop is still "
+           "proposed for",
+           both.returncode == 0
+           and queued_paths(json.loads(both.stdout)) == ["/tracking/loops/a.md"],
+           both.stdout[:400] + both.stderr)
+
+
+def test_max_is_refused_at_the_boundary(root):
+    """`--max 0` used to fall through to the configured default and examine 25
+    loops — a run that asked for none and got a full one, silently."""
+    bundle = make_bundle(root, "max-boundary")
+    for i in range(3):
+        write_loop(bundle, f"l{i}", opened=f"2026-01-0{i + 1}")
+
+    for bad in ("0", "-5"):
+        result = run(bundle, ["--max", bad])
+        record(f"--max {bad} is refused by argparse rather than silently "
+               "becoming the default",
+               result.returncode != 0 and "--max" in result.stderr,
+               f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+    ok, _ = proposal(bundle, ["--max", "1"])
+    record("--max 1 is still a legal run size", ok["counts"]["queued"] == 1,
+           json.dumps(ok["counts"]))
+
+
+def test_owner_is_what_the_file_declares(root):
+    """The bundle owner is a ranking input, not a fact about the loop.
+
+    Injecting it into `loop["owner"]` made `--json` and the printed proposal
+    report a loop declaring `owner: []` as owned by the bundle owner — a claim
+    the bundle never recorded, coming out of a script that only reads.
+    """
+    bundle = make_bundle(root, "owner")
+    write_loop(bundle, "unowned", description="Nobody signed up for this",
+               owner=(), entities=("acme",))
+    write_loop(bundle, "owned", description="Jane signed up for this",
+               owner=(OWNER,), entities=("acme",))
+    write_fact(bundle, "acme-news", description="acme said something",
+               entities=("acme",), occurred="2026-02-01")
+
+    payload, result = proposal(bundle)
+    if payload is None:
+        record("close-loops.py runs over an unowned loop", False,
+               f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+        return
+    by_path = {lp["path"]: lp for lp in payload["loops"]}
+    record("a loop declaring `owner: []` is still reported as unowned",
+           by_path["/tracking/loops/unowned.md"]["owner"] == [],
+           json.dumps({p: lp["owner"] for p, lp in by_path.items()}))
+    record("…and the declared owner is passed through unchanged",
+           by_path["/tracking/loops/owned.md"]["owner"] == [OWNER],
+           json.dumps({p: lp["owner"] for p, lp in by_path.items()}))
+    text = run(bundle).stdout
+    record("the text rendering prints the same thing it emits — an unowned loop "
+           "reads `owner: —`",
+           "owner: —" in text, text[:800])
+    record("the owner is still excluded from the ranking's shared-entity signal, "
+           "which is what it was folded in for",
+           all(OWNER not in c["shared_entities"]
+               for lp in payload["loops"] for c in lp["evidence"]),
+           json.dumps([c["shared_entities"] for lp in payload["loops"]
+                       for c in lp["evidence"]]))
 
 
 # --- (h) the routine --------------------------------------------------------
@@ -657,6 +869,21 @@ def test_procedure_contract():
            "closed or not" in low and "closure-sweep.json" in p)
     record("H5: the outcome vocabulary is the one close-loops.py reads back",
            "=done" in p and "=open" in p)
+    record("H5: the sweep write validates every pair before writing anything, "
+           "and the prose says what it validates — the recipe below is executed "
+           "against exactly these claims",
+           "bundle-absolute loop path" in low and "nothing was written" in low
+           and "actually recorded" in low)
+
+    # Theme: the boundary of an irreversible operation, stated in prose five
+    # times and implemented as on-or-after at both ends. A document that says
+    # "after" invites a maintainer to "fix" the code and invert it, with the
+    # whole suite still green.
+    flat = " ".join((p + read_skill("SKILL.md")).replace("**", "").lower().split())
+    record("the sweep gate's boundary reads `on or after` wherever the skill "
+           "states it, which is what both scripts implement",
+           "examined after" not in flat and flat.count("on or after") >= 3,
+           flat.count("on or after"))
 
     record("H6: the run rebuilds, validates, writes one log.md line and makes "
            "one commit",
@@ -729,6 +956,47 @@ def test_sweep_recipe_writes_what_the_script_reads(root):
            "decay's per-loop gate both compare against",
            {e["examined"] for e in data["loops"].values()} == {today},
            json.dumps(data, indent=2))
+
+    # The validation the prose promises, executed. `pair.partition("=")` cannot
+    # fail, so before this every one of these recorded junk under a key naming a
+    # loop that does not exist — and the count printed len(argv)-1, so the step
+    # reported success. The record is the only thing standing between `decay`
+    # and a lane it may not touch, and junk in it is indistinguishable from an
+    # examination that happened.
+    state_file = bundle / "state" / "closure-sweep.json"
+    intact = state_file.read_text(encoding="utf-8")
+    for label, bad in (
+        ("an empty link (`=done`, a pair typed with the path missing)", "=done"),
+        ("a relative path", "tracking/loops/closed-one.md=done"),
+        ("a path outside the loops directory", "/facts/closed-one.md=done"),
+        ("a link that is not a markdown file", "/tracking/loops/closed-one=done"),
+        ("an outcome outside the vocabulary close-loops.py reads",
+         "/tracking/loops/closed-one.md=closed"),
+    ):
+        got = sweep(bad)
+        record(f"the recipe refuses {label} — loudly, and writes nothing",
+               got.returncode != 0
+               and "closure-sweep" in (got.stdout + got.stderr)
+               and state_file.read_text(encoding="utf-8") == intact,
+               f"exit={got.returncode}\n{got.stdout}\n{got.stderr}")
+
+    mixed = sweep("/tracking/loops/untouched.md=open", "/tracking/loops/x.md=nope")
+    record("one bad pair rejects the whole command rather than half-recording "
+           "the run — a half-written record is not a state this file can be in",
+           mixed.returncode != 0
+           and state_file.read_text(encoding="utf-8") == intact,
+           f"exit={mixed.returncode}\n{mixed.stdout}\n{mixed.stderr}")
+
+    repeated = sweep("/tracking/loops/left-open.md=open",
+                     "/tracking/loops/left-open.md=done")
+    record("the count is the entries actually recorded, not the arguments "
+           "passed — otherwise a run that recorded one loop reports two",
+           repeated.returncode == 0 and "1 loop(s) recorded" in repeated.stdout,
+           repeated.stdout + repeated.stderr)
+
+    # Undo that last write so the queue assertions below read the two-entry
+    # record the earlier calls built.
+    state_file.write_text(intact, encoding="utf-8")
 
     payload, result = proposal(bundle)
     if payload is None:
@@ -806,10 +1074,13 @@ def main():
     print(f"scratch root: {root}\n")
     try:
         for test in (test_queue_order_and_bound, test_undated_loop_sorts_last,
-                     test_bands, test_band_one_fills_the_cap_first,
-                     test_evidence_ranking, test_evidence_cap, test_no_evidence,
+                     test_bands, test_band_one_does_not_starve_band_two,
+                     test_evidence_ranking, test_evidence_score_composes_not_nests,
+                     test_evidence_cap, test_no_evidence,
                      test_criterion_fallback, test_degraded_inputs,
                      test_named_loop_bypasses_the_queue,
+                     test_max_is_refused_at_the_boundary,
+                     test_owner_is_what_the_file_declares,
                      test_sweep_recipe_writes_what_the_script_reads,
                      test_checkout_guard):
             try:

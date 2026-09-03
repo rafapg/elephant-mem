@@ -33,11 +33,17 @@ exactly what decay is then allowed to consider.
 
 **The evidence is ranked and capped** (H3). Candidates are facts that share an
 entity with the loop — the bundle's retrieval is entity-centric, so that is
-where a loop's evidence actually lives — ranked by, in order: how many of the
-loop's **non-owner** entities the fact shares, then content-word overlap
-against the loop's `description` plus its closure signal, then recency. Capped
-at 10. Ranking on the owner's entity alone is why the median candidate count is
-684: the owner is on nearly every fact in the bundle, so as a signal it says
+where a loop's evidence actually lives — scored **additively**: two points per
+shared **non-owner** entity plus one per content word shared with the loop's
+`description` and its closure signal, ties broken by recency and then by path.
+Capped at 10. The two signals live on incomparable scales, a loop names one to
+three entities and a description carries fifteen-odd content words, so nesting
+them made the entity count absolute: the one fact that literally satisfies the
+closure criterion, sharing a single entity, lost all ten slots to facts that
+shared two entities and not a word. Additive lets a criterion match outrank a
+filing coincidence, which is the whole point of reading the closure signal.
+Ranking on the owner's entity alone is why the median candidate count is 684:
+the owner is on nearly every fact in the bundle, so as a signal it says
 nothing. A candidate that shares no non-owner entity and no content word is
 dropped rather than padded in, which is what makes "no evidence" (E11) a real
 answer instead of ten unrelated facts.
@@ -47,7 +53,9 @@ becomes the criterion and the proposal says so, in words, so the routine judges
 against a criterion it can see the provenance of (E12).
 
 Output is text by default (the routine reads it) and `--json` for a consumer
-that parses. `--loop <path>` proposes for named loops and bypasses the queue.
+that parses. `--loop <path>` proposes for named loops and bypasses the queue,
+warning on stderr about any name that matches no open loop rather than exiting
+0 over a typo.
 
 Exit code is 0 whenever the run completed, whether or not anything was queued.
 Pure stdlib, regex frontmatter reader — same rule and same scanning as
@@ -104,8 +112,20 @@ FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # The closure criterion as the template writes it: a bolded lead-in, then a
 # paragraph. It ends at a blank line, at the next bolded lead-in, or at EOF.
+#
+# The lead-in is followed by `[ \t]*` and at most one newline, never by `\s*`:
+# `\s*` eats the blank line after an *empty* `**Closure signal:**` heading, so
+# `.+?` starts inside the next section and the loop's background is returned,
+# labelled as its closure criterion — the one thing this script exists to read,
+# silently wrong. The `(?!\*\*…:\*\*)` guard is the same refusal for the case
+# with no blank line between them. An empty section matches nothing and falls
+# back to the `description` (E12), which is a criterion whose provenance the
+# proposal can name. Case-insensitive because 2025 loop bodies were written by
+# hand and nothing has ever checked the capital C.
 CLOSURE_SIGNAL = re.compile(
-    r"\*\*Closure signal:\*\*\s*(.+?)(?=\n\s*\n|\n\*\*[^*\n]+:\*\*|\Z)", re.DOTALL
+    r"\*\*Closure signal:\*\*[ \t]*\n?[ \t]*(?!\*\*[^*\n]+:\*\*)(\S.*?)"
+    r"(?=\n\s*\n|\n\*\*[^*\n]+:\*\*|\Z)",
+    re.DOTALL | re.IGNORECASE,
 )
 WORD = re.compile(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ][0-9A-Za-zÀ-ÖØ-öø-ÿ'’_-]*")
 
@@ -445,7 +465,13 @@ def read_loops():
             "description": description,
             "criterion": criterion,
             "criterion_source": source,
+            # `owner` is what the file declares, and stays that way: it is
+            # printed and emitted, and a loop declaring `owner: []` reported as
+            # owned by whoever runs the script is a fact the bundle never
+            # recorded. The bundle owner is folded into `effective_owner`
+            # instead, which only the ranking reads.
             "owner": owners,
+            "effective_owner": list(owners),
             "entities": entities,
             "last_activity": newest_date(block, ("updated", "opened", "created")),
             "terms": tokens(f"{description} {criterion}"),
@@ -596,8 +622,9 @@ def new_material(loop, material, examined):
     loop to band 1 on every run forever.
     """
     best = None
+    owners = loop.get("effective_owner", loop["owner"])
     for s in loop["entities"]:
-        if s in loop["owner"]:
+        if s in owners:
             continue
         when = material.get(s)
         if when and when > examined and (best is None or when > best[1]):
@@ -606,7 +633,10 @@ def new_material(loop, material, examined):
 
 
 def build_queue(loops, sweep, material, cap):
-    """The run's queue: band 1, then band 2, truncated to `cap`.
+    """The run's queue: band 1 first, band 2 guaranteed a slice, capped at `cap`.
+
+    Band 1 takes at most four fifths of the run so band 2 always advances; the
+    slots band 2 cannot fill go back to band 1, so the run is never short.
 
     Band 2 is "everything else still unsettled" — never examined, or examined
     before its own last activity. A loop examined on or after its last activity
@@ -645,27 +675,49 @@ def build_queue(loops, sweep, material, cap):
     # age, so it does not get to claim the front of the stale end.
     band2.sort(key=lambda lp: (lp["last_activity"] is None,
                                lp["last_activity"] or "", lp["path"]))
-    queue = band1[:cap]
-    if len(queue) < cap:
-        queue += band2[: cap - len(queue)]
-    return queue, band1, band2
+    # Band 1 is served first but is not absolute: a fifth of the run is reserved
+    # for the cold end of the lane. Absolute precedence starves band 2 for as
+    # long as band 1 keeps overflowing, and band 2 is where the loops decay is
+    # waiting on live — measured on the owner's bundle, 0 of 40 cold loops were
+    # examined over 30 simulated runs. `max(1, …)` keeps band 1 served at all
+    # when the cap is 1 or 2, where a fifth rounds to nothing.
+    take1 = min(len(band1), max(1, cap - cap // 5))
+    # The reservation is only ever as large as band 2 can fill, so an empty
+    # cold end gives its slots back rather than shortening the run.
+    take2 = min(len(band2), cap - take1)
+    take1 = min(len(band1), cap - take2)
+    return band1[:take1] + band2[:take2], band1, band2
 
 
 # --- the evidence ----------------------------------------------------------
 
 
+def score_of(shared, overlap):
+    """The evidence score: two per shared non-owner entity, one per shared word.
+
+    Additive, not nested. The two counts have incomparable ranges — a loop names
+    one to three non-owner entities, its description and closure signal carry
+    fifteen-odd content words — so comparing the entity count first made it
+    absolute: every fact sharing two entities and not one word outranked the
+    fact that quoted the closure criterion back, and with the cap at 10 the real
+    match was not merely demoted, it was cut. Two points an entity keeps the
+    filing signal worth more than any single word without letting it win alone.
+    """
+    return 2 * len(shared) + len(overlap)
+
+
 def rank_evidence(loop, by_entity, cap=EVIDENCE_CAP):
     """(the top `cap` candidates, how many there were).
 
-    Ordered by shared non-owner entities, then content-word overlap against the
-    description plus the closure signal, then recency, then path so a run is
-    reproducible. A candidate scoring zero on both of the first two keys is
-    dropped: it shares only the owner, who is on nearly every fact, and would
-    pad the proposal with exactly the noise the cap exists to keep out.
+    Ordered by `score_of()` descending, then recency, then path so a run is
+    reproducible. A candidate scoring zero is dropped: it shares only the owner,
+    who is on nearly every fact, and would pad the proposal with exactly the
+    noise the cap exists to keep out.
     """
-    signal_entities = [s for s in loop["entities"] if s not in loop["owner"]]
+    owners = loop.get("effective_owner", loop["owner"])
+    signal_entities = [s for s in loop["entities"] if s not in owners]
     pool = {}
-    for s in loop["entities"] + loop["owner"]:
+    for s in loop["entities"] + owners:
         for fact in by_entity.get(s, []):
             pool[fact["path"]] = fact
 
@@ -673,18 +725,19 @@ def rank_evidence(loop, by_entity, cap=EVIDENCE_CAP):
     for fact in pool.values():
         shared = [s for s in signal_entities if s in fact["entities"]]
         overlap = sorted(loop["terms"] & fact["terms"])
-        if not shared and not overlap:
+        if not score_of(shared, overlap):
             continue
         scored.append({
             "path": fact["path"],
             "description": fact["description"],
             "shared_entities": shared,
             "overlap": overlap,
+            "score": score_of(shared, overlap),
             "date": fact["date"],
             "sources": fact["sources"],
         })
-    scored.sort(key=lambda c: (-len(c["shared_entities"]), -len(c["overlap"]),
-                              c["date"] is None, _desc(c["date"]), c["path"]))
+    scored.sort(key=lambda c: (-c["score"], c["date"] is None,
+                               _desc(c["date"]), c["path"]))
     return scored[:cap], len(scored)
 
 
@@ -733,8 +786,8 @@ def render_text(queue, counts, cap):
             shared = ", ".join(cand["shared_entities"]) or "—"
             overlap = ", ".join(cand["overlap"][:8]) or "—"
             out.append(
-                f"  {i}. {cand['path']}  [shared: {shared} | overlap: {overlap} "
-                f"| {cand['date'] or 'undated'}]"
+                f"  {i}. {cand['path']}  [score: {cand['score']} | shared: "
+                f"{shared} | overlap: {overlap} | {cand['date'] or 'undated'}]"
             )
             if cand["description"]:
                 out.append(f"     {cand['description']}")
@@ -749,14 +802,66 @@ def render_text(queue, counts, cap):
     return "\n".join(out)
 
 
+def warn_unmatched(requested, queue):
+    """One stderr warning per `--loop` that matched no open loop.
+
+    Exiting 0 with an empty proposal reads to the routine exactly like a loop
+    with no evidence: it cannot tell "nothing to say about this one" from "you
+    named a path that does not exist" or "that loop closed last week". The
+    script already warns when the loops directory is missing; this is the same
+    courtesy one level down. It stays a warning, not a failure — an unattended
+    run that named three loops and mistyped one still proposes for the other two.
+    """
+    matched = set()
+    for lp in queue:
+        matched.add(lp["path"])
+        matched.add(slug(lp["path"]))
+    on_disk = {}
+    for path in md_files(LOOPS_DIR):
+        link = bundle_link(path)
+        on_disk.setdefault(link, path)
+        on_disk.setdefault(slug(link), path)
+    for req in requested:
+        if req in matched or (slug(req) or req) in matched:
+            continue
+        path = on_disk.get(req) or on_disk.get(slug(req) or req)
+        if path is None:
+            print(f"warning: --loop {req}: no loop by that name under "
+                  "/tracking/loops/ — nothing was proposed for it",
+                  file=sys.stderr)
+            continue
+        got = parsed(path)
+        status = (field(got[0], "status") if got else None) or "unreadable"
+        print(f"warning: --loop {req}: {bundle_link(path)} is `status: "
+              f"{status}`, not open — only open loops are examined, so nothing "
+              "was proposed for it", file=sys.stderr)
+
+
+def positive_int(value):
+    """`--max N` with N at least 1, refused at the boundary rather than
+    silently rewritten. `--max 0` used to fall through to the configured
+    default and examine 25 loops — a run that asked for none and got a full
+    one, with nothing in the output saying so."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer")
+    if n < 1:
+        raise argparse.ArgumentTypeError(
+            f"{value} is not a run size — pass 1 or more, or omit --max for the "
+            "configured default"
+        )
+    return n
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="close-loops.py",
         description=__doc__.splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--max", type=int, default=None, metavar="N",
-                    help="how many loops this run examines "
+    ap.add_argument("--max", type=positive_int, default=None, metavar="N",
+                    help="how many loops this run examines, at least 1 "
                          f"(default: elephant.json close_loops.max, else {DEFAULT_MAX})")
     ap.add_argument("--loop", action="append", default=[], metavar="PATH",
                     help="propose for this loop, bypassing the queue; repeat per loop")
@@ -768,13 +873,16 @@ def main(argv=None):
         print(f"note: {LOOPS_DIR} doesn't exist — no loops to examine",
               file=sys.stderr)
 
-    cap = args.max if (args.max and args.max > 0) else close_loops_max()
+    cap = args.max or close_loops_max()
     loops = read_loops()
     owner = owner_slug()
     if owner:
         for loop in loops:
-            if owner not in loop["owner"]:
-                loop["owner"] = loop["owner"] + [owner]
+            # Into the ranking's owner set only. `owner:` keeps saying what the
+            # file says, so `--json` and the printed proposal never report a
+            # loop nobody claimed as the bundle owner's.
+            if owner not in loop["effective_owner"]:
+                loop["effective_owner"] = loop["effective_owner"] + [owner]
 
     facts = read_facts(read_sources())
     by_entity = index_by_entity(facts)
@@ -787,6 +895,7 @@ def main(argv=None):
             loop.setdefault("band", 0)
             loop.setdefault("reason", "named on the command line")
             loop.setdefault("examined", None)
+        warn_unmatched(args.loop, queue)
         band1, band2 = [], []
     else:
         queue, band1, band2 = build_queue(

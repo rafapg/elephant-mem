@@ -40,8 +40,8 @@ record every loop you examined. One commit for the run.
 ## Its relation to `decay`
 
 The two routines are **never coordinated**, and that is the design. `decay`
-expires a loop only if `state/closure-sweep.json` shows it was examined after
-its own last activity and not closed — so this routine is what earns `decay`
+expires a loop only if `state/closure-sweep.json` shows it was examined **on or
+after** its own last activity and not closed — so this routine is what earns `decay`
 the right to act, and `decay` reads the record as it stands on its own three-day
 clock. A loop examined yesterday is as examined as one examined an hour ago;
 there is no race to lose here, only a record to keep.

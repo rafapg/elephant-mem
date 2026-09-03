@@ -28,17 +28,23 @@ only in a diff. Interactive and scheduled runs follow exactly the same steps.
    fact or a source since that examination, then everything else still
    unsettled, oldest last activity first — capped at `elephant.json` →
    `close_loops.max` (default 25, with `decay.close_loops_max` as a fallback).
-   For each queued loop it prints the closure criterion and up to 10 ranked
-   evidence candidates. It reads only: no loop file changes, and
-   `state/closure-sweep.json` is not touched by it.
+   The first band is served first but takes at most four fifths of the run, so
+   the cold end of the lane advances even on a day when new material lands
+   everywhere. For each queued loop it prints the closure criterion and up to 10
+   evidence candidates, ranked by a score that adds 2 a shared non-owner entity
+   to 1 a shared content word and prints that score next to each one. It reads
+   only: no loop file changes, and `state/closure-sweep.json` is not touched by
+   it.
 
    If the header says `0 loop(s) queued`, say so and stop. Nothing was
    examined, so there is nothing to record and nothing to commit.
 
-   `--max N` bounds a single run smaller or larger; `--loop <path>` (repeatable)
-   proposes for named loops and bypasses the queue, which is how you re-read one
-   loop without waiting its turn. `--json` exists for a consumer that parses;
-   the text is what this procedure reads.
+   `--max N` bounds a single run smaller or larger, N at least 1 — `--max 0` is
+   refused rather than quietly meaning 25. `--loop <path>` (repeatable) proposes
+   for named loops and bypasses the queue, which is how you re-read one loop
+   without waiting its turn; a name matching no **open** loop is warned about on
+   stderr, so read stderr before concluding a loop has no evidence. `--json`
+   exists for a consumer that parses; the text is what this procedure reads.
 
 2. **Judge each evidence set as a whole.** The bar is *does this evidence, read
    together, show the commitment was delivered* — **not** whether some candidate
@@ -114,7 +120,9 @@ only in a diff. Interactive and scheduled runs follow exactly the same steps.
    record** below, **once**, with one `<link>=<outcome>` pair per examined loop
    — `done` for the ones you closed, `open` for every other one, including the
    ones with no evidence. Read the count it prints back against the number of
-   loops step 1 queued; they must match.
+   loops step 1 queued; they must match. If the command exits non-zero it names
+   the pair it refused and wrote **nothing** — fix that pair and run it again,
+   whole.
 
 5. **Rebuild + validate.** `python3 scripts/build-index.py` then
    `python3 scripts/validate-okf.py` — both must pass. This is what removes the
@@ -143,9 +151,9 @@ only in a diff. Interactive and scheduled runs follow exactly the same steps.
 
 `state/closure-sweep.json` records which loops were examined and when. It is
 control state, not audit: `decay` expires a loop only if this file shows it was
-examined after its own last activity and not closed, so losing it parks expiry
-rather than corrupting it. It is **not** git-ignored — it is committed with the
-run, like the loop files it describes.
+examined **on or after** its own last activity and not closed, so losing it
+parks expiry rather than corrupting it. It is **not** git-ignored — it is
+committed with the run, like the loop files it describes.
 
 Step 4 writes it with this command, run from `<bundle>`, with the run's own
 pairs in place of the two shown:
@@ -154,6 +162,7 @@ pairs in place of the two shown:
 python3 - /tracking/loops/acme-export.md=done /tracking/loops/pto-policy.md=open <<'PY'
 import datetime, json, pathlib, sys
 
+OUTCOMES = {"done", "open"}
 today = datetime.date.today().isoformat()
 path = pathlib.Path("state/closure-sweep.json")
 try:
@@ -166,21 +175,38 @@ loops = data.get("loops")
 data["loops"] = loops if isinstance(loops, dict) else {}
 data["schema"] = 1
 data["generated"] = datetime.datetime.now().astimezone().isoformat()
+recorded = {}
 for pair in sys.argv[1:]:
-    link, _, outcome = pair.partition("=")
-    data["loops"][link] = {"examined": today, "outcome": outcome or "open"}
+    link, sep, outcome = pair.partition("=")
+    outcome = outcome if sep else "open"
+    if not (link.startswith("/tracking/loops/") and link.endswith(".md")):
+        sys.exit(f"closure-sweep: {pair!r} is not a bundle-absolute loop path "
+                 "(/tracking/loops/<name>.md) — nothing was written")
+    if outcome not in OUTCOMES:
+        sys.exit(f"closure-sweep: {pair!r} has outcome {outcome!r}, not one of "
+                 f"{sorted(OUTCOMES)} — nothing was written")
+    recorded[link] = {"examined": today, "outcome": outcome}
+data["loops"].update(recorded)
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8")
-print(f"closure-sweep: {len(sys.argv) - 1} loop(s) recorded on {today}")
+print(f"closure-sweep: {len(recorded)} loop(s) recorded on {today}")
 PY
 ```
 
 It **merges**: every entry from every earlier run survives, and re-examining a
 loop overwrites only its own date and outcome. A path with no `=` is recorded
-as `open`, and a malformed pair or an unwritable `state/` fails the command
-loudly rather than half-writing the file — nothing is committed on a step that
-did not run.
+as `open`.
+
+Every pair is checked before anything is written: the link has to be a
+bundle-absolute loop path (`/tracking/loops/<name>.md`) and the outcome has to
+be `done` or `open`. One bad pair, or an unwritable `state/`, exits non-zero and
+writes nothing at all, so a half-recorded run is not a state this file can be in
+— and `=done`, a mistyped
+path or an outcome like `closed` fail here instead of being recorded as a loop
+that does not exist. The count printed at the end is the number of entries
+actually recorded, not the number of arguments passed, so a run that recorded
+nothing cannot report success.
 
 The write is a command here rather than a subcommand of `close-loops.py`
 because that script reads and does nothing else; the boundary is what lets the
