@@ -310,7 +310,9 @@ touches it. Managed by `scripts/state.py`.
 - `state/last-update-check.json` — throttles the weekly update nudge (see
   core.md). Git-ignored, like `state/consumption-log.jsonl` and
   `state/recall.json`: `recall.py roll` appends any of the three rules the
-  bundle's `.gitignore` is missing, since `update` never re-syncs that file.
+  bundle's `.gitignore` is missing, since `update` never re-syncs that file. A
+  roll that cannot confirm them writes no record and exits non-zero, rather
+  than leaving that file for the next `git add -A`.
 - `state/consumption-log.jsonl` — one JSON line per answered read, holding the
   bundle-absolute paths that answer cited. Written only by `recall.py log`.
 - `state/recall.json` — the rolled-up pyramid over that log, the fixed-size

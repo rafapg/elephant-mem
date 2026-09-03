@@ -362,7 +362,13 @@ after.**
    roll appends them to `<bundle>/.gitignore`, printing what it added; the rule
    takes effect the moment it is written, and the line itself is committed by
    the next run. Best-effort like the hook: a failure never fails the run, and
-   the next roll picks up whatever this one missed.
+   the next roll picks up whatever this one missed. One outcome is not
+   best-effort. When the roll cannot confirm the bundle's `.gitignore` covers
+   those rules it writes nothing and exits non-zero, on purpose: the record of
+   which people were looked up and when would otherwise be sitting unprotected
+   ahead of the next run's `git add -A`. This run is already committed and is
+   not at risk, so do not retry it; report the refusal and its reason in the
+   run's summary, so the `.gitignore` gets fixed before the next one.
 
 9. **Backfill step (forward-first).** Only if forward found nothing new (gap
    closed): walk **one older day across every source still above the floor** —

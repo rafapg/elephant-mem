@@ -5,9 +5,9 @@ A template is a **contract with every script that reads a bundle**, not just
 with the validator. `init` copies the four into every new bundle and `update`
 re-syncs them, so every hand-written knowledge file starts as one of them —
 comments and all, since a bundle owner fills in the placeholders and leaves the
-`# open | done | dropped` documentation where it sits. Any script that reads a
-field a template ships is therefore bound by the way the template writes that
-field. "The fields the *code* reads" means every one of those scripts.
+`# open | done | dropped | expired` documentation where it sits. Any script that
+reads a field a template ships is therefore bound by the way the template writes
+that field. "The fields the *code* reads" means every one of those scripts.
 
 That is not a hypothetical contract. The branch that added this suite also
 shipped six frontmatter readers that glued a template's trailing `#` comment
@@ -350,7 +350,7 @@ def drive_decay_loops(root):
     dry = run_script(bundle, "decay-loops.py")
     record(
         "decay-loops.py sees the template loop as a decay candidate, so "
-        "`status: open  # open | done | dropped` was read as `open`",
+        "`status: open  # open | done | dropped | expired` was read as `open`",
         dry.returncode == 0 and "1 candidate(s)" in dry.stdout,
         f"exit={dry.returncode}\n{dry.stdout}\n{dry.stderr}",
     )
@@ -375,6 +375,26 @@ def drive_decay_loops(root):
         and "status: open" not in text,
         f"exit={applied.returncode}\n{applied.stdout}\n{applied.stderr}\n---\n{text}",
     )
+    # The template documents `expired:` in prose (it declares no field for it,
+    # since only the routine may write one) and the status flip above passes
+    # without it ever being stamped. So the field gets its own two checks: that
+    # it is there, and that it sits where the template says it does.
+    fm_lines = text.split("---")[1].splitlines() if text.startswith("---") else []
+    expired = [ln for ln in fm_lines if ln.startswith("expired:")]
+    record(
+        "…and stamps the `expired:` field the template documents, with a date",
+        len(expired) == 1 and expired[0][len("expired:"):].strip() != "",
+        f"frontmatter:\n" + "\n".join(fm_lines),
+    )
+    status_at = [i for i, ln in enumerate(fm_lines) if ln.startswith("status:")]
+    record(
+        "…on the line directly under `status:`, where the template says the "
+        "routine inserts it",
+        len(status_at) == 1
+        and len(expired) == 1
+        and fm_lines[status_at[0] + 1:status_at[0] + 2] == expired,
+        f"frontmatter:\n" + "\n".join(fm_lines),
+    )
 
 
 @drives("close-loops.py")
@@ -386,7 +406,7 @@ def drive_close_loops(root):
     text = out.stdout
     record(
         "close-loops.py queues the template loop, so `status: open  # open | "
-        "done | dropped` was read as `open` — a reader that keeps the comment "
+        "done | dropped | expired` was read as `open` — a reader that keeps the comment "
         "queues nothing at all and says so at exit 0",
         out.returncode == 0
         and "1 loop(s) queued of 1 open" in text

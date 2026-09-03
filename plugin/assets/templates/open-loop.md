@@ -5,7 +5,7 @@ type: open-loop
 # a ` #` silently truncates the value.
 description: "<the action / commitment, one sentence>"
 owner: []             # bundle-absolute entity links of who owns it
-status: open          # open | done | dropped
+status: open          # open | done | dropped | expired
 entities: []          # other entities this loop concerns
 sources: []           # source(s) where it was raised
 opened: 2026-06-24

@@ -70,9 +70,14 @@ entity-centric (see below).
 
 An **open-loop** is a commitment/action-item ("the owner will produce the
 planning materials"). It is NOT a durable fact — it completes. Give it a `status`
-(`open|done|dropped`) and a `**Closure signal:**`. When a later source shows it
-was done, `maintain` flips it to `done` (it leaves the active board but stays as
-history). Use open-loops to track "what got done vs not".
+(`open|done|dropped|expired`) and a `**Closure signal:**`. `close-loops` reads
+that signal against the evidence and writes `status: done` itself; `decay` flips
+a loop that went quiet and survived examination to `status: expired`; `dropped`
+stays a hand-set state. Those are the only writers, and `maintain` never touches
+a loop. Any status other than `open` takes the loop off the board, out of the
+manifest and out of the entity hubs, and `build-index.py` lists it on
+`tracking/resolved-loops.md`, its one archive. Use open-loops to track "what got
+done vs not".
 
 ## Aggregator facts (the rollup rule)
 
@@ -198,16 +203,20 @@ python3 scripts/recall.py log --mode query \
   consulted and when, so they stay on the machine. The seed `.gitignore` carries
   the rules for a new bundle, and `recall.py roll` appends any that are missing
   before it writes, since `update` never re-syncs `.gitignore` and every write
-  routine ends in `git add -A`.
+  routine ends in `git add -A`. A roll that cannot confirm the rules, an
+  unreadable `.gitignore` or an append that failed, writes no record and exits
+  non-zero rather than leaving that file unprotected in front of the next
+  `git add -A`. Treat it as a stop for the routine that called it, not as a
+  missing roll.
 
 ## Optional connectors (automatic ingestion degrades gracefully)
 
 Core knowledge modes (`query`, `briefing`, `capture`, `ingest`, `maintain`,
-`expand`, `review`, `start-day`, `end-day`) work with **zero MCP connectors** —
-they are pure local-bundle operations. Automatic ingestion (`catch-up`,
-`push-start-day`) is **optional** and driven by the `sources` block in
-`elephant.json` (see `docs/configuration.md`). When a configured connector is not
-available:
+`close-loops`, `decay`, `expand`, `review`, `start-day`, `end-day`) work with
+**zero MCP connectors** — they are pure local-bundle operations. Automatic
+ingestion (`catch-up`, `push-start-day`) is **optional** and driven by the
+`sources` block in `elephant.json` (see `docs/configuration.md`). When a
+configured connector is not available:
 
 - **Skip that source, don't fail the run.** A missing Calendar connector means
   the agenda block is skipped with a one-line note; a missing Slack connector

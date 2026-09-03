@@ -19,7 +19,12 @@ it.
    stands (an unrolled line only makes a loop look less recently cited than it
    is). It also appends the `state/` ignore rules to `<bundle>/.gitignore` when
    a bundle predates them, so this run's own `git add -A` cannot commit the
-   record of which people were looked up and when.
+   record of which people were looked up and when. If it cannot confirm those
+   rules it writes nothing and exits non-zero. That one is not the ordinary
+   failure above: the scan still runs and still reads the record as it stands,
+   but nothing in this run may commit until the `.gitignore` is fixed, so stop
+   before the write step and report the refusal with the reason the roll
+   printed.
 
    Then run `python3 scripts/decay-loops.py`. It scans every `status: open`
    loop, computes its last-activity date (the max of `updated` / `opened` /

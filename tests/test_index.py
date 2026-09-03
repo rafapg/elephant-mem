@@ -22,6 +22,10 @@ by covering the specific bug fixes and new behavior below:
   4d. One loop-status rule: the open partition (board, manifest, entity hubs)
      and the resolved page are complements of a single normalized comparison,
      so `status: Open` or a padded `open ` cannot fall out of both at once.
+  4e. …and the rule's two implementations agree: build-index.py's loop_status()
+     and briefing.py's is_resolved() are hand-copied twins across scripts that
+     share no module, so one bundle is rendered through both and the partitions
+     compared.
   5. entities/roster.tsv: the resolution surface — one four-column row per
      ACTIVE entity, sorted by kind then title, with the trailing tab of an
      empty `aliases` column surviving, grid-breaking characters sanitized,
@@ -831,6 +835,93 @@ def test_loop_status_one_rule(root):
 
 
 # ---------------------------------------------------------------------------
+# 4e. the two copies of the rule agree — build-index.py's loop_status() and
+#     briefing.py's is_resolved()
+# ---------------------------------------------------------------------------
+
+LOOP_LINK = re.compile(r"(/tracking/loops/[a-z0-9-]+\.md)")
+
+
+def test_loop_status_two_scripts_agree(root):
+    """`briefing.py`'s is_resolved() is a hand-copied twin of `build-index.py`'s
+    loop_status(): the two scripts share no module, and the briefing docstring
+    says outright "change one and change the other". Nothing held them to it.
+    Deleting the `.strip().lower()` from the briefing side left all eleven
+    suites green, which is precisely the drift the docstring warns about: a
+    `status: Open` loop on the board and off the briefing, or the reverse.
+
+    So this check renders ONE bundle through both scripts and compares the
+    partitions they draw. The fixture is statuses that only agree once
+    normalized (`Open`, a padded `open `, `DONE`) — over plain lowercase values
+    the two implementations cannot disagree, and the check would be vacuous."""
+    bundle = new_bundle(root, "loop-status-two-scripts")
+    write_entity(bundle, "entities/person/alice.md", "Alice")
+    ents = "entities: [/entities/person/alice.md]\n"
+    write_open_loop(bundle, "tracking/loops/capital.md", "Capitalized status", ents,
+                    status="Open")
+    # Quoted so the trailing space survives both frontmatter paths (see 4d).
+    write_open_loop(bundle, "tracking/loops/padded.md", "Padded status", ents,
+                    status='"open "')
+    write_open_loop(bundle, "tracking/loops/plain.md", "Plain status", ents)
+    write_open_loop(bundle, "tracking/loops/shouted.md", "Shouted done", ents,
+                    status="DONE", closed=TODAY,
+                    resolution="It landed. And then some.")
+
+    built = run_script(bundle, "build-index.py")
+    if not record("build-index.py exits 0 over the mixed-case loop bundle",
+                  built.returncode == 0, built.stdout + built.stderr):
+        return
+    brief = run_script(bundle, "briefing.py", ["--kind", "open-loop", "--days", "3650"])
+    if not record("briefing.py --kind open-loop exits 0 over the same bundle",
+                  brief.returncode == 0, brief.stdout + brief.stderr):
+        return
+
+    board = (bundle / "knowledge" / "tracking" / "open-loops.md").read_text(encoding="utf-8")
+    resolved = (bundle / "knowledge" / "tracking" / "resolved-loops.md").read_text(encoding="utf-8")
+    index_open = set(LOOP_LINK.findall(board))
+    index_resolved = set(LOOP_LINK.findall(resolved))
+
+    # Everything after the `## Open loops` heading is the briefing's open lane;
+    # its resolved lane is only ever a hidden count, so it is read as one.
+    _, _, loops_block = brief.stdout.partition("## Open loops")
+    briefing_open = set(LOOP_LINK.findall(loops_block))
+    hidden = re.search(r"\((\d+) resolved loop\(s\) hidden", loops_block)
+    briefing_resolved = int(hidden.group(1)) if hidden else 0
+
+    record(
+        "the fixture is actually adversarial: three loops whose status only "
+        "reads as `open` after strip+lower, and one whose `DONE` only reads as "
+        "resolved after it",
+        len(index_open) == 3 and len(index_resolved) == 1,
+        f"open={sorted(index_open)} resolved={sorted(index_resolved)}",
+    )
+    record(
+        "build-index.py's open partition and briefing.py's are the same set of "
+        "loops — the twin normalizations agree on every off-case status",
+        index_open == briefing_open,
+        f"build-index={sorted(index_open)}\nbriefing={sorted(briefing_open)}\n"
+        f"--- board ---\n{board}\n--- briefing ---\n{brief.stdout}",
+    )
+    record(
+        "…and the loops each one leaves out of that lane are the same count, so "
+        "neither script drops a loop off both surfaces at once",
+        len(index_resolved) == briefing_resolved,
+        f"resolved page={sorted(index_resolved)} briefing hid={briefing_resolved}\n"
+        f"--- resolved ---\n{resolved}\n--- briefing ---\n{brief.stdout}",
+    )
+    record(
+        "…and --include-resolved brings exactly the resolved-page loops back "
+        "into the briefing, so the two partitions cover the same four loops",
+        set(LOOP_LINK.findall(
+            run_script(bundle, "briefing.py",
+                       ["--kind", "open-loop", "--days", "3650",
+                        "--include-resolved"]).stdout.partition("## Open loops")[2]
+        )) == index_open | index_resolved,
+        f"build-index open+resolved={sorted(index_open | index_resolved)}",
+    )
+
+
+# ---------------------------------------------------------------------------
 # 5. entities/roster.tsv — the resolution surface
 # ---------------------------------------------------------------------------
 
@@ -1030,6 +1121,7 @@ def main():
         test_resolved_surface,
         test_resolved_overflow,
         test_loop_status_one_rule,
+        test_loop_status_two_scripts_agree,
         test_roster,
     ):
         guarded(fn, scratch_root)
