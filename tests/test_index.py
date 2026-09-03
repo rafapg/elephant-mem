@@ -19,6 +19,9 @@ by covering the specific bug fixes and new behavior below:
      newest first, date + outcome + the first sentence of the resolution, the
      loops gone from the entity hubs and from briefing.py's `## Open loops`,
      and the overflow past `index.resolved_max` in a sibling archive shard.
+  4d. One loop-status rule: the open partition (board, manifest, entity hubs)
+     and the resolved page are complements of a single normalized comparison,
+     so `status: Open` or a padded `open ` cannot fall out of both at once.
   5. entities/roster.tsv: the resolution surface — one four-column row per
      ACTIVE entity, sorted by kind then title, with the trailing tab of an
      empty `aliases` column surviving, grid-breaking characters sanitized,
@@ -745,6 +748,88 @@ def test_resolved_overflow(root):
            page2)
 
 
+def test_loop_status_one_rule(root):
+    """The open partition and the resolved page are complements of ONE
+    normalized rule, not two literal comparisons of the raw field.
+
+    `close-loops/procedure.md` has the model editing a loop's status by hand, so
+    `status: Open` is reachable. Under an exact `== "open"` / `!= "open"` pair
+    that loop fell out of BOTH sides: absent from tracking/open-loops.md, from
+    manifest.jsonl and from the entity hub, while being published on
+    tracking/resolved-loops.md under a header reading "reached done, dropped or
+    expired". The same live commitment, invisible to every retrieval surface and
+    announced as settled."""
+    mod = load_script_module("build-index.py")
+    record(
+        "loop_status() strips, lowercases, and defaults to `open`",
+        mod.loop_status({"fm": {"status": "Open"}}) == "open"
+        and mod.loop_status({"fm": {"status": "  open\t"}}) == "open"
+        and mod.loop_status({"fm": {}}) == "open"
+        and mod.loop_status({"fm": {"status": "Done"}}) == "done",
+        "",
+    )
+
+    bundle = new_bundle(root, "loop-status-one-rule")
+    write_entity(bundle, "entities/person/alice.md", "Alice")
+    ents = "entities: [/entities/person/alice.md]\n"
+    write_open_loop(bundle, "tracking/loops/capital.md", "Capitalized status", ents,
+                    status="Open")
+    # Quoted, so the value survives as `open ` through BOTH frontmatter paths:
+    # a plain YAML scalar would have its trailing space eaten before either
+    # parser is even asked.
+    write_open_loop(bundle, "tracking/loops/padded.md", "Padded status", ents,
+                    status='"open "')
+    write_open_loop(bundle, "tracking/loops/plain.md", "Plain status", ents)
+    write_open_loop(bundle, "tracking/loops/settled.md", "Really settled", ents,
+                    status="Done", closed="2026-03-04",
+                    resolution="Shipped in the March release. And more.")
+
+    result = run_script(bundle, "build-index.py")
+    if not record("build-index.py exits 0 over off-case loop statuses",
+                  result.returncode == 0, result.stdout + result.stderr):
+        return
+    record("…and counts the three as open, the `Done` one as resolved",
+           "3 open loops, 1 resolved loops" in result.stdout, result.stdout)
+
+    live = ("Capitalized status", "Padded status")
+    board = (bundle / "knowledge" / "tracking" / "open-loops.md").read_text(encoding="utf-8")
+    record(
+        "`status: Open` and a padded `open ` reach the board, next to the plain one",
+        all(d in board for d in live) and "Plain status" in board
+        and "Really settled" not in board,
+        board,
+    )
+
+    manifest = (bundle / "knowledge" / "manifest.jsonl").read_text(encoding="utf-8")
+    descs = {json.loads(ln)["desc"] for ln in manifest.splitlines() if ln.strip()}
+    record(
+        "…and manifest.jsonl, the surface every triage read starts from",
+        all(d in descs for d in live) and "Plain status" in descs
+        and "Really settled" not in descs,
+        sorted(descs),
+    )
+
+    alice = (bundle / "knowledge" / "entities" / "person" / "alice.md").read_text(encoding="utf-8")
+    record(
+        "…and the entity hub, as current items rather than history",
+        all(d in alice for d in live) and "Really settled" not in alice,
+        alice,
+    )
+
+    page = (bundle / "knowledge" / "tracking" / "resolved-loops.md").read_text(encoding="utf-8")
+    record(
+        "neither is published on the resolved page as something that got settled",
+        not any(d in page for d in live) and "Plain status" not in page,
+        page,
+    )
+    record(
+        "the genuinely resolved `Done` loop is there, and only it",
+        "- 2026-03-04 · Done · [Really settled](/tracking/loops/settled.md) — "
+        "Shipped in the March release." in page,
+        page,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 5. entities/roster.tsv — the resolution surface
 # ---------------------------------------------------------------------------
@@ -944,6 +1029,7 @@ def main():
         test_resolution_sentence_unit,
         test_resolved_surface,
         test_resolved_overflow,
+        test_loop_status_one_rule,
         test_roster,
     ):
         guarded(fn, scratch_root)

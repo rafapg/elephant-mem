@@ -302,7 +302,10 @@ def main():
         """A loop that has left the open lane. Tested as `status != open` rather
         than against a resolved vocabulary, so it agrees exactly with the
         partition build-index.py's board and manifest already draw — and so a
-        loop whose status is a typo is not silently reported as open."""
+        loop whose status is a typo is not silently reported as open. The
+        strip/lower is build-index.py's `loop_status()`, restated here because
+        these scripts share no module: change one and change the other, or a
+        `status: Open` loop is open on one surface and resolved on the other."""
         return str(fm.get("status", "open")).strip().lower() != "open"
 
     facts, loops = [], []

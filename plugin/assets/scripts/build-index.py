@@ -389,6 +389,18 @@ def resolution_sentence(body):
     return ""
 
 
+def loop_status(c):
+    """A loop's status, normalized: stripped and lowercased, defaulting to
+    `open`. THE single rule that partitions the loop lane — the board, the
+    manifest and the entity hubs on one side, `tracking/resolved-loops.md` on
+    the other — so the two sides can never disagree about one file. A loop
+    carrying `status: Open` (close-loops/procedure.md has the model editing that
+    field by hand) used to fall out of BOTH: absent from the board, the manifest
+    and the hub, and published on the resolved page as settled. Matches the
+    normalization briefing.py's is_resolved() applies to the same field."""
+    return str(c["fm"].get("status", "open")).strip().lower()
+
+
 def resolved_on(c):
     """The date a resolved loop was resolved: `closed` for a closure, `expired`
     for a decay expiry, and the file's own `updated`/`opened` for a loop whose
@@ -514,7 +526,7 @@ def main():
 
     # 2. tracking/open-loops.md — board of open loops by owner
     board = ["# Open loops", "", "Action items / commitments still open. Derived — do not edit by hand.", ""]
-    open_loops = [c for c in loops if str(c["fm"].get("status", "open")) == "open"]
+    open_loops = [c for c in loops if loop_status(c) == "open"]
     if not open_loops:
         board.append("_No open loops._")
     else:
@@ -537,7 +549,7 @@ def main():
     # from source bodies, facts and log.md, and validate-okf.py fails the run on
     # a link that no longer resolves. So resolution is a state change plus a
     # written justification, and THIS page is the archive.
-    resolved_loops = [c for c in loops if str(c["fm"].get("status", "open")) != "open"]
+    resolved_loops = [c for c in loops if loop_status(c) != "open"]
 
     def write_resolved(items):
         """Emit the resolved page newest first, capped at resolved_max(), with
