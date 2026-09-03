@@ -547,7 +547,11 @@ def main():
         ordered = sorted(items, key=lambda c: (resolved_on(c), c["link"]), reverse=True)
         cap = resolved_max()
         inline, overflow = ordered[:cap], ordered[cap:]
-        shard_path = os.path.join(BUNDLE, RESOLVED_ARCHIVE_REL)
+        # Split the REL on "/" before joining: this path is compared against
+        # md_files()'s walk in the archive cleanup below, and on Windows a
+        # join of a slash-bearing relative path keeps the slash, so the two
+        # strings never match and the same build deletes the shard it wrote.
+        shard_path = os.path.join(BUNDLE, *RESOLVED_ARCHIVE_REL.split("/"))
         page = [
             "# Resolved loops",
             "",
