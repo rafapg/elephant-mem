@@ -365,6 +365,120 @@ def test_bands(root):
            json.dumps(payload2["loops"][0] if payload2["loops"] else {}))
 
 
+def test_settled_boundary_is_on_or_after(root):
+    """`examined == last_activity` is settled: on or after, not strictly after.
+
+    The deciding case of the rule, and nothing exercised it on this side.
+    Mutating `>` to `>=` in build_queue()'s settling test left all 97 checks
+    green while the run went from `0 loop(s) queued of 1 open` to `1 loop(s)
+    queued` with a reason that contradicts itself, `active since it was examined
+    (2026-01-05 > 2026-01-05)`. tests/test_decay.py pins the same day at the
+    other end of the pair, where the same mutation is already red.
+    """
+    bundle = make_bundle(root, "settled-boundary")
+    write_loop(bundle, "same-day", description="Examined the day it last moved",
+               opened="2026-01-05", created="2026-01-05", updated="2026-01-05",
+               entities=("acme",))
+    write_sweep(bundle, {"/tracking/loops/same-day.md": "2026-01-05"})
+
+    payload, result = proposal(bundle)
+    if payload is None:
+        record("close-loops.py runs over a loop examined on its own activity date",
+               False, f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+        return
+    record("a loop examined on the very day of its last activity is settled: on "
+           "or after, not strictly after, which is the boundary decay's gate "
+           "implements too",
+           queued_paths(payload) == [] and payload["counts"]["band2"] == 0,
+           f"{queued_paths(payload)}\n{json.dumps(payload['counts'])}")
+    text = run(bundle).stdout
+    record("…and the header says so rather than queueing it with a reason that "
+           "reads `2026-01-05 > 2026-01-05`",
+           "0 loop(s) queued of 1 open" in text, text[:400])
+
+
+def test_unreadable_examination_date(root):
+    """A future or malformed examination date reads as never examined.
+
+    `DATE.search` alone finds ten digits in the right shape and nothing more, so
+    `examined: "2099-01-01"` used to read as an examination here while
+    `decay-loops.py`'s examination_date() refused it and parked the loop as
+    never examined. That disagreement is a deadlock: decay waits forever for an
+    examination this queue will never propose, because it already calls the loop
+    settled. The same deadlock the previous round fixed, reached through a
+    different input, so the two readers have to validate the same way.
+    """
+    bundle = make_bundle(root, "bad-examination")
+    write_loop(bundle, "future", description="Examined in 2099",
+               opened="2026-01-01", entities=("acme",))
+    write_loop(bundle, "nonsense", description="Examined on the 99th",
+               opened="2026-01-02", entities=("acme",))
+    write_sweep(bundle, {"/tracking/loops/future.md": "2099-01-01",
+                         "/tracking/loops/nonsense.md": "2026-99-99"})
+
+    payload, result = proposal(bundle)
+    if payload is None:
+        record("close-loops.py runs over a sweep carrying unreadable dates", False,
+               f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+        return
+    by_path = {lp["path"]: lp for lp in payload["loops"]}
+    record("an examination dated in the future is refused, exactly as "
+           "decay-loops.py's examination_date() refuses it: the loop reads as "
+           "never examined and is queued instead of being dropped as settled",
+           by_path.get("/tracking/loops/future.md", {}).get("examined") is None
+           and by_path.get("/tracking/loops/future.md", {}).get("reason")
+           == "never examined",
+           json.dumps([{"path": p, "examined": lp["examined"],
+                        "reason": lp["reason"]} for p, lp in by_path.items()],
+                      indent=2))
+    record("…and so is ten digits in the right shape that are not a date",
+           by_path.get("/tracking/loops/nonsense.md", {}).get("examined") is None
+           and by_path.get("/tracking/loops/nonsense.md", {}).get("reason")
+           == "never examined",
+           json.dumps(sorted(by_path)))
+
+
+def test_band_two_quota_at_every_reachable_cap(root):
+    """The reserved fifth has to exist at the caps a bundle can actually ask for.
+
+    `cap - cap // 5` is the whole cap for every cap below 5, so band 2 received
+    0 slots at 1, 2, 3 and 4 and exactly 1 at 5, and nothing said so: the
+    reservation read as present at the default and was absent everywhere else.
+    Those caps are reachable, not theoretical. `close_loops_max()` accepts any
+    int above 0 from `elephant.json` and `--max 3` is a legal run size.
+
+    Measured with both bands overflowing, so no split here is a shortfall being
+    handed back. At a cap of 1 band 1 keeps absolute priority: a single slot
+    cannot serve both bands, and band 1 is the priority lane.
+    """
+    bundle = make_bundle(root, "quota")
+    for i in range(30):
+        write_loop(bundle, f"revisit-{i:02d}", opened="2026-05-01",
+                   entities=("acme",))
+    for i in range(40):
+        write_loop(bundle, f"cold-{i:02d}", opened=f"2026-01-{i % 28 + 1:02d}",
+                   entities=("nobody",))
+    write_fact(bundle, "new-acme", entities=("acme",), occurred="2026-08-20")
+    write_sweep(bundle, {f"/tracking/loops/revisit-{i:02d}.md": "2026-08-01"
+                         for i in range(30)})
+
+    for cap, want1, want2 in ((1, 1, 0), (2, 1, 1), (3, 2, 1), (4, 3, 1),
+                              (25, 20, 5)):
+        payload, result = proposal(bundle, ["--max", cap])
+        if payload is None:
+            record(f"--max {cap} runs over a bundle with 30 in band 1 and 40 in "
+                   "band 2", False,
+                   f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+            continue
+        paths = queued_paths(payload)
+        got1 = len([p for p in paths if p.startswith("/tracking/loops/revisit-")])
+        got2 = len([p for p in paths if p.startswith("/tracking/loops/cold-")])
+        record(f"at --max {cap} the run splits {want1} band 1 / {want2} band 2, "
+               "so the cold end advances at every cap and not only at the default",
+               len(paths) == cap and (got1, got2) == (want1, want2),
+               f"queued {len(paths)}: {got1} band 1, {got2} band 2\n{paths}")
+
+
 def test_band_one_does_not_starve_band_two(root):
     """E9: band 1 is served first but takes at most four fifths of the run.
 
@@ -654,6 +768,107 @@ def test_criterion_fallback(root):
            payload4["loops"][0]["criterion"] == "a release note naming it"
            and payload4["loops"][0]["criterion_source"] == "closure-signal",
            json.dumps(payload4["loops"][0]["criterion"]))
+
+
+def test_closure_signal_shapes(root):
+    """Every Markdown shape the section is written in, pinned in both directions.
+
+    Nothing here was covered, and 97 checks stayed green under two different
+    separators between the bolded lead-in and its criterion. That is how a
+    regression shipped: a separator crossing at most one newline misses the
+    criterion written in the paragraph *below* the lead-in, after a blank line,
+    which is the most idiomatic of the three shapes. The loop then falls back to
+    its `description` while the proposal states it carries no `**Closure
+    signal:**` section at all, and because `terms` is built from the description
+    plus the criterion, the words that identify the right fact go with it.
+
+    The two guards that make `\\s*` safe get a fixture each, so removing either
+    one turns this suite red on its own.
+    """
+    bundle = make_bundle(root, "signal-shapes")
+    crit = "a release note naming the export"
+    parsed_shapes = {
+        # (a) on the same line as the lead-in
+        "same-line": f"Details.\n\n**Closure signal:** {crit}",
+        # (b) on the line directly below it, no blank line
+        "next-line": f"Details.\n\n**Closure signal:**\n{crit}",
+        # (c) in the paragraph below it, after a blank line: the regressed shape
+        "paragraph-below": f"Details.\n\n**Closure signal:**\n\n{crit}",
+        # (f) hand-typed capitals: 2025 loop bodies were written by hand
+        "mixed-case": f"Details.\n\n**closure Signal:** {crit}",
+    }
+    fallback_shapes = {
+        # (d) the next non-blank line is another section
+        "next-section": "Details.\n\n**Closure signal:**\n\n"
+                        "**Context:** background that is not the criterion.",
+        # (e) an empty section at end of file
+        "empty-eof": "Details.\n\n**Closure signal:**",
+        # the guard's own fixture: an empty section with the next section
+        # butted straight against it, no blank line between them
+        "guard-adjacent": "Details.\n\n**Closure signal:**\n"
+                          "**Blocked by:** legal review.",
+        # the anchor's own fixture: the same, indented, so the guard's
+        # lookahead no longer sits on the `**` and only `(\\S` refuses it
+        "anchor-indented": "Details.\n\n**Closure signal:**\n\n"
+                           "  **Context:** background that is not the criterion.",
+    }
+    for name, body in {**parsed_shapes, **fallback_shapes}.items():
+        write_loop(bundle, name, description=f"Ship {name}", signal=None,
+                   body=body, opened="2026-01-01")
+
+    payload, result = proposal(bundle)
+    if payload is None:
+        record("close-loops.py reads a bundle of hand-written closure signals",
+               False, f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+        return
+    got = {lp["path"].rsplit("/", 1)[-1][:-3]: lp for lp in payload["loops"]}
+
+    for name in parsed_shapes:
+        lp = got.get(name, {})
+        record(f"the criterion is read when it is written {name.replace('-', ' ')}",
+               lp.get("criterion") == crit
+               and lp.get("criterion_source") == "closure-signal",
+               json.dumps({"criterion": lp.get("criterion"),
+                           "source": lp.get("criterion_source")}))
+    for name in fallback_shapes:
+        lp = got.get(name, {})
+        record(f"an empty section written {name.replace('-', ' ')} falls back to "
+               "the description rather than returning the section after it",
+               lp.get("criterion") == f"Ship {name}"
+               and lp.get("criterion_source") == "description",
+               json.dumps({"criterion": lp.get("criterion"),
+                           "source": lp.get("criterion_source")}))
+    record("in particular a `**Blocked by:**` line butted against the lead-in is "
+           "never returned as the closure criterion, which is what the "
+           "negative lookahead refuses",
+           "legal review" not in (got.get("guard-adjacent", {}).get("criterion")
+                                  or ""),
+           json.dumps(got.get("guard-adjacent", {}).get("criterion")))
+
+    # The other half of the regression: the criterion's words are what identify
+    # the right fact. Read from the paragraph below the lead-in, the fact that
+    # satisfies the criterion outranks a newer fact sharing the same entity and
+    # not one word; lost to the fallback, both score 2 and recency picks the
+    # wrong one.
+    b2 = make_bundle(root, "signal-shapes-ranking")
+    write_loop(b2, "export", description="Ship it", entities=("acme",),
+               signal=None, opened="2026-01-01",
+               body="Details.\n\n**Closure signal:**\n\n"
+                    "a release note showing the export pipeline reached Acme")
+    write_fact(b2, "the-match",
+               description="the export pipeline release reached Acme",
+               entities=("acme",), occurred="2026-01-02")
+    write_fact(b2, "decoy", description="unrelated wording entirely",
+               entities=("acme",), occurred="2026-09-01")
+    payload2, _ = proposal(b2)
+    loop = payload2["loops"][0]
+    order = [c["path"] for c in loop["evidence"]]
+    record("…and the criterion read out of that paragraph reaches the ranking: "
+           "the fact that satisfies it outranks the newer fact that shares the "
+           "entity and not one word",
+           order and order[0] == "/facts/the-match.md",
+           json.dumps({c["path"]: (c["score"], c["overlap"])
+                       for c in loop["evidence"]}, indent=2))
 
 
 # --- (d) degraded inputs --------------------------------------------------
@@ -994,7 +1209,45 @@ def test_sweep_recipe_writes_what_the_script_reads(root):
            repeated.returncode == 0 and "1 loop(s) recorded" in repeated.stdout,
            (repeated.stdout or "") + (repeated.stderr or ""))
 
-    # Undo that last write so the queue assertions below read the two-entry
+    # The recipe is the one command in this bundle a human types by hand, and
+    # `python3 -` reads stdin: it has no `__file__`, so it cannot resolve its
+    # bundle the way every shipped script does. Run from anywhere else it used to
+    # create a `state/` there, print a count and exit 0 while the real record
+    # stayed untouched, and `decay` then held every loop back as never examined.
+    elsewhere = Path(root) / "not-a-bundle"
+    elsewhere.mkdir()
+    stray = subprocess.run(
+        [sys.executable, str(recipe), "/tracking/loops/closed-one.md=done"],
+        cwd=str(elsewhere), capture_output=True, text=True, encoding="utf-8",
+        errors="replace")
+    record("the recipe refuses to run outside a bundle root instead of writing a "
+           "state/ nobody reads and reporting success",
+           stray.returncode == 1
+           and "run this from the bundle root" in (stray.stdout + stray.stderr)
+           and not (elsewhere / "state").exists(),
+           f"exit={stray.returncode}\n{stray.stdout}\n{stray.stderr}")
+
+    # write_text() truncates the target before the replacement lands, so an
+    # interruption discards every earlier entry or leaves half a JSON document
+    # behind. The write goes through a temporary file renamed onto the target.
+    record("the replacement goes to a temporary file renamed onto the target, "
+           "never straight through `path.write_text()`, which truncates the "
+           "record before the new bytes land",
+           "os.replace(" in body and "path.write_text(" not in body,
+           body)
+    rewritten = sweep("/tracking/loops/untouched.md=open")
+    after = json.loads(state_file.read_text(encoding="utf-8"))
+    record("a rewrite replaces the record whole: it still parses afterwards, the "
+           "earlier runs' entries are all in it, and no temporary file is left "
+           "beside it",
+           rewritten.returncode == 0
+           and set(after["loops"]) == {"/tracking/loops/closed-one.md",
+                                       "/tracking/loops/left-open.md",
+                                       "/tracking/loops/untouched.md"}
+           and not list((bundle / "state").glob("*.tmp")),
+           f"exit={rewritten.returncode}\n{json.dumps(after, indent=2)}")
+
+    # Undo those last writes so the queue assertions below read the two-entry
     # record the earlier calls built.
     state_file.write_text(intact, encoding="utf-8")
 
@@ -1074,10 +1327,14 @@ def main():
     print(f"scratch root: {root}\n")
     try:
         for test in (test_queue_order_and_bound, test_undated_loop_sorts_last,
-                     test_bands, test_band_one_does_not_starve_band_two,
+                     test_bands, test_settled_boundary_is_on_or_after,
+                     test_unreadable_examination_date,
+                     test_band_two_quota_at_every_reachable_cap,
+                     test_band_one_does_not_starve_band_two,
                      test_evidence_ranking, test_evidence_score_composes_not_nests,
                      test_evidence_cap, test_no_evidence,
-                     test_criterion_fallback, test_degraded_inputs,
+                     test_criterion_fallback, test_closure_signal_shapes,
+                     test_degraded_inputs,
                      test_named_loop_bypasses_the_queue,
                      test_max_is_refused_at_the_boundary,
                      test_owner_is_what_the_file_declares,

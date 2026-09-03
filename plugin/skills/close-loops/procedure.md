@@ -160,8 +160,10 @@ pairs in place of the two shown:
 
 ```bash
 python3 - /tracking/loops/acme-export.md=done /tracking/loops/pto-policy.md=open <<'PY'
-import datetime, json, pathlib, sys
+import datetime, json, os, pathlib, sys
 
+if not pathlib.Path("elephant.json").exists():
+    sys.exit("closure-sweep: run this from the bundle root. Nothing was written.")
 OUTCOMES = {"done", "open"}
 today = datetime.date.today().isoformat()
 path = pathlib.Path("state/closure-sweep.json")
@@ -188,8 +190,10 @@ for pair in sys.argv[1:]:
     recorded[link] = {"examined": today, "outcome": outcome}
 data["loops"].update(recorded)
 path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8")
+tmp = path.with_name(path.name + ".tmp")
+tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+               encoding="utf-8")
+os.replace(tmp, path)
 print(f"closure-sweep: {len(recorded)} loop(s) recorded on {today}")
 PY
 ```
@@ -201,12 +205,23 @@ as `open`.
 Every pair is checked before anything is written: the link has to be a
 bundle-absolute loop path (`/tracking/loops/<name>.md`) and the outcome has to
 be `done` or `open`. One bad pair, or an unwritable `state/`, exits non-zero and
-writes nothing at all, so a half-recorded run is not a state this file can be in
-— and `=done`, a mistyped
+writes nothing at all, so a half-recorded run is not a state this file can be in,
+and `=done`, a mistyped
 path or an outcome like `closed` fail here instead of being recorded as a loop
 that does not exist. The count printed at the end is the number of entries
 actually recorded, not the number of arguments passed, so a run that recorded
 nothing cannot report success.
+
+Two things guard the write itself, because this is the one command in the whole
+bundle a human types by hand. Every shipped script resolves its bundle from
+`__file__` and refuses to run outside one; `python3 -` reads stdin and has no
+`__file__`, so the block checks for `elephant.json` in the working directory
+first. Run from anywhere else it would create a `state/` there, print a count and
+exit 0 while the real record stayed untouched, and `decay` would then hold every
+loop back as never examined. And the replacement goes to a temporary file that is
+renamed onto the target, so an interruption cannot leave the record truncated or
+half-written: every earlier run's entry is either wholly there or wholly the
+previous version.
 
 The write is a command here rather than a subcommand of `close-loops.py`
 because that script reads and does nothing else; the boundary is what lets the
@@ -224,11 +239,14 @@ place), one manual "Run once" after creating the schedule to pre-approve the
 Bash and Edit prompts so unattended runs don't stall. It calls no MCP
 connector, so it is the least fragile of the three.
 
-At 25 loops a run the stale end of the lane is examined in about a month and
-the whole open lane in about two and a half. That arithmetic only holds if a
-run reaches loops the last one did not, which is what the sweep record buys:
-`close-loops.py` treats a loop as settled — out of the queue — once it was
-examined on or after its own last activity and has gained nothing since.
+At 25 loops a run, while the first band stays under the four fifths it may take,
+the stale end of the lane is examined in about a month and the whole open lane
+in about two and a half. Once the first band saturates, the cold end advances
+only at the fifth reserved for it, 5 loops a run: 735 stale loops is then about
+147 runs, roughly five months. Either figure only holds if a run reaches loops
+the last one did not, which is what the sweep record buys: `close-loops.py`
+treats a loop as settled, out of the queue, once it was examined on or after its
+own last activity and has gained nothing since.
 
 **A verdict is never permanent.** A fact or a source landing on a settled
 loop's entities returns it to the front of the queue, with the material named

@@ -22,12 +22,15 @@ delivered" is a judgment and not a string match.
            never-examined loop a defined position that a last-examination date
            cannot.
 
-capped at `close_loops_max` (default 25). At 25 a run, the stale backlog is
-examined in about a month and the whole open lane in about two and a half —
-arithmetic that only holds if a run reaches loops the last one did not, so
-"everything else" is read here as everything **not settled**: a loop is settled
-once it was examined on or after its own last activity and has gained nothing
-since. That is deliberately the same shape as the gate `decay-loops.py --apply`
+capped at `close_loops_max` (default 25), with a fifth of every run reserved for
+band 2. While band 1 stays under the four fifths it may take, a run of 25
+examines the stale backlog in about a month and the whole open lane in about two
+and a half. Once band 1 saturates, the cold end advances at the reserved fifth
+and no faster: 5 loops a run, so the owner's 735 stale loops take about 147 runs,
+roughly five months. Either figure only holds if a run reaches loops the last one
+did not, so "everything else" is read here as everything **not settled**: a loop
+is settled once it was examined on or after its own last activity and has gained
+nothing since. That is deliberately the same shape as the gate `decay-loops.py --apply`
 applies before expiring a loop, one band earlier: what leaves this queue is
 exactly what decay is then allowed to consider.
 
@@ -113,17 +116,29 @@ DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # The closure criterion as the template writes it: a bolded lead-in, then a
 # paragraph. It ends at a blank line, at the next bolded lead-in, or at EOF.
 #
-# The lead-in is followed by `[ \t]*` and at most one newline, never by `\s*`:
-# `\s*` eats the blank line after an *empty* `**Closure signal:**` heading, so
-# `.+?` starts inside the next section and the loop's background is returned,
-# labelled as its closure criterion — the one thing this script exists to read,
-# silently wrong. The `(?!\*\*…:\*\*)` guard is the same refusal for the case
-# with no blank line between them. An empty section matches nothing and falls
-# back to the `description` (E12), which is a criterion whose provenance the
-# proposal can name. Case-insensitive because 2025 loop bodies were written by
-# hand and nothing has ever checked the capital C.
+# The `\s*` between the lead-in and the criterion is deliberate, and so are the
+# two things that make it safe. Markdown writes the criterion on the same line
+# as the lead-in, on the line directly below it, or in the paragraph below it
+# after a blank line; only `\s*` reaches all three. A separator that crosses at
+# most one newline misses the third shape, the most idiomatic of them, and the
+# loop then falls back to its `description` while the proposal states it carries
+# no `**Closure signal:**` section at all. Worse, `terms` is built from the
+# description plus the criterion, so the words that identify the right fact go
+# with it.
+#
+# What `\s*` alone would do is run past an *empty* `**Closure signal:**` heading
+# and return the next section labelled as the closure criterion, the one thing
+# this script exists to read, silently wrong. Two guards refuse that:
+# `(?!\*\*[^*\n]+:\*\*)` refuses a bolded lead-in as the criterion, and the `(\S`
+# anchor refuses whitespace as its first character. With the
+# `(?=\n\s*\n|\n\*\*…:\*\*|\Z)` terminator, an empty section then matches
+# nothing and falls back to the `description` (E12), a criterion whose
+# provenance the proposal can name. An empty section and a criterion in the
+# paragraph below are byte-identical up to those guards, which is exactly why
+# they carry the whole distinction. Case-insensitive because 2025 loop bodies
+# were written by hand and nothing has ever checked the capital C.
 CLOSURE_SIGNAL = re.compile(
-    r"\*\*Closure signal:\*\*[ \t]*\n?[ \t]*(?!\*\*[^*\n]+:\*\*)(\S.*?)"
+    r"\*\*Closure signal:\*\*\s*(?!\*\*[^*\n]+:\*\*)(\S.*?)"
     r"(?=\n\s*\n|\n\*\*[^*\n]+:\*\*|\Z)",
     re.DOTALL | re.IGNORECASE,
 )
@@ -598,7 +613,22 @@ def load_sweep():
 
 
 def examined_on(sweep, link):
-    """The ISO date `link` was last examined, or None."""
+    """The ISO date `link` was last examined, or None if there is none readable.
+
+    The value is validated exactly as decay-loops.py's `examination_date()`
+    validates it, and the two have to stay mirrors. `DATE.search` alone finds ten
+    digits in the right shape and nothing else, so `2026-99-99` and `2099-01-01`
+    both read as an examination here while decay refuses them and parks the loop
+    as never examined. That disagreement is a deadlock: decay holds the loop
+    forever waiting for an examination, this queue calls it settled and never
+    proposes one, and neither lane touches it again.
+
+    Validating the **matched group** rather than the whole value, again like
+    decay: `datetime.date.fromisoformat()` over the whole thing would reject the
+    `2026-09-01T09:00:00-03:00` shape `load_sweep()` tolerates on purpose. An
+    unreadable value reads as "never examined", which returns that one loop to
+    band 2 rather than dropping it.
+    """
     entry = (sweep.get("loops") or {}).get(link)
     if isinstance(entry, str):
         value = entry
@@ -607,7 +637,15 @@ def examined_on(sweep, link):
     else:
         return None
     m = DATE.search(value) if isinstance(value, str) else None
-    return m.group(0) if m else None
+    if not m:
+        return None
+    try:
+        parsed = datetime.date.fromisoformat(m.group(0))
+    except ValueError:
+        return None  # ten digits in the right shape, not a date
+    if parsed > datetime.date.today():
+        return None  # an examination cannot be in the future
+    return m.group(0)
 
 
 # --- the queue -------------------------------------------------------------
@@ -678,10 +716,17 @@ def build_queue(loops, sweep, material, cap):
     # Band 1 is served first but is not absolute: a fifth of the run is reserved
     # for the cold end of the lane. Absolute precedence starves band 2 for as
     # long as band 1 keeps overflowing, and band 2 is where the loops decay is
-    # waiting on live — measured on the owner's bundle, 0 of 40 cold loops were
-    # examined over 30 simulated runs. `max(1, …)` keeps band 1 served at all
-    # when the cap is 1 or 2, where a fifth rounds to nothing.
-    take1 = min(len(band1), max(1, cap - cap // 5))
+    # waiting on live: measured on the owner's bundle, 0 of 40 cold loops were
+    # examined over 30 simulated runs.
+    #
+    # The reservation is at least one slot, because `cap // 5` is 0 for every cap
+    # below 5 and a plain fifth hands those runs entirely to band 1, which is the
+    # starvation this exists to stop. `close_loops_max` takes any int above 0
+    # from elephant.json and `--max 3` is a legal run, so those caps are reached.
+    # The one exception is a cap of 1: a single slot cannot serve both bands, and
+    # band 1 is the priority lane.
+    reserve = 0 if cap == 1 else max(1, cap // 5)
+    take1 = min(len(band1), cap - reserve)
     # The reservation is only ever as large as band 2 can fill, so an empty
     # cold end gives its slots back rather than shortening the run.
     take2 = min(len(band2), cap - take1)
