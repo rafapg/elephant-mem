@@ -79,6 +79,11 @@ TEMPLATE_SPEC = {
 #   backlog.py     — BUNDLE/state only (`state/backlog.json` + its rendering);
 #                    its own docstring says state/ is not part of the OKF bundle.
 #   ingest-audio.py — BUNDLE/state/phone only (Taildrop inbox, WhisperX output).
+#   recall.py      — BUNDLE/state only (the consumption log and its roll-up). It
+#                    does define KNOWLEDGE, but only as a string prefix: it
+#                    rewrites a cited link to its bundle-absolute spelling and
+#                    opens no document, so it parses no frontmatter and no
+#                    template field is a contract of its.
 #   run-hooks.py   — reads `hooks` out of elephant.json and spawns subscribers;
 #                    resolves no knowledge/ path at all. (smoke.py exempts it
 #                    from the checkout guard for the neighbouring reason: it
@@ -89,6 +94,7 @@ TEMPLATE_SPEC = {
 READER_EXEMPT = {
     "backlog.py",
     "ingest-audio.py",
+    "recall.py",
     "run-hooks.py",
     "send-email.py",
     "state.py",
