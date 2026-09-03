@@ -184,7 +184,9 @@ python3 scripts/recall.py log --mode query \
 - **It is read, so an omitted call costs something.** `recall.py roll` folds
   the log into `state/recall.json`, and `decay` reads that record as a loop's
   fourth activity date: a loop your answer cited and did not log looks
-  untouched to the next expiry sweep. This is why the log stopped being
+  untouched to the next expiry sweep. No read mode ever calls `roll` — the two
+  write routines do, `catch-up` after its commit and `decay` before its scan,
+  so a read only ever appends. This is why the log stopped being
   best-effort telemetry. It is still not OKF knowledge — `state/` sits outside
   the OKF bundle and `validate-okf.py` never touches it, the same standing as
   `state/cursors.json`.

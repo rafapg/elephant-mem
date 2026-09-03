@@ -10,13 +10,22 @@ it.
 
 ## Procedure
 
-1. **Dry-run.** From `<bundle>`, run `python3 scripts/decay-loops.py`. It
-   scans every `status: open` loop, computes its last-activity date (the max
-   of `updated` / `opened` / `created`, whichever are present), and lists
-   every one older than `elephant.json` -> `decay.loop_expiry_days` (default
-   45 — same defensive fallback as `hub_max_facts`) as a candidate, one per
-   line with its age in days, plus a trailing count. This is read-only —
-   nothing changes yet.
+1. **Roll the recall record, then dry-run.** From `<bundle>`, first run
+   `python3 scripts/recall.py roll`. It folds every consumption line written
+   since the last roll into `state/recall.json`'s buckets — that record is an
+   input to the scan below, so rolling here is what keeps it fresh where it is
+   read. It writes nothing when the log is empty or absent, and a failure is
+   not fatal to this run: carry on and let the scan read the record as it
+   stands (an unrolled line only makes a loop look less recently cited than it
+   is).
+
+   Then run `python3 scripts/decay-loops.py`. It scans every `status: open`
+   loop, computes its last-activity date (the max of `updated` / `opened` /
+   `created`, whichever are present), and lists every one older than
+   `elephant.json` -> `decay.loop_expiry_days` (default 45 — same defensive
+   fallback as `hub_max_facts`) as a candidate, one per line with its age in
+   days, plus a trailing count. The scan is read-only, and the roll before it
+   writes only `state/recall.json` — no knowledge file changes yet.
 
    If the count is 0, say so and stop — there is nothing to do this run.
 

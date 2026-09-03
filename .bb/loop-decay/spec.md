@@ -259,7 +259,7 @@ yesterday is as examined as one examined an hour ago.
       → E2, E3, E4, E5, E6 · dep: 1 · verify: `tests/test_recall.py`
 - [x] **3. Adopt the log across the read modes**: the five modes call `recall.py log`; `core.md`'s section rewritten
       → H1 · dep: 1 · verify: reading
-- [ ] **4. Wire `roll` into the routines**: `decay` step 1 and `catch-up`'s commit step
+- [x] **4. Wire `roll` into the routines**: `decay` step 1 and `catch-up`'s commit step
       → H7 · dep: 2 · verify: reading
 - [ ] **5. Recall as a fourth activity date**: `last_activity()` in `decay-loops.py`
       → H7, E2, E7, E8 · dep: 2 · verify: `tests/test_decay.py`

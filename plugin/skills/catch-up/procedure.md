@@ -337,6 +337,17 @@ after.**
    generator) regenerate here; a hook failure never fails the run. Skip it on an
    empty "nothing new" window (nothing changed to react to).
 
+   Last, `python3 scripts/recall.py roll`. This one runs **every** run,
+   including an empty window: it folds the consumption log the read modes have
+   been appending to (see `../_shared/core.md` → Consumption log) into
+   `state/recall.json`, and reads are what fill that log, not this window. This
+   is the routine that keeps the fold on a daily cadence, so `decay` reads a
+   current record instead of one that lags its own three-day clock, and so the
+   read stays a fixed-size lookup however long the raw log gets. Both files are
+   git-ignored, so it changes nothing this run committed and is placed after
+   the commit for that reason. Best-effort like the hook: a failure never fails
+   the run, and the next roll picks up whatever this one missed.
+
 9. **Backfill step (forward-first).** Only if forward found nothing new (gap
    closed): walk **one older day across every source still above the floor** —
    `state.py next-backfill <name>` for each configured source. For each that is
