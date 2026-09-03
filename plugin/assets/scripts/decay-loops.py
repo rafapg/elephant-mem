@@ -218,6 +218,28 @@ def field(block, key):
     return strip_comment(m.group(1)) or None
 
 
+def loop_status(block):
+    """A loop's status, normalized: unquoted, stripped and lowercased,
+    defaulting to `open`.
+
+    THE single rule that decides what decay may look at, and deliberately the
+    same one build-index.py's loop_status() applies to the same field, so the
+    board and this script can never disagree about one loop. A loop carrying
+    `status: Open` (close-loops/procedure.md has the model editing that field by
+    hand) read as open on the board and as not-open here: it sat on the board as
+    a live commitment forever, and decay never so much as considered it.
+
+    The unquoting is this reader's own business. field() here returns the raw
+    scalar, quotes and all, where close-loops.py's namesake unquotes for its
+    caller; `status: "open"` is a legal spelling of the same value and must not
+    survive a decay run for the sake of two characters.
+    """
+    raw = field(block, "status") or "open"
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        raw = raw[1:-1]
+    return raw.strip().lower()
+
+
 def recall_lookup():
     """A `bundle-absolute path -> ISO date last cited` callable over
     `state/recall.json`, or one that answers None for every path.
@@ -432,18 +454,32 @@ def loop_files():
     return sorted(p for p in LOOPS_DIR.iterdir() if p.suffix == ".md")
 
 
+# The `status: open` line as the writer must match it: exactly the spellings
+# loop_status() reads as open, because a loop this script accepts as a candidate
+# has to be one it can also rewrite. Group 1 keeps the key, the spacing and an
+# opening quote; everything after `open` (a closing quote, the template's
+# `# open | done | dropped` comment) is left where it is.
+OPEN_LINE = re.compile(r"^(status:\s*[\"']?)open\b", re.IGNORECASE)
+
+
 def expire_block(block, expired_date):
     """Rewrite a frontmatter block's `status: open` line to `status: expired`
     and stamp `expired: <date>` right after it (updating it in place if a
     stray `expired:` line already exists). Returns the new block, or None if
-    the block has no `status: open` line (caller should skip the file)."""
+    the block has no `status: open` line (caller should skip the file).
+
+    Matched through OPEN_LINE, so `status: Open` and `status: "open"` are
+    rewritten too. Reading a spelling the writer then refuses would be worse
+    than not reading it at all: the loop would be named as a candidate on every
+    dry run and skipped with a warning on every `--apply`.
+    """
     lines = block.splitlines()
     status_idx = next(
-        (i for i, ln in enumerate(lines) if re.match(r"^status:\s*open\b", ln)), None
+        (i for i, ln in enumerate(lines) if OPEN_LINE.match(ln)), None
     )
     if status_idx is None:
         return None
-    lines[status_idx] = re.sub(r"^(status:\s*)open\b", r"\1expired", lines[status_idx])
+    lines[status_idx] = OPEN_LINE.sub(r"\1expired", lines[status_idx], count=1)
     expired_idx = next((i for i, ln in enumerate(lines) if re.match(r"^expired:\s*", ln)), None)
     if expired_idx is not None:
         lines[expired_idx] = f"expired: {expired_date}"
@@ -554,7 +590,7 @@ def find_candidates(expiry_days):
         if not m:
             continue
         block = m.group(1)
-        if field(block, "status") != "open":
+        if loop_status(block) != "open":
             continue
         file_activity = last_activity(block)
         activity = last_activity(block, cited_on(bundle_link(path)))

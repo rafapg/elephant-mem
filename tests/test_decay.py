@@ -425,6 +425,76 @@ def test_template_shaped_loop_decays(root):
 
 
 # ---------------------------------------------------------------------------
+# 8b. one rule for the status field, on both sides of the lane
+# ---------------------------------------------------------------------------
+# build-index.py normalizes the field through its own `loop_status()`, which
+# strips and lowercases, so `status: Open` counts as open on the board, in the
+# manifest and on the entity hubs. Decay compared the raw scalar, so the same
+# loop was open everywhere and invisible here: it sat on the board as a live
+# commitment forever and decay never so much as considered it. The two sides
+# now read the field by the same rule, which is what this check pins, run
+# across both scripts rather than against decay alone.
+
+def test_status_spelling_agrees_with_build_index(root):
+    bundle = new_bundle(root, "status-spelling")
+    variants = {
+        "capital.md": ("Open", "Capitalized status, edited by hand"),
+        "spaced.md": ("open ", "Trailing space after the status"),
+        "quoted.md": ('"open"', "Quoted status, as a --fix pass writes it"),
+    }
+    paths = {}
+    for name, (status, desc) in variants.items():
+        paths[name] = write_loop(bundle, name, desc, status=status,
+                                 opened=days_ago(100), created=days_ago(100),
+                                 updated=days_ago(100))
+    decoy = write_loop(bundle, "done.md", "Capitalized and long finished",
+                       status="Done", opened=days_ago(100),
+                       created=days_ago(100), updated=days_ago(100))
+
+    index_pre = run_script(bundle, "build-index.py")
+    if not record("build-index.py exits 0 over the odd spellings",
+                   index_pre.returncode == 0,
+                   index_pre.stdout + index_pre.stderr):
+        return
+    board_pre = (bundle / "knowledge" / "tracking" / "open-loops.md").read_text(encoding="utf-8")
+    record("build-index reads all three spellings as open and boards them",
+           all(desc in board_pre for _status, desc in variants.values()), board_pre)
+
+    dry = run_script(bundle, "decay-loops.py")
+    record("…and decay reaches every one of them as a candidate, the count "
+           "agreeing with the board rather than reading 0",
+           all(name in dry.stdout for name in variants) and "3 candidate(s)" in dry.stdout,
+           dry.stdout)
+    record("…while a `Done` loop is still no candidate: the reader was "
+           "normalized, not taught to match everything",
+           "done.md" not in dry.stdout, dry.stdout)
+
+    apply_result = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    record("--apply expires all three, so the reader and the writer accept the "
+           "same spellings", "3 loop(s) expired" in apply_result.stdout,
+           apply_result.stdout + apply_result.stderr)
+    for name, path in paths.items():
+        text = path.read_text(encoding="utf-8")
+        status_line = next(ln for ln in text.splitlines() if ln.startswith("status:"))
+        record(f"…{name}: the status line now reads expired",
+               "expired" in status_line and "open" not in status_line.lower(),
+               repr(status_line))
+        record(f"…{name}: and carries today's expiry date",
+               f"expired: {TODAY.isoformat()}" in text, text)
+
+    index_post = run_script(bundle, "build-index.py")
+    board_post = (bundle / "knowledge" / "tracking" / "open-loops.md").read_text(encoding="utf-8")
+    record("build-index, run after, drops all three from the board: the two "
+           "sides end where they started, agreeing about every file",
+           index_post.returncode == 0
+           and all(desc not in board_post for _status, desc in variants.values()),
+           board_post + index_post.stderr)
+    record("…and the untouched `Done` loop is byte-identical",
+           "status: Done" in decoy.read_text(encoding="utf-8"),
+           decoy.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
 # 9. a recent citation is a fourth activity date
 # ---------------------------------------------------------------------------
 
@@ -947,6 +1017,7 @@ def main():
         test_custom_threshold,
         test_build_index_excludes_expired_after_apply,
         test_template_shaped_loop_decays,
+        test_status_spelling_agrees_with_build_index,
         test_recall_citation_protects,
         test_stale_citation_does_not_protect,
         test_recall_never_ages_a_loop,

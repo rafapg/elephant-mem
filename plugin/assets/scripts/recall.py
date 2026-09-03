@@ -32,8 +32,10 @@ warning once on stderr for the malformed case rather than raising.
 which exposes query patterns over named people. Nothing here prints a path or a
 slug except `show`, which is the operator deliberately asking to see it, and
 `roll` guarantees the two files are git-ignored before it writes either of them
-— see `ensure_gitignore()`. The seed `.gitignore` carries the rules, but `init`
-copies that file once and `update` re-syncs only `scripts/` and `templates/`, so
+— see `ensure_gitignore()`. A roll that cannot confirm those rules, because
+`.gitignore` is unreadable or unwritable, refuses the whole run and exits
+non-zero rather than writing an unprotected record. The seed `.gitignore` carries
+the rules, but `init` copies that file once and `update` re-syncs only `scripts/` and `templates/`, so
 every bundle created before the rules existed would otherwise commit the roll-up
 on the next `decay` or `catch-up` run, both of which end in `git add -A`.
 
@@ -355,27 +357,36 @@ def ensure_gitignore():
 
     Appends, never rewrites. Only the rules that are actually missing are
     written, so a second roll adds nothing, and no line this function did not
-    write is touched. Returns the rules it added. Never raises: an unwritable
-    bundle root must not cost the roll.
+    write is touched.
+
+    Returns `(covered, added)`: `covered` says the rules are **confirmed** in
+    place, either because they were already there or because this call wrote
+    them; `added` is what it wrote. Never raises, but a failure to read or write
+    the file comes back as `(False, [])`, which is the one thing the old `[]`
+    could not say. An unreadable `.gitignore` and a `.gitignore` that needed
+    nothing returned the same value, so `roll` wrote the record naming which
+    people were looked up either way, and on the failing bundle it wrote it
+    unprotected. The caller refuses to roll on a False, so the protection is
+    never merely attempted.
     """
     path = BUNDLE / ".gitignore"
     try:
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
     except (OSError, UnicodeDecodeError):
-        return []
+        return False, []
     present = {
         line.strip()
         for line in text.splitlines()
         if line.strip() and not line.strip().startswith("#")
     }
     if present & IGNORE_BLANKET:
-        return []
+        return True, []
     missing = [
         rule for rule in IGNORE_RULES
         if rule not in present and "/" + rule not in present
     ]
     if not missing:
-        return []
+        return True, []
     addition = ""
     if text and not text.endswith("\n"):
         addition += "\n"
@@ -386,11 +397,11 @@ def ensure_gitignore():
         with path.open("a", encoding="utf-8") as fh:
             fh.write(addition)
     except OSError:
-        return []
+        return False, []
     print(
         f"added {len(missing)} ignore rule(s) to .gitignore: " + ", ".join(missing)
     )
-    return missing
+    return True, missing
 
 
 # --- the pyramid -----------------------------------------------------------
@@ -581,8 +592,51 @@ def prune_missing(items):
     return kept, len(items) - len(kept)
 
 
+def resume_index(rows, watermark):
+    """Where this run's own territory starts: the index one past the last row
+    the previous run folded.
+
+    The log is append-only and written in arrival order, so the rows the
+    previous run saw are a prefix of the file, and `rolled_through` is the
+    newest timestamp in that prefix, which is the prefix's last row whenever
+    lines are stamped as they land. Everything below the returned index was
+    folded on an earlier run; everything at or above it arrived since, and one
+    of those carrying a timestamp at or below the watermark is the failure
+    worth naming, a citation dropped for arriving late.
+
+    0 when nothing was ever folded, so every row is this run's. When no row
+    carries the watermark at all, which takes a hand-edited or truncated log,
+    the prefix cannot be located: the whole log reads as already seen, and this
+    run accuses no row it cannot place.
+    """
+    if watermark is None:
+        return 0
+    for i in range(len(rows) - 1, -1, -1):
+        if rows[i][0] == watermark:
+            return i + 1
+    return len(rows)
+
+
 def cmd_roll(args):
-    ensure_gitignore()
+    covered, _added = ensure_gitignore()
+    if not covered:
+        # The record names which entities were consulted and when, and `decay`,
+        # `catch-up` and `close-loops` all end in `git add -A`. Writing it into
+        # a bundle whose ignore rules could not be confirmed is the leak this
+        # whole guarantee exists to prevent, and `state/` being writable while
+        # the bundle root is not is exactly how it would happen unnoticed. So
+        # the roll is refused whole: no record, and a non-zero exit the routine
+        # that called it can see.
+        print(
+            "refusing to roll: the bundle's .gitignore could not be read or "
+            "written, so it cannot be confirmed to ignore state/recall.json and "
+            "state/consumption-log.jsonl. Nothing was written; state/recall.json "
+            "records which entities were consulted and when, and an unignored "
+            "one is committed by the next `git add -A`. Make .gitignore a "
+            "writable file (or add a `state/` rule by hand) and roll again.",
+            file=sys.stderr,
+        )
+        return 1
     rows, unparseable = log_rows()
     if not rows:
         # E5. Nothing to derive from, so nothing is written — not even the
@@ -602,18 +656,24 @@ def cmd_roll(args):
     data = load()
     ref = datetime.fromisoformat(now_iso(args.at)).date()
     watermark = parse_ts(data.get("rolled_through"))
+    resume = resume_index(rows, watermark)
     newest = watermark
     folded = 0
-    skipped = 0
+    dropped_late = 0
 
-    for ts, row in rows:
+    for i, (ts, row) in enumerate(rows):
         # Strictly greater: the watermark is the last line already folded, and
         # re-reading the log whole every run is what makes E4 hold. The cost is
-        # that a line backdated to at-or-before the watermark is skipped, which
-        # is the same trade every watermark makes — counted, not swallowed, so
-        # "nothing new" and "a line landed behind the watermark" read apart.
+        # that a line backdated to at-or-before the watermark is dropped, which
+        # is the same trade every watermark makes. Only the ones that arrived
+        # since the previous run are counted: the rows before `resume` were
+        # folded then and are not this run's news. Counting those too made the
+        # number grow with the log, so "nothing new" and "a citation was dropped
+        # for arriving late" differed by a figure the operator had nothing to
+        # compare against, which is no distinction at all.
         if watermark is not None and ts <= watermark:
-            skipped += 1
+            if i >= resume:
+                dropped_late += 1
             continue
         day = ts.date()
         for item in dedupe(row.get("facts_cited"), normalize_item):
@@ -639,10 +699,20 @@ def cmd_roll(args):
         f"{len(data['entities'])} entity(ies) in the pyramid"
         + (f", {pruned} pruned" if pruned else "")
     )
-    if skipped or unparseable:
-        print(
-            f"{skipped} skipped (older than watermark), {unparseable} unparseable"
+    # One clause per thing that actually happened, and silence otherwise: a
+    # run with nothing new and a run that dropped a late citation used to
+    # differ only by a number, which the operator had nothing to compare
+    # against. A clause that appears at all is the signal.
+    notes = []
+    if dropped_late:
+        notes.append(
+            f"{dropped_late} line(s) dropped for arriving since the last roll "
+            f"with a timestamp at or below its watermark"
         )
+    if unparseable:
+        notes.append(f"{unparseable} unparseable line(s)")
+    if notes:
+        print("; ".join(notes))
     return 0
 
 

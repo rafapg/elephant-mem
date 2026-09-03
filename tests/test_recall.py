@@ -31,11 +31,15 @@ lookup over it. This suite covers the storage and the `log` writer:
   (h) **the leak cannot outlive a roll** — the seed `.gitignore` reaches new
       bundles only, so `roll` appends the `state/` rules any bundle is missing
       before it writes the record naming which people were looked up and when.
-      Appending only, once, never a line it did not write;
-  (i) **a partial write costs one line, and `roll` says what it skipped** — an
+      Appending only, once, never a line it did not write, and when the rules
+      cannot be confirmed at all the roll is refused rather than written
+      unprotected;
+  (i) **a partial write costs one line, and `roll` says what it dropped** — an
       append onto an unterminated fragment starts its own line instead of being
       swallowed by it, and "0 line(s) folded" no longer covers "nothing new",
-      "behind the watermark" and "unreadable" with one number.
+      "a citation arrived behind the watermark" and "unreadable" with one
+      number. The drop count is what THIS run dropped, so a quiet run reports
+      none at all rather than re-counting what earlier runs folded.
 
 Pure stdlib, Python 3.10+, mirroring `tests/test_backlog.py`'s conventions: a
 throwaway bundle in a tempdir, subprocess calls into a copy of the real
@@ -50,6 +54,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -460,6 +465,29 @@ def gitignore_guarantee(tmp):
     record("the seed .gitignore carries the same three rules, for new bundles",
            all(rule in seed_lines for rule in rules), repr(seed_lines))
 
+    # the protection failing is not the protection being unnecessary. Here
+    # `.gitignore` cannot be written (a directory occupies the path, which is
+    # portable where a chmod check is a no-op on Windows) while `state/` is
+    # perfectly writable: the roll-up would land unignored, and the next
+    # `git add -A` in decay or catch-up would publish which entities were
+    # consulted and when. `ensure_gitignore()` answered `[]` for this and for
+    # "nothing needed adding" alike, so `roll` saved either way.
+    obstructed = make_bundle(tmp, name="gitignore-obstructed")
+    (obstructed / "knowledge" / "facts" / "x.md").write_text("x\n", encoding="utf-8")
+    (obstructed / ".gitignore").mkdir()
+    run(obstructed, ["log", "--mode", "query", "--item", "/facts/x.md",
+                     "--at", f"{REF}T09:00:00-03:00"])
+    result = check(obstructed, ["roll", "--at", f"{REF}T10:00:00-03:00"],
+                   "roll refuses when the ignore rules cannot be confirmed",
+                   expect_zero=False)
+    record("…and writes no recall.json, which is the file that would leak",
+           not (obstructed / "state" / "recall.json").exists())
+    record("…and says on stderr what it refused and why, rather than failing mute",
+           "refusing to roll" in result.stderr and ".gitignore" in result.stderr,
+           result.stderr)
+    record("…while the log it could not roll is left exactly as it was",
+           len(log_lines(obstructed)) == 1, repr(log_lines(obstructed)))
+
 
 def partial_write_and_report(tmp):
     """(i) — a fragment costs its own line and no other, and `roll` says so."""
@@ -496,19 +524,54 @@ def partial_write_and_report(tmp):
     record("…and roll names the unparseable line rather than staying mute",
            "1 unparseable" in result.stdout, result.stdout)
 
-    # the three situations that all used to print "0 line(s) folded"
+    # the three situations that all used to print "0 line(s) folded". The
+    # counter names what THIS run dropped, so a run with nothing new says
+    # nothing about drops at all: it used to report every line at or below the
+    # watermark, which is mostly what earlier runs already folded, so the
+    # number grew with the log and the two runs below differed by a figure the
+    # operator had nothing to compare against.
+    quiet = check(bundle, ["roll", "--at", f"{REF}T10:30:00-03:00"],
+                  "a roll over an unchanged log exits 0")
+    record(
+        "…and reports no drop: the line an earlier run folded is not this "
+        "run's news",
+        "0 line(s) folded" in quiet.stdout and "dropped" not in quiet.stdout,
+        quiet.stdout,
+    )
+
     run(bundle, ["log", "--mode", "query", "--item", "/facts/real.md",
                  "--at", "2026-08-01T09:00:00-03:00"])  # behind the watermark
     result = check(bundle, ["roll", "--at", f"{REF}T11:00:00-03:00"],
                    "a roll over a line behind the watermark exits 0")
     record(
-        "…and reports the skip instead of folding it silently into '0 folded'",
+        "…and reports exactly the one line that arrived late, not the two at "
+        "or below the watermark",
         "0 line(s) folded" in result.stdout
-        and "2 skipped (older than watermark)" in result.stdout,
+        and "1 line(s) dropped for arriving since the last roll" in result.stdout,
         result.stdout,
     )
+    record(
+        "…so a dropped citation reads apart from a quiet run by a whole clause, "
+        "not by a number with nothing to compare it against",
+        "dropped" in result.stdout and "dropped" not in quiet.stdout,
+        f"quiet:\n{quiet.stdout}\nlate:\n{result.stdout}",
+    )
+    record("…while the unparseable fragment is still counted, and separately",
+           "1 unparseable" in result.stdout and "1 unparseable" in quiet.stdout,
+           result.stdout + quiet.stdout)
     record("…while the count itself is unchanged, as the watermark promises",
            recall_json(bundle)["items"]["/facts/real.md"]["total"] == 1)
+
+    # a third run over the same log repeats the one drop rather than growing
+    # it: the late line is permanently unfolded, and saying so once per run is
+    # the honest report. It is the accumulation of already-folded rows that was
+    # the bug.
+    again = check(bundle, ["roll", "--at", f"{REF}T12:00:00-03:00"],
+                  "a further roll over the same log exits 0")
+    record("…and still reports 1 dropped, not 2: the number tracks the late "
+           "line, not the length of the log",
+           "1 line(s) dropped for arriving since the last roll" in again.stdout,
+           again.stdout)
 
     junk = make_bundle(tmp, name="junk-log")
     (junk / "state" / "consumption-log.jsonl").write_text(
@@ -522,6 +585,21 @@ def partial_write_and_report(tmp):
     )
     record("…and still derives no record from it",
            not (junk / "state" / "recall.json").exists())
+
+
+def guarded(fn, tmp):
+    """Run one check group so a break in it costs its own checks and no others.
+
+    Mirrors tests/test_index.py's guarded(). Called directly, an exception in
+    any of these took the whole suite down with a raw traceback instead of a
+    named FAIL, and the checks after it never ran at all: the group that raised
+    would have looked like a passing run one check short.
+    """
+    try:
+        fn(tmp)
+    except Exception:  # noqa: BLE001 — report it and go on to the next group
+        record(f"{fn.__name__} raised an unexpected exception", False,
+               traceback.format_exc())
 
 
 def main():
@@ -721,9 +799,9 @@ def main():
                result.stdout + result.stderr)
         (bundle / "state" / "recall.json").unlink()
 
-        roll_and_score(tmp)
-        gitignore_guarantee(tmp)
-        partial_write_and_report(tmp)
+        for group in (roll_and_score, gitignore_guarantee,
+                      partial_write_and_report):
+            guarded(group, tmp)
 
         # --- (a) E1: state/ absent, then unwritable -------------------------
         stateless = make_bundle(tmp, name="stateless", with_state=False)
