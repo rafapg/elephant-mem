@@ -4,6 +4,131 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.13] - 2026-09-03
+
+The open-loop lane had no exit. Measured on the owner's bundle: 2036 loop files,
+1794 still `open`, 236 `done`, 6 `dropped` — a 12% closure rate over the life of
+the bundle, and a `tracking/open-loops.md` board of 541 KB. The one mechanism
+meant to bound the lane, `decay-loops.py`, read staleness off
+`max(updated, opened, created)` and expired anything past 45 days, which sounds
+like a bound until you look at what writes `updated`. Nothing did.
+`decay/procedure.md`, `decay/SKILL.md` and the script's own docstring all stated
+that `catch-up` and `capture` bump a re-mentioned loop's `updated:`; no procedure
+did, and none ever had — the `bump` rules those two carry are about a fact's
+`times_referenced` and `confidence`, or about `backlog.py`'s `seen` counter, and
+none of them is about a loop. `updated` differs from `created` on 180 of the open
+loops, 10%. So the clock ran on creation dates, and the only safe decay was no
+decay.
+
+Both halves of the fix were already on disk and neither was read. The criterion
+for closing a loop is written on 2025 of those 2036 files, under a
+`**Closure signal:**` heading no code ever opened. The record of what the owner
+actually consults is `state/consumption-log.jsonl`, which shipped with the right
+trigger and was written by 2 of the ~14 modes, as a JSON object every adopting
+procedure re-typed by hand. This release reads both, and puts a routine that
+closes loops by evidence in front of the one that expires them by silence.
+
+### Added
+
+- **`close-loops`, a daily unattended mode**, and the read-only
+  `close-loops.py` behind it. Each run takes a bounded, ordered slice of
+  `tracking/loops/` — first the loops examined before whose entities have gained
+  a fact or a source since that examination, then everything else oldest last
+  activity first, up to `close_loops_max` (default 25). The second band is
+  ordered by activity rather than by last examination on purpose: it puts the 735
+  already-stale loops at the front, and gives a never-examined loop a defined
+  position, which a last-examination date cannot. For each queued loop the script
+  emits its closure criterion (its `description` when it carries no
+  `**Closure signal:**`, saying so) and up to 10 ranked evidence candidates —
+  facts sharing the loop's non-owner entities first, then content-word overlap,
+  then recency. The cap and the non-owner rule are the whole point of the
+  ranking: on the owner's entity alone the median candidate count is 684. The
+  mode judges each evidence set as a whole rather than matching the criterion
+  literally, and every closure writes its own justification, so a wrong `done` is
+  legible where it was written and not only in a diff.
+- **`recall.py`**, the consumption record, modeled on `backlog.py`: `log` appends
+  one citation line per answered read, `roll` folds the log into
+  `state/recall.json`'s buckets, `show` and `score` read it back, `--at` on every
+  mutation for tests. The pyramid is item-agnostic and bought for read cost, not
+  disk — day-by-day for 14 days, week-by-week to 90, month-by-month to 365, one
+  aggregate beyond. 26 lines over 33 days is 26.8 KB; what does not scale is the
+  question decay asks once per open loop, against a log that only grows. `roll` makes that a dict lookup.
+- **`state/closure-sweep.json`**, control state rather than audit: which loops
+  were examined and when, written for every examined loop whether it closed or
+  not. It is what lets decay know something was actually looked at. Losing it
+  parks decay instead of corrupting it — every loop then reads as never examined,
+  and `--skip-sweep` is the deliberate way out, the same flag that restores the
+  behavior this release replaced.
+- **`tracking/resolved-loops.md`**, generated newest first with each resolved
+  loop's date, outcome and the first sentence of its resolution, capped at
+  `index.resolved_max` (default 200) and overflowing into a sibling archive shard
+  by the mechanism `hub_max_facts` already uses, so it cannot become a second
+  541 KB board. Moving or deleting a resolved loop file was never available:
+  loop paths are cited 4136 times from durable, non-regenerated text — 2784 in
+  source bodies, 745 in facts, 603 in `log.md` — and `validate-okf.py` requires
+  every one of them to resolve before any routine commits.
+- **`tests/test_recall.py` (81 checks) and `tests/test_close_loops.py` (69)**,
+  each with its own `- run:` line in `ci.yml`, added in the same change that
+  created the suite. A glob does not pick up a new suite; `test_backlog.py` went
+  a full release unrun for want of that line. `tests/test_decay.py` grew to 84
+  checks and `tests/test_index.py` to 80.
+
+### Changed
+
+- **`decay` expires only what `close-loops` has already read, and says why.**
+  A candidate is expirable only if it was examined after its own last activity
+  and was not closed; a candidate never examined is refused by name, with the
+  `close-loops` command printed, exit 0. The gate only ever meets loops that are
+  already stale, so a freshly bumped loop is out of scope before it is consulted.
+- **Recall enters decay as a fourth activity date** inside `last_activity()`,
+  not as a veto pass with its own window. No new config key, and an empty or
+  absent record collapses to the previous behavior exactly. `decay` step 1 now
+  runs `recall.py roll`, and so does `catch-up`'s commit step, so the pyramid is
+  fresh where it is read and the raw log does not grow unbounded.
+- **A resolution is prose in the loop file's body**, under a `**Resolution:**`
+  heading, written identically by `close-loops` and by `decay`. Not a frontmatter
+  field: the justification is a sentence of judgment, and frontmatter breaks on
+  `: ` and truncates silently on ` #`, which the loop template already carries
+  three lines of warning about. The structured parts (`closed`, `closed_by`,
+  `expired`) are existing fields and stayed there. No new frontmatter field was
+  added, because every bundle on disk would carry loops without it and only its
+  owner could fix that.
+- **The consumption log stopped being "best-effort telemetry" and became part of
+  the read contract.** The write is still non-fatal and still never delays an
+  answer, but it now has a consumer, and a signal with no consumer had no quality
+  pressure. All five read modes `core.md` lists call it — `query`, `briefing`,
+  `start-day`, `end-day` and the whole-field scan; `expand` and `review` stay
+  out. The model no longer types the JSON: `recall.py log` writes it, which kills
+  the malformed-line and missing-field classes and puts the swallow-and-continue
+  in one place instead of in every procedure.
+- **Resolved loops leave the entity hubs.** `build-index.py` no longer re-files
+  a non-`open` loop as a history line, and `briefing.py` no longer prints one
+  under `## Open loops` because its `opened` date fell in the window
+  (`--include-resolved` shows them). `tracking/resolved-loops.md` is their one
+  listing. Both surfaces are derived, so this is one line to reverse and loses
+  no data.
+- **`expired` joined `build-index.py`'s hardcoded `loop_status` default, and
+  `init` now copies `vocab.json` into new bundles.** Not defensive: no bundle had
+  ever received that file, so the hardcoded fallback is what runs in the field,
+  and under it an expired loop was in neither the open bucket nor the history
+  one. It did not vanish, which would have been the tolerable failure — it
+  rendered on the hub as a current item and consumed a slot of `hub_max_facts`.
+  `update` still never re-syncs `vocab.json`; a bundle may have extended its own.
+
+### Fixed
+
+- **The re-mention claim was deleted from all three places and made true in
+  one.** `catch-up` step 4 now carries the bump rule next to the close rule it
+  already had: a source that re-raises an open loop without showing it done bumps
+  `updated:` to **that source's own date**, never today's, and leaves it alone
+  when the source has no date. That plus `decay`'s review-gate snooze are the two
+  documented writers of the field, and `capture` is named as not being one — it
+  opens loops and never revisits one.
+- **`decay/procedure.md` said the rebuild re-files an expired loop into entity
+  history.** It did not, and after this release it deliberately does the
+  opposite: a resolved loop leaves the hubs outright and
+  `tracking/resolved-loops.md` is where it is listed.
+
 ## [0.1.0-beta.12] - 2026-09-02
 
 0.1.0-beta.11 closed one accident and left an intent open in the same breath: the
