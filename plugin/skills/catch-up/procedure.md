@@ -358,8 +358,11 @@ after.**
    current record instead of one that lags its own three-day clock, and so the
    read stays a fixed-size lookup however long the raw log gets. Both files are
    git-ignored, so it changes nothing this run committed and is placed after
-   the commit for that reason. Best-effort like the hook: a failure never fails
-   the run, and the next roll picks up whatever this one missed.
+   the commit for that reason. On a bundle that predates those ignore rules the
+   roll appends them to `<bundle>/.gitignore`, printing what it added; the rule
+   takes effect the moment it is written, and the line itself is committed by
+   the next run. Best-effort like the hook: a failure never fails the run, and
+   the next roll picks up whatever this one missed.
 
 9. **Backfill step (forward-first).** Only if forward found nothing new (gap
    closed): walk **one older day across every source still above the floor** —

@@ -61,8 +61,9 @@ python3 scripts/recall.py log --mode start-day --item <path>â€¦ --entity <slug>â
 See `../_shared/core.md`'s Consumption log section. The script writes the line,
 swallows any failure and always exits 0, so there is nothing to handle and
 nothing to say about it in the orientation. This and the update-check stamp are
-the only two writes this procedure makes, both into git-ignored `state/`,
-neither into the knowledge bundle.
+the only two writes this procedure makes, both into `state/` and both git-ignored
+(`recall.py roll` appends the rules to the bundle's `.gitignore` when a bundle
+predates them), neither into the knowledge bundle.
 
 ## Final answer
 

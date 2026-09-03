@@ -27,7 +27,15 @@ lookup over it. This suite covers the storage and the `log` writer:
       script is the tenth of twelve, and `smoke.py` derives that census by
       globbing, so the guard is asserted there too rather than only here;
   (g) the suite is registered in CI by its own `- run:` line — the workflow has
-      no glob, and `test_backlog.py` went a whole release unrun because of it.
+      no glob, and `test_backlog.py` went a whole release unrun because of it;
+  (h) **the leak cannot outlive a roll** — the seed `.gitignore` reaches new
+      bundles only, so `roll` appends the `state/` rules any bundle is missing
+      before it writes the record naming which people were looked up and when.
+      Appending only, once, never a line it did not write;
+  (i) **a partial write costs one line, and `roll` says what it skipped** — an
+      append onto an unterminated fragment starts its own line instead of being
+      swallowed by it, and "0 line(s) folded" no longer covers "nothing new",
+      "behind the watermark" and "unreadable" with one number.
 
 Pure stdlib, Python 3.10+, mirroring `tests/test_backlog.py`'s conventions: a
 throwaway bundle in a tempdir, subprocess calls into a copy of the real
@@ -373,6 +381,149 @@ def roll_and_score(tmp):
            json.dumps(data["items"]) + json.dumps(data["entities"]))
 
 
+def gitignore_guarantee(tmp):
+    """(h) — `roll` guarantees the leaking files are ignored, on any bundle.
+
+    The seed carries the rules, but `init` copies the seed `.gitignore` once and
+    `update` re-syncs only `scripts/` and `templates/`, while `decay`,
+    `catch-up` and `close-loops` all end in `git add -A`. So on every bundle
+    that predates a rule the roll-up — which people were looked up and when —
+    would be committed. `roll` is the writer of that file, so `roll` closes it.
+    """
+    rules = ("state/consumption-log.jsonl", "state/recall.json",
+             "state/last-update-check.json")
+
+    # a bundle carrying main's older seed: two rules of the three, plus lines
+    # of its own that must survive untouched.
+    older = make_bundle(tmp, name="older-seed")
+    (older / "knowledge" / "facts" / "x.md").write_text("x\n", encoding="utf-8")
+    before = (
+        "# elephant-mem bundle — ignore operational / machine-local artifacts\n"
+        "state/phone/\n"
+        "state/consumption-log.jsonl\n"
+        ".cache/\n"
+    )
+    (older / ".gitignore").write_text(before, encoding="utf-8")
+    run(older, ["log", "--mode", "query", "--item", "/facts/x.md",
+                "--at", f"{REF}T09:00:00-03:00"])
+    result = check(older, ["roll", "--at", f"{REF}T10:00:00-03:00"],
+                   "roll on a bundle whose .gitignore predates the rules exits 0")
+    text = (older / ".gitignore").read_text(encoding="utf-8")
+    lines = [ln.strip() for ln in text.splitlines()]
+    record(
+        "…and the missing rules are there before the record it just wrote is",
+        all(rule in lines for rule in rules)
+        and (older / "state" / "recall.json").exists(),
+        text,
+    )
+    record("…said once on stdout, so an unattended run leaves a trace of it",
+           "state/recall.json" in result.stdout, result.stdout)
+    record("…appending only: every line the bundle already had is still there",
+           text.startswith(before), text)
+    record("…and the rule it already carried was not duplicated",
+           lines.count("state/consumption-log.jsonl") == 1, text)
+
+    frozen = text
+    result = check(older, ["roll", "--at", f"{REF}T11:00:00-03:00"],
+                   "a second roll exits 0")
+    record("…and adds nothing: the file is byte-identical",
+           (older / ".gitignore").read_text(encoding="utf-8") == frozen)
+    record("…and says nothing about .gitignore either",
+           ".gitignore" not in result.stdout, result.stdout)
+
+    # a bundle with no .gitignore at all — every bundle predating the seed file
+    naked = make_bundle(tmp, name="no-gitignore")
+    (naked / "knowledge" / "facts" / "x.md").write_text("x\n", encoding="utf-8")
+    run(naked, ["log", "--mode", "query", "--item", "/facts/x.md",
+                "--at", f"{REF}T09:00:00-03:00"])
+    check(naked, ["roll", "--at", f"{REF}T10:00:00-03:00"],
+          "roll on a bundle with no .gitignore at all exits 0")
+    naked_lines = [ln.strip() for ln in
+                   (naked / ".gitignore").read_text(encoding="utf-8").splitlines()]
+    record("…and it gets one carrying every rule",
+           all(rule in naked_lines for rule in rules), repr(naked_lines))
+
+    # a bundle already ignoring the whole directory needs none of them
+    blanket = make_bundle(tmp, name="blanket")
+    (blanket / "knowledge" / "facts" / "x.md").write_text("x\n", encoding="utf-8")
+    (blanket / ".gitignore").write_text("state/\n", encoding="utf-8")
+    run(blanket, ["log", "--mode", "query", "--item", "/facts/x.md",
+                  "--at", f"{REF}T09:00:00-03:00"])
+    run(blanket, ["roll", "--at", f"{REF}T10:00:00-03:00"])
+    record("a bundle that ignores state/ as a block gains no redundant rule",
+           (blanket / ".gitignore").read_text(encoding="utf-8") == "state/\n",
+           (blanket / ".gitignore").read_text(encoding="utf-8"))
+
+    # the seed is where a new bundle gets them, and `init` copies it once
+    seed = REPO_ROOT / "plugin" / "assets" / "seed" / ".gitignore"
+    seed_lines = [ln.strip() for ln in seed.read_text(encoding="utf-8").splitlines()]
+    record("the seed .gitignore carries the same three rules, for new bundles",
+           all(rule in seed_lines for rule in rules), repr(seed_lines))
+
+
+def partial_write_and_report(tmp):
+    """(i) — a fragment costs its own line and no other, and `roll` says so."""
+    bundle = make_bundle(tmp, name="fragment")
+    (bundle / "knowledge" / "facts" / "real.md").write_text("x\n", encoding="utf-8")
+    log = bundle / "state" / "consumption-log.jsonl"
+
+    # what a mid-flush disk-full leaves behind: a line with no terminator.
+    log.write_text(
+        '{"ts": "2026-09-01T09:00:00-03:00", "mode": "query", "entities": [], '
+        '"facts_ci',
+        encoding="utf-8",
+    )
+    run(bundle, ["log", "--mode", "query", "--item", "/facts/real.md",
+                 "--at", f"{REF}T09:00:00-03:00"])
+    raw = log.read_text(encoding="utf-8")
+    record(
+        "an append onto an unterminated fragment starts its own physical line",
+        len(log_lines(bundle)) == 2 and raw.endswith("\n"),
+        repr(raw),
+    )
+    mod = import_copy(bundle, "recall_fragment_under_test")
+    rows, unparseable = mod.log_rows()
+    record(
+        "…so the fragment costs its own line and no other: 1 row, 1 unparseable",
+        len(rows) == 1 and unparseable == 1,
+        f"{len(rows)} rows, {unparseable} unparseable",
+    )
+    result = check(bundle, ["roll", "--at", f"{REF}T10:00:00-03:00"],
+                   "roll over a log with a fragment in it exits 0")
+    record("…and the good line lands in the pyramid",
+           recall_json(bundle)["items"]["/facts/real.md"]["total"] == 1,
+           json.dumps(recall_json(bundle)["items"]))
+    record("…and roll names the unparseable line rather than staying mute",
+           "1 unparseable" in result.stdout, result.stdout)
+
+    # the three situations that all used to print "0 line(s) folded"
+    run(bundle, ["log", "--mode", "query", "--item", "/facts/real.md",
+                 "--at", "2026-08-01T09:00:00-03:00"])  # behind the watermark
+    result = check(bundle, ["roll", "--at", f"{REF}T11:00:00-03:00"],
+                   "a roll over a line behind the watermark exits 0")
+    record(
+        "…and reports the skip instead of folding it silently into '0 folded'",
+        "0 line(s) folded" in result.stdout
+        and "2 skipped (older than watermark)" in result.stdout,
+        result.stdout,
+    )
+    record("…while the count itself is unchanged, as the watermark promises",
+           recall_json(bundle)["items"]["/facts/real.md"]["total"] == 1)
+
+    junk = make_bundle(tmp, name="junk-log")
+    (junk / "state" / "consumption-log.jsonl").write_text(
+        "not json at all\nnor this\n", encoding="utf-8")
+    result = check(junk, ["roll"], "roll over a log of nothing but junk exits 0")
+    record(
+        "…and reads apart from an empty log, which prints the same 0 today",
+        "2 unparseable" in result.stdout
+        and "empty or absent" not in result.stdout,
+        result.stdout,
+    )
+    record("…and still derives no record from it",
+           not (junk / "state" / "recall.json").exists())
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         bundle = make_bundle(tmp)
@@ -553,7 +704,26 @@ def main():
                result.returncode == 0 and json.loads(result.stdout)["items"] == {},
                result.stdout + result.stderr)
 
+        # The version is written into every record, so it is read back out of
+        # one: a record from a newer writer cannot be interpreted with v1
+        # bucket semantics, and this file is disposable, so it reads as empty.
+        (bundle / "state" / "recall.json").write_text(json.dumps({
+            "schema": 99, "rolled_through": None, "generated": None,
+            "items": {"/facts/x.md": {"total": 4, "last": "2026-09-03",
+                                      "buckets": {"2026-09-03": 4}}},
+            "entities": {},
+        }), encoding="utf-8")
+        result = run(bundle, ["show"])
+        record("a record from a newer schema is not read with this one's semantics",
+               result.returncode == 0
+               and json.loads(result.stdout)["items"] == {}
+               and "schema 99" in result.stderr,
+               result.stdout + result.stderr)
+        (bundle / "state" / "recall.json").unlink()
+
         roll_and_score(tmp)
+        gitignore_guarantee(tmp)
+        partial_write_and_report(tmp)
 
         # --- (a) E1: state/ absent, then unwritable -------------------------
         stateless = make_bundle(tmp, name="stateless", with_state=False)

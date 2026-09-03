@@ -308,7 +308,14 @@ touches it. Managed by `scripts/state.py`.
   by `catch-up`.
 - `state/needs-review.md` — the low-confidence review queue.
 - `state/last-update-check.json` — throttles the weekly update nudge (see
-  core.md).
+  core.md). Git-ignored, like `state/consumption-log.jsonl` and
+  `state/recall.json`: `recall.py roll` appends any of the three rules the
+  bundle's `.gitignore` is missing, since `update` never re-syncs that file.
+- `state/consumption-log.jsonl` — one JSON line per answered read, holding the
+  bundle-absolute paths that answer cited. Written only by `recall.py log`.
+- `state/recall.json` — the rolled-up pyramid over that log, the fixed-size
+  lookup `decay` reads as a loop's fourth activity date. Written only by
+  `recall.py roll`; disposable and rebuildable forward.
 - `state/hooks.log` — append-only trace of `post_ingest` hook runs (one
   tab-separated line per hook: timestamp, event, name, outcome). Best-effort
   debug aid for unattended runs; safe to delete.

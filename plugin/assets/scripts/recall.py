@@ -29,9 +29,13 @@ absent, empty or malformed — `load()` returns the empty record for all three,
 warning once on stderr for the malformed case rather than raising.
 
 **The record is sensitive.** It holds which entities were consulted and when,
-which exposes query patterns over named people. Both files are git-ignored in
-the bundle's `.gitignore`; nothing here prints a path or a slug except `show`,
-which is the operator deliberately asking to see it.
+which exposes query patterns over named people. Nothing here prints a path or a
+slug except `show`, which is the operator deliberately asking to see it, and
+`roll` guarantees the two files are git-ignored before it writes either of them
+— see `ensure_gitignore()`. The seed `.gitignore` carries the rules, but `init`
+copies that file once and `update` re-syncs only `scripts/` and `templates/`, so
+every bundle created before the rules existed would otherwise commit the roll-up
+on the next `decay` or `catch-up` run, both of which end in `git add -A`.
 
 **The pyramid is bought for read cost, not for disk.** 26 lines over 33 days is
 26.8 KB; even twenty times that coverage is half a megabyte a year. What does
@@ -60,7 +64,9 @@ Subcommands:
                             whose file is gone. Idempotent: `rolled_through`
                             watermarks the last line folded, so re-running over
                             the same log adds nothing. The only writer of
-                            `state/recall.json`.
+                            `state/recall.json`, and the one place that keeps
+                            the bundle's `.gitignore` covering `state/`'s
+                            machine-local files.
   score [--item <path>]... [--entity <slug>]... [--json]
                             the lookup decay reads: per key, the date it was
                             last cited and how often. Absent, empty or
@@ -231,11 +237,25 @@ def append(record):
     Returns True when the line landed, False when it did not. Nothing prints
     either way: this runs after an answer is decided and must not add a word
     to it, nor leak a cited path into a transcript.
+
+    A failed write is not always a clean no-op: a mid-flush disk-full leaves a
+    fragment with no trailing newline, and the next append would be
+    concatenated onto it, costing two citations instead of one. So the last
+    byte on disk is read first and a newline prefixed when it is missing. The
+    fragment stays unparseable and is skipped by `log_rows()` — one line lost,
+    which is what the suite claims — instead of taking the next good line down
+    with it.
     """
     try:
         STATE.mkdir(parents=True, exist_ok=True)
+        prefix = ""
+        if LOG.is_file() and LOG.stat().st_size:
+            with LOG.open("rb") as fh:
+                fh.seek(-1, 2)
+                if fh.read(1) != b"\n":
+                    prefix = "\n"
         with LOG.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            fh.write(prefix + json.dumps(record, ensure_ascii=False) + "\n")
         return True
     except Exception:  # noqa: BLE001 — best-effort by contract, see the docstring
         return False
@@ -279,6 +299,22 @@ def load():
         if default is not None and not isinstance(value, type(default)):
             value = default
         data[key] = value
+    # The version is written into every record, so it is read back out of one.
+    # A record from a newer writer cannot be interpreted with v1 semantics, and
+    # this file is disposable and rebuildable forward, so the honest answer is
+    # the empty record and a warning — never a silent misreading of buckets
+    # whose meaning changed.
+    if isinstance(data["schema"], int) and data["schema"] > SCHEMA:
+        print(
+            f"warning: state/recall.json is schema {data['schema']}, newer than "
+            f"the {SCHEMA} this script reads — treating it as empty. It is "
+            "derived state; `recall.py roll` rebuilds it forward.",
+            file=sys.stderr,
+        )
+        return empty()
+    # Read as v1, so it says v1: whatever older integer was on disk, the record
+    # this returns (and the one `save()` writes back) carries this writer's.
+    data["schema"] = SCHEMA
     data["comment"] = COMMENT
     return data
 
@@ -289,6 +325,72 @@ def save(data):
     RECALL.write_text(
         json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
+
+
+# The machine-local files under `state/` that must never be committed, in the
+# spelling the seed `.gitignore` uses. `state/` itself is not ignored as a
+# block, and deliberately: `cursors.json` is committed on purpose.
+IGNORE_RULES = (
+    "state/consumption-log.jsonl",
+    "state/recall.json",
+    "state/last-update-check.json",
+)
+
+# A bundle that already ignores the whole directory needs none of them.
+IGNORE_BLANKET = {"state", "state/", "state/*", "/state", "/state/", "/state/*"}
+
+IGNORE_HEADER = "# elephant-mem: machine-local state, never committed"
+
+
+def ensure_gitignore():
+    """Make sure the bundle's `.gitignore` covers `state/`'s local files.
+
+    The seed carries these rules, but `init` copies the seed `.gitignore` once
+    and `update` re-syncs **only** `scripts/` and `templates/`. So a bundle
+    created before a rule existed never receives it, while `decay`, `catch-up`
+    and `close-loops` all end in `git add -A && git commit`: the roll-up
+    recording which people were looked up and when would be committed, and on
+    a bundle with a remote, pushed. `roll` is where this belongs because it is
+    the writer of the file that leaks.
+
+    Appends, never rewrites. Only the rules that are actually missing are
+    written, so a second roll adds nothing, and no line this function did not
+    write is touched. Returns the rules it added. Never raises: an unwritable
+    bundle root must not cost the roll.
+    """
+    path = BUNDLE / ".gitignore"
+    try:
+        text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    except (OSError, UnicodeDecodeError):
+        return []
+    present = {
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+    if present & IGNORE_BLANKET:
+        return []
+    missing = [
+        rule for rule in IGNORE_RULES
+        if rule not in present and "/" + rule not in present
+    ]
+    if not missing:
+        return []
+    addition = ""
+    if text and not text.endswith("\n"):
+        addition += "\n"
+    if text.strip():
+        addition += "\n"
+    addition += IGNORE_HEADER + "\n" + "\n".join(missing) + "\n"
+    try:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(addition)
+    except OSError:
+        return []
+    print(
+        f"added {len(missing)} ignore rule(s) to .gitignore: " + ", ".join(missing)
+    )
+    return missing
 
 
 # --- the pyramid -----------------------------------------------------------
@@ -427,17 +529,21 @@ def parse_ts(value):
 
 
 def log_rows():
-    """Every parseable line of the consumption log, oldest first as written.
+    """`(rows, unparseable)` — every parseable line, oldest first as written.
 
     Never raises. A line that is not JSON, is not an object, or carries no
     parseable `ts` is skipped: the log is appended by a best-effort writer and
-    one bad line must not cost a roll the other 25.
+    one bad line must not cost a roll the other 25. The count comes back with
+    the rows because `roll` is otherwise mute about it — a log of nothing but
+    junk and a log of nothing at all printed the same "0 line(s) folded", and
+    the pyramid could disagree with the log with no diagnostic saying so.
     """
     rows = []
+    unparseable = 0
     try:
         raw = LOG.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return rows
+        return rows, unparseable
     for line in raw.splitlines():
         line = line.strip()
         if not line:
@@ -445,14 +551,17 @@ def log_rows():
         try:
             row = json.loads(line)
         except ValueError:
+            unparseable += 1
             continue
         if not isinstance(row, dict):
+            unparseable += 1
             continue
         ts = parse_ts(row.get("ts"))
         if ts is None:
+            unparseable += 1
             continue
         rows.append((ts, row))
-    return rows
+    return rows, unparseable
 
 
 def prune_missing(items):
@@ -473,13 +582,21 @@ def prune_missing(items):
 
 
 def cmd_roll(args):
-    rows = log_rows()
+    ensure_gitignore()
+    rows, unparseable = log_rows()
     if not rows:
         # E5. Nothing to derive from, so nothing is written — not even the
         # empty record. `roll` is the only writer of state/recall.json, and a
         # bundle that has never been read should not carry a derived file
-        # saying so.
-        print("0 line(s) folded — the consumption log is empty or absent")
+        # saying so. A log of nothing but junk is not that case, and says so.
+        print(
+            "0 line(s) folded — "
+            + (
+                f"{unparseable} unparseable line(s), none readable"
+                if unparseable
+                else "the consumption log is empty or absent"
+            )
+        )
         return 0
 
     data = load()
@@ -487,13 +604,16 @@ def cmd_roll(args):
     watermark = parse_ts(data.get("rolled_through"))
     newest = watermark
     folded = 0
+    skipped = 0
 
     for ts, row in rows:
         # Strictly greater: the watermark is the last line already folded, and
         # re-reading the log whole every run is what makes E4 hold. The cost is
         # that a line backdated to at-or-before the watermark is skipped, which
-        # is the same trade every watermark makes.
+        # is the same trade every watermark makes — counted, not swallowed, so
+        # "nothing new" and "a line landed behind the watermark" read apart.
         if watermark is not None and ts <= watermark:
+            skipped += 1
             continue
         day = ts.date()
         for item in dedupe(row.get("facts_cited"), normalize_item):
@@ -519,6 +639,10 @@ def cmd_roll(args):
         f"{len(data['entities'])} entity(ies) in the pyramid"
         + (f", {pruned} pruned" if pruned else "")
     )
+    if skipped or unparseable:
+        print(
+            f"{skipped} skipped (older than watermark), {unparseable} unparseable"
+        )
     return 0
 
 

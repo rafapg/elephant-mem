@@ -193,9 +193,12 @@ python3 scripts/recall.py log --mode query \
   best-effort telemetry. It is still not OKF knowledge — `state/` sits outside
   the OKF bundle and `validate-okf.py` never touches it, the same standing as
   `state/cursors.json`.
-- Both `state/consumption-log.jsonl` and `state/recall.json` are git-ignored
-  (see the bundle's `.gitignore`) — a read must never generate git churn. They
-  record which entities were consulted and when, so they stay on the machine.
+- Both `state/consumption-log.jsonl` and `state/recall.json` are git-ignored —
+  a read must never generate git churn. They record which entities were
+  consulted and when, so they stay on the machine. The seed `.gitignore` carries
+  the rules for a new bundle, and `recall.py roll` appends any that are missing
+  before it writes, since `update` never re-syncs `.gitignore` and every write
+  routine ends in `git add -A`.
 
 ## Optional connectors (automatic ingestion degrades gracefully)
 

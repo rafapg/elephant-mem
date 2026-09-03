@@ -185,7 +185,7 @@ The workflow after any write batch is fixed: run `build-index.py`, then
 | `briefing.py` | time-first digest (`--days` / `--since` / `--until` / `--channel` / `--tag` / `--entity` / `--kind`) |
 | `state.py` | catch-up cursor bookkeeping (advance live/backfill, mark seen ids, render watermarks) |
 | `backlog.py` | catch-up's deferred-work ledger — findings the unattended routine may not fix on its own, filed once and counted, never re-narrated in `log.md` |
-| `recall.py` | the consumption log and its pyramid — `log` appends one citation line per answered read, `roll` folds the log into `state/recall.json`'s day/week/month buckets, `score` is the citation date `decay` reads |
+| `recall.py` | the consumption log and its pyramid — `log` appends one citation line per answered read, `roll` folds the log into `state/recall.json`'s day/week/month buckets and keeps the bundle's `.gitignore` covering both files, `score` is the citation date `decay` reads |
 | `close-loops.py` | read-only proposal for the `close-loops` routine — the bounded two-band queue over `tracking/loops/`, each queued loop's closure criterion and up to 10 ranked evidence candidates |
 | `snapshot-drift.py` | flag `snapshot` rollups whose underlying facts became newer than the snapshot's last-tended date |
 | `ingest-audio.py` | pull a transferred voice recording and transcribe it locally (WhisperX, diarized) for `ingest-audio` |

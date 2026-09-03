@@ -14,10 +14,12 @@ it.
    `python3 scripts/recall.py roll`. It folds every consumption line written
    since the last roll into `state/recall.json`'s buckets — that record is an
    input to the scan below, so rolling here is what keeps it fresh where it is
-   read. It writes nothing when the log is empty or absent, and a failure is
+   read. It writes no record when the log is empty or absent, and a failure is
    not fatal to this run: carry on and let the scan read the record as it
    stands (an unrolled line only makes a loop look less recently cited than it
-   is).
+   is). It also appends the `state/` ignore rules to `<bundle>/.gitignore` when
+   a bundle predates them, so this run's own `git add -A` cannot commit the
+   record of which people were looked up and when.
 
    Then run `python3 scripts/decay-loops.py`. It scans every `status: open`
    loop, computes its last-activity date (the max of `updated` / `opened` /
