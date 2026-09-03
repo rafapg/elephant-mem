@@ -29,14 +29,16 @@ the bundle, `core.md`, or run `scripts/briefing.py` yourself.
    `${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md` (resolve
    `${CLAUDE_PLUGIN_ROOT}` from the environment), then open and follow the
    procedure at `${CLAUDE_PLUGIN_ROOT}/skills/end-day/procedure.md`. Do
-   every bundle read and the `scripts/briefing.py` run yourself, in your own
-   context. You MUST NOT write anything and MUST NOT invoke or route to
-   `capture`. Return only: (a) the digest (what happened today + what's
-   pending) and (b) a short suggestion of what from today might be worth
-   capturing."
+   every bundle read, the `scripts/briefing.py` run and the closing
+   `scripts/recall.py log` call yourself, in your own context. Apart from that
+   one git-ignored `state/` line you MUST NOT write anything, and you MUST NOT
+   invoke or route to `capture`. Return only: (a) the digest (what happened
+   today + what's pending) and (b) a short suggestion of what from today might
+   be worth capturing."
 2. Relay the subagent's digest (a) to the user verbatim — add nothing.
 3. Back in this main agent (not the subagent), ask the user whether there's
    anything from the day worth capturing that automated ingestion wouldn't
    have caught — offer the subagent's suggestion (b) as a prompt, not a
    verdict. On yes, route to the `capture` skill exactly as today. This is
-   the only step in this mode that may write, and only on the user's say-so.
+   the only step in this mode that may write knowledge, and only on the
+   user's say-so.

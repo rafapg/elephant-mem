@@ -152,29 +152,45 @@ Provenance carries **trust**, not just source. Before answering, every read mode
   `--entity <owner.slug>` (from `elephant.json`) plus the owner's projects/team.
   Capture keeps everything; retrieval is where the owner's frame is applied.
 
-## Consumption log (read modes, best-effort telemetry)
+## Consumption log (read modes, part of the read contract)
 
 At the very end of answering — after the final user-facing answer is decided,
-never before — a read mode that has adopted this (currently `query` and
-`briefing`; see their procedures) appends **one** JSON line to
-`<bundle>/state/consumption-log.jsonl`:
+never before — every read mode records what that answer actually used, by
+running one command from `<bundle>`:
 
-```json
-{"ts": "<ISO datetime>", "mode": "query", "entities": ["<slug>", "..."], "facts_cited": ["<bundle-absolute path>", "..."]}
+```bash
+python3 scripts/recall.py log --mode query \
+  --item /entities/person/angelo.md --item /facts/2026-08/export-fix.md \
+  --entity angelo --entity acme
 ```
 
-- `mode` — the read mode's name (`"query"` or `"briefing"`).
-- `entities` — the entity slugs the answer was actually about (best guess is
-  fine — this is telemetry, not a citation).
-- `facts_cited` — the bundle-absolute paths of the fact/open-loop files the
-  final answer actually cited.
-- **This is best-effort telemetry, not OKF knowledge.** `state/` is outside
-  the OKF bundle (`validate-okf.py` never touches it — same standing as
-  `state/cursors.json`). A logging failure (missing `state/` dir, a write
-  error) must never fail the read or change the answer: append, swallow any
-  exception, move on silently.
-- `state/consumption-log.jsonl` is git-ignored (see the bundle's `.gitignore`)
-  — a read must never generate git churn.
+- **The five read modes all call it**: `query`, `briefing`, `start-day`,
+  `end-day`, and the whole-field scan (`--mode whole-field`), each with its own
+  name. `expand` and `review` do not.
+- `--item` — repeat once per fact, open-loop or source file the final answer
+  cited. Pass whatever spelling you are holding (a bundle-absolute link as
+  written in the markdown, a `knowledge/`-relative path, the filesystem path a
+  tool printed); `recall.py` normalizes and de-duplicates them.
+- `--entity` — repeat once per entity the answer was about. A slug or an entity
+  file path, either way.
+- **The model never types the line.** `recall.py log` writes it, which is why
+  neither the JSON shape nor the field names appear in any procedure. It
+  appends one line to `<bundle>/state/consumption-log.jsonl`, shaped
+  `{"ts": …, "mode": …, "entities": […], "facts_cited": […]}`.
+- **The write is non-fatal and never delays an answer.** A missing or
+  unwritable `state/` makes `log` write nothing, print nothing and exit 0. So
+  the call needs no error handling and no mention in the answer: run it, ignore
+  the result. Never skip the answer, or hold it back, on account of it.
+- **It is read, so an omitted call costs something.** `recall.py roll` folds
+  the log into `state/recall.json`, and `decay` reads that record as a loop's
+  fourth activity date: a loop your answer cited and did not log looks
+  untouched to the next expiry sweep. This is why the log stopped being
+  best-effort telemetry. It is still not OKF knowledge — `state/` sits outside
+  the OKF bundle and `validate-okf.py` never touches it, the same standing as
+  `state/cursors.json`.
+- Both `state/consumption-log.jsonl` and `state/recall.json` are git-ignored
+  (see the bundle's `.gitignore`) — a read must never generate git churn. They
+  record which entities were consulted and when, so they stay on the machine.
 
 ## Optional connectors (automatic ingestion degrades gracefully)
 

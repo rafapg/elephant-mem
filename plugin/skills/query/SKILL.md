@@ -26,7 +26,8 @@ bundle or `core.md` yourself.
    (resolve `${CLAUDE_PLUGIN_ROOT}` from the environment), then open and
    follow the procedure at `${CLAUDE_PLUGIN_ROOT}/skills/query/procedure.md`.
    The user's question is: `<the user's verbatim question/topic>`. Do every
-   bundle read in your own context. Return ONLY the final user-facing answer
+   bundle read, and the procedure's closing `scripts/recall.py log` call, in
+   your own context. Return ONLY the final user-facing answer
    in the bundle's `conversation_language`, with provenance exactly as the
    procedure requires."
    <!-- Effort: medium intended. The Agent tool has no reasoning-effort/thinking

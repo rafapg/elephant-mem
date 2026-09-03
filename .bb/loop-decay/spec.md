@@ -257,7 +257,7 @@ yesterday is as examined as one examined an hour ago.
       → E1, E22, E24 · dep: — · verify: `tests/test_recall.py`
 - [x] **2. `roll` and `score`**: pyramid buckets, idempotence, pruning, the lookup decay reads
       → E2, E3, E4, E5, E6 · dep: 1 · verify: `tests/test_recall.py`
-- [ ] **3. Adopt the log across the read modes**: the five modes call `recall.py log`; `core.md`'s section rewritten
+- [x] **3. Adopt the log across the read modes**: the five modes call `recall.py log`; `core.md`'s section rewritten
       → H1 · dep: 1 · verify: reading
 - [ ] **4. Wire `roll` into the routines**: `decay` step 1 and `catch-up`'s commit step
       → H7 · dep: 2 · verify: reading

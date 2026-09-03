@@ -34,7 +34,15 @@ result and its auto-facts block ends with `→ N older/superseded facts:
 the user's question needs history beyond the window/inline block — not by
 default.
 
-**Consumption log.** After the digest is finalized, append one line to
-`state/consumption-log.jsonl` per `../_shared/core.md`'s Consumption log
-section (`mode: "briefing"`). Best-effort — never let a logging failure
-change or delay the digest.
+**Consumption log.** After the digest is finalized, run from `<bundle>`, with
+one `--item` per fact/loop/source file the digest cited and one `--entity` per
+entity it was about:
+
+```bash
+python3 scripts/recall.py log --mode briefing --item <path>… --entity <slug>…
+```
+
+See `../_shared/core.md`'s Consumption log section. The script writes the line,
+swallows any failure and always exits 0, so there is nothing to handle and
+nothing to say about it in the digest. It is this mode's only write, and it
+lands in git-ignored `state/`.
