@@ -464,11 +464,25 @@ def published_numbers_checks():
             record(f"CHANGELOG names tests/{name}, which exists", False,
                    str(suite))
             continue
-        r = run([sys.executable, str(suite)], cwd=REPO_ROOT)
-        got = re.findall(r"(\d+)/(\d+) checks passed", r.stdout + r.stderr)
+        # Not the module's run(): the two streams are merged into one pipe
+        # and decoded leniently. A Windows runner handed this check a
+        # CompletedProcess whose `stdout` was None while `stderr` was a str,
+        # and concatenating them took the whole smoke run down mid-way. The
+        # same class of Windows-only surprise as the cp1252 decode this repo
+        # already carries a guard for, so it gets the same treatment: one
+        # stream, `errors="replace"`, and `or ""` so an absent stream fails
+        # this check loudly instead of raising through everything after it.
+        r = subprocess.run(
+            [sys.executable, str(suite)], cwd=str(REPO_ROOT),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        out = r.stdout or ""
+        got = re.findall(r"(\d+)/(\d+) checks passed", out)
         actual = got[-1][1] if got else None
         record(f"CHANGELOG says tests/{name} has {want} checks, and it does",
-               actual == want, f"actual={actual} rc={r.returncode}")
+               actual == want,
+               f"actual={actual} rc={r.returncode}\n{out[-400:]}")
 
     version = json.loads(
         (REPO_ROOT / "plugin" / ".claude-plugin" / "plugin.json").read_text(
@@ -521,7 +535,10 @@ def main():
 
     checkout_guard_checks(scratch_root)
 
-    published_numbers_checks()
+    try:
+        published_numbers_checks()
+    except Exception as e:  # noqa: BLE001 - a crash here must not eat the run
+        record("the published-numbers checks run at all", False, repr(e))
 
     return finish(scratch_root)
 
