@@ -21,7 +21,8 @@ it.
 
    Then run `python3 scripts/decay-loops.py`. It scans every `status: open`
    loop, computes its last-activity date (the max of `updated` / `opened` /
-   `created`, whichever are present), and lists every one older than
+   `created`, whichever are present, and the date `state/recall.json` last
+   records the loop as cited by an answer), and lists every one older than
    `elephant.json` -> `decay.loop_expiry_days` (default 45 — same defensive
    fallback as `hub_max_facts`) as a candidate, one per line with its age in
    days, plus a trailing count. The scan is read-only, and the roll before it
@@ -81,5 +82,8 @@ differ at the review gate in step 2.
 corroborates the same commitment, or by this procedure's own review-gate
 snooze (step 2). `decay` only ever *reads* `updated` (falling back to
 `opened`/`created`) — it never decides on its own that a loop was
-re-mentioned. The only way a loop escapes decay indefinitely is genuine,
-periodic re-affirmation, either from real sources or a human reviewer.
+re-mentioned. Use is the other half of that clock: a loop the owner's own
+answers keep citing carries a recent date in `state/recall.json`, and the scan
+reads it as a fourth activity date. So a loop escapes decay indefinitely by
+genuine, periodic re-affirmation — from real sources, from a human reviewer, or
+from being consulted.

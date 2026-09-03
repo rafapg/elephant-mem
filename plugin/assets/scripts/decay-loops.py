@@ -8,10 +8,18 @@ loop's `updated:` field whenever a later source corroborates it. This script
 only reads that signal; it never itself decides what counts as re-mention.
 
 Candidate = `status: open` AND its last-activity date (the max of
-`updated`/`opened`/`created`, whichever are present) is older than
+`updated`/`opened`/`created`, whichever are present, and the date
+`state/recall.json` last records the loop as cited by an answer) is older than
 `elephant.json` -> `decay.loop_expiry_days` (default 45 — same defensive
 fallback pattern as build-index.py's `hub_max_facts`: missing file, missing
 key, or malformed JSON all fall back to the default instead of crashing).
+
+The citation date is the fourth date and nothing more. `updated` says a source
+re-raised the loop; a citation says the owner's own answers still reach for it,
+which is the same claim from the other side. It only ever protects: a loop with
+no citation decays on its file dates exactly as it did before recall existed, so
+an absent, empty or malformed `state/recall.json` collapses this script to its
+previous behavior rather than to a crash.
 
 Default mode is DRY-RUN: prints one candidate per line (bundle-relative path +
 age in days) plus a trailing count, and changes nothing on disk. `--apply`
@@ -27,6 +35,7 @@ touches loop files).
 """
 import argparse
 import datetime
+import importlib.util
 import json
 import re
 import sys
@@ -172,10 +181,53 @@ def field(block, key):
     return strip_comment(m.group(1)) or None
 
 
-def last_activity(block):
-    """Max of `updated`/`opened`/`created` (whichever parse as a date), or
-    None if none of the three are present/parseable — treated as "can't tell,
-    not a candidate" rather than an error."""
+def recall_lookup():
+    """A `bundle-absolute path -> ISO date last cited` callable over
+    `state/recall.json`, or one that answers None for every path.
+
+    The sibling `recall.py` is imported by its path rather than by name: this
+    script is also loaded in-process by the suites, where `scripts/` is not on
+    `sys.path`. The record is read once here and the per-loop question is then
+    a dict lookup — the whole reason `roll` builds a fixed-size pyramid instead
+    of leaving decay to rescan the log 1784 times.
+
+    The import is deliberately soft. `recall.py` reaches an installed bundle
+    through `update`'s `scripts/` re-sync, so a bundle that has the decay script
+    but not yet its sibling must still decay; it simply decays on file dates
+    alone, which is what it did before recall existed. `recall.load()` already
+    absorbs the absent, empty and malformed record the same way.
+    """
+    script = Path(__file__).resolve().parent / "recall.py"
+    if not script.is_file():
+        return lambda link: None
+    try:
+        spec = importlib.util.spec_from_file_location("_decay_recall", script)
+        if spec is None or spec.loader is None:
+            raise ImportError("no loader for scripts/recall.py")
+        recall = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(recall)
+        data = recall.load()
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"warning: scripts/recall.py did not load ({exc}) — scanning on the "
+            "loop files' own dates only. Citations cannot protect a loop this run.",
+            file=sys.stderr,
+        )
+        return lambda link: None
+    return lambda link: recall.last_cited(data, link)
+
+
+def last_activity(block, cited=None):
+    """Max of `updated`/`opened`/`created` and `cited` (whichever parse as a
+    date), or None if none of the four are present/parseable — treated as
+    "can't tell, not a candidate" rather than an error.
+
+    `cited` is the ISO date `state/recall.json` holds for this loop's
+    bundle-absolute path, from `recall.py`'s `last_cited()`. Passing None is
+    the whole of the degraded path: no record, no entry for this loop, or no
+    `recall.py` at all all arrive here as None and leave the three file dates
+    deciding on their own.
+    """
     dates = []
     for key in ("updated", "opened", "created"):
         v = field(block, key)
@@ -188,6 +240,13 @@ def last_activity(block):
             dates.append(datetime.date.fromisoformat(m.group(0)))
         except ValueError:
             continue
+    if cited:
+        m = DATE.search(cited)
+        if m:
+            try:
+                dates.append(datetime.date.fromisoformat(m.group(0)))
+            except ValueError:
+                pass
     return max(dates) if dates else None
 
 
@@ -225,6 +284,7 @@ def expire_block(block, expired_date):
 def find_candidates(expiry_days):
     today = datetime.date.today()
     cutoff = today - datetime.timedelta(days=expiry_days)
+    cited_on = recall_lookup()
     candidates = []
     for path in loop_files():
         text = path.read_text(encoding="utf-8")
@@ -234,7 +294,7 @@ def find_candidates(expiry_days):
         block = m.group(1)
         if field(block, "status") != "open":
             continue
-        activity = last_activity(block)
+        activity = last_activity(block, cited_on(bundle_link(path)))
         if activity is None or activity > cutoff:
             continue
         candidates.append((path, text, m, (today - activity).days))

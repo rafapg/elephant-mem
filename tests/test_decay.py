@@ -7,8 +7,12 @@ loops; a recent `updated` (re-mention resets the clock) protects an
 otherwise-old loop; `done`/`dropped`/already-`expired` loops are never
 touched; the `expired: YYYY-MM-DD` field is stamped correctly; the default
 45-day threshold vs. a custom `elephant.json` -> `decay.loop_expiry_days`;
-and that `build-index.py`, run after `--apply`, drops the newly-expired loops
-from the open-loop count/board/manifest.
+that `build-index.py`, run after `--apply`, drops the newly-expired loops
+from the open-loop count/board/manifest; and that a recent citation in
+`state/recall.json` counts as a fourth activity date while every degraded
+shape of that record — absent, empty, malformed, no entry for this loop, no
+`recall.py` in the bundle at all — leaves the scan behaving exactly as it did
+before recall existed.
 
 Pure stdlib, Python 3.10+, same scaffolding style as tests/smoke.py and
 tests/test_index.py: every check builds its own throwaway bundle under a
@@ -56,14 +60,21 @@ def days_ago(n):
     return (TODAY - datetime.timedelta(days=n)).isoformat()
 
 
-def new_bundle(root, name, expiry_days=None):
+def new_bundle(root, name, expiry_days=None, with_recall=True):
     """Minimal throwaway bundle: decay-loops.py + build-index.py (the latter
-    only needed by the cross-script integration check), a reserved log.md,
-    and an empty knowledge/tracking/loops/ dir — mirrors the real bundle path
-    confirmed against ~/elephant-mem."""
+    only needed by the cross-script integration check) + recall.py (the sibling
+    decay reads the citation date through), a reserved log.md, and an empty
+    knowledge/tracking/loops/ dir — mirrors the real bundle path confirmed
+    against ~/elephant-mem.
+
+    `with_recall=False` builds the bundle an installed user has when `update`
+    has not yet re-synced `scripts/`: decay is there, its sibling is not."""
     bundle = root / name
     (bundle / "scripts").mkdir(parents=True, exist_ok=True)
-    for f in ("decay-loops.py", "build-index.py"):
+    scripts = ["decay-loops.py", "build-index.py"]
+    if with_recall:
+        scripts.append("recall.py")
+    for f in scripts:
         shutil.copy2(ASSETS / "scripts" / f, bundle / "scripts" / f)
     if expiry_days is not None:
         (bundle / "elephant.json").write_text(
@@ -99,6 +110,36 @@ def write_loop(bundle, name, desc, status="open", opened=None, created=None, upd
     )
     path = bundle / "knowledge" / "tracking" / "loops" / name
     path.write_text(text, encoding="utf-8")
+    return path
+
+
+def write_recall(bundle, cited, raw=None):
+    """Write `state/recall.json`. `cited` maps a loop's bundle-absolute path to
+    the ISO date it was last cited; `raw` overrides the whole file with a
+    literal string, for the malformed and empty shapes.
+
+    Hand-built rather than produced by driving `recall.py log` + `roll`: what
+    this suite is pinning is decay's reading of the record, and building it here
+    keeps the check from passing or failing on the roller's behavior, which
+    tests/test_recall.py owns."""
+    state = bundle / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    path = state / "recall.json"
+    if raw is not None:
+        path.write_text(raw, encoding="utf-8")
+        return path
+    items = {
+        key: {"total": 1, "last": day, "buckets": {day: 1}}
+        for key, day in cited.items()
+    }
+    path.write_text(
+        json.dumps(
+            {"schema": 1, "rolled_through": None, "generated": None,
+             "items": items, "entities": {}},
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
     return path
 
 
@@ -334,6 +375,102 @@ def test_template_shaped_loop_decays(root):
            done.read_text(encoding="utf-8"))
 
 
+# ---------------------------------------------------------------------------
+# 9. a recent citation is a fourth activity date
+# ---------------------------------------------------------------------------
+
+def test_recall_citation_protects(root):
+    """E7: cited 3 days ago, `updated` 100 days old -> not a candidate."""
+    bundle = new_bundle(root, "recall-protects")
+    cited = write_loop(bundle, "cited.md", "Stale on paper, still consulted",
+                       opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    uncited = write_loop(bundle, "uncited.md", "Stale and never consulted",
+                         opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    write_recall(bundle, {"/tracking/loops/cited.md": days_ago(3)})
+
+    result = run_script(bundle, "decay-loops.py")
+    record("dry-run exits 0 with a recall record present",
+           result.returncode == 0, result.stdout + result.stderr)
+    record("a loop cited 3 days ago is not a candidate, though `updated` is 100d old",
+           "cited.md" not in result.stdout.replace("uncited.md", ""), result.stdout)
+    record("…while its uncited twin, identical on every file date, still is",
+           "uncited.md" in result.stdout and "1 candidate(s)" in result.stdout,
+           result.stdout)
+
+    run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply leaves the cited loop open",
+           "status: open" in cited.read_text(encoding="utf-8"),
+           cited.read_text(encoding="utf-8"))
+    record("…and expires the uncited one",
+           "status: expired" in uncited.read_text(encoding="utf-8"),
+           uncited.read_text(encoding="utf-8"))
+
+
+def test_stale_citation_does_not_protect(root):
+    """A citation older than the window is not a rescue — it is just a date."""
+    bundle = new_bundle(root, "recall-stale-citation")
+    write_loop(bundle, "old-cite.md", "Cited once, long ago",
+               opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    write_recall(bundle, {"/tracking/loops/old-cite.md": days_ago(80)})
+
+    result = run_script(bundle, "decay-loops.py")
+    record("a loop last cited 80 days ago is still a candidate",
+           "old-cite.md" in result.stdout and "1 candidate(s)" in result.stdout,
+           result.stdout)
+    record("…and its age is measured from the citation, the newest of the four dates",
+           "80d stale" in result.stdout, result.stdout)
+
+
+def test_recall_never_ages_a_loop(root):
+    """The citation only ever protects: it cannot make a fresh loop a candidate."""
+    bundle = new_bundle(root, "recall-only-protects")
+    write_loop(bundle, "fresh.md", "Fresh loop, ancient citation",
+               opened=days_ago(2), created=days_ago(2), updated=days_ago(2))
+    write_recall(bundle, {"/tracking/loops/fresh.md": days_ago(400)})
+
+    result = run_script(bundle, "decay-loops.py")
+    record("an old citation on a fresh loop leaves it out of the candidates",
+           "fresh.md" not in result.stdout and "0 candidate(s)" in result.stdout,
+           result.stdout)
+
+
+def test_recall_degraded_shapes(root):
+    """E2, E8: absent, empty, malformed, no entry, no recall.py — all collapse
+    to the behavior this script had before recall existed."""
+    shapes = [
+        ("absent", None, None),
+        ("empty", None, "{}\n"),
+        ("malformed", None, "{ not json at all\n"),
+        ("no entry for this loop", {"/facts/2026-09/other.md": days_ago(1)}, None),
+    ]
+    for label, cited, raw in shapes:
+        bundle = new_bundle(root, "recall-degraded-" + label.replace(" ", "-"))
+        write_loop(bundle, "old.md", "Old stale loop",
+                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+        if cited is not None or raw is not None:
+            write_recall(bundle, cited or {}, raw=raw)
+
+        result = run_script(bundle, "decay-loops.py")
+        record(f"recall.json {label}: the scan still exits 0",
+               result.returncode == 0, result.stdout + result.stderr)
+        record(f"recall.json {label}: the stale loop is a candidate, as it was before recall",
+               "old.md" in result.stdout and "1 candidate(s)" in result.stdout,
+               result.stdout)
+
+    # A bundle that has decay-loops.py but not yet its sibling — `update`
+    # re-syncs scripts/ as a set, but a half-updated bundle must still decay.
+    bundle = new_bundle(root, "recall-script-absent", with_recall=False)
+    write_loop(bundle, "old.md", "Old stale loop",
+               opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    result = run_script(bundle, "decay-loops.py")
+    record("no recall.py in the bundle: the scan still exits 0",
+           result.returncode == 0, result.stdout + result.stderr)
+    record("no recall.py in the bundle: the stale loop is still a candidate",
+           "old.md" in result.stdout and "1 candidate(s)" in result.stdout, result.stdout)
+    record("no recall.py in the bundle: and the scan says nothing about it",
+           result.stderr.strip() == "", result.stderr)
+
+
 def guarded(fn, root):
     try:
         fn(root)
@@ -359,6 +496,10 @@ def main():
         test_custom_threshold,
         test_build_index_excludes_expired_after_apply,
         test_template_shaped_loop_decays,
+        test_recall_citation_protects,
+        test_stale_citation_does_not_protect,
+        test_recall_never_ages_a_loop,
+        test_recall_degraded_shapes,
     ):
         guarded(fn, scratch_root)
 

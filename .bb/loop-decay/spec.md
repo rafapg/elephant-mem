@@ -261,7 +261,7 @@ yesterday is as examined as one examined an hour ago.
       → H1 · dep: 1 · verify: reading
 - [x] **4. Wire `roll` into the routines**: `decay` step 1 and `catch-up`'s commit step
       → H7 · dep: 2 · verify: reading
-- [ ] **5. Recall as a fourth activity date**: `last_activity()` in `decay-loops.py`
+- [x] **5. Recall as a fourth activity date**: `last_activity()` in `decay-loops.py`
       → H7, E2, E7, E8 · dep: 2 · verify: `tests/test_decay.py`
 - [ ] **6. `close-loops.py`**: the two-band bounded queue and the ranked capped evidence proposal, plus the suite's own `- run:` line in `.github/workflows/ci.yml`
       → H2, H3, E9, E10, E11, E12, E22, E24 · dep: — · verify: `tests/test_close_loops.py`
