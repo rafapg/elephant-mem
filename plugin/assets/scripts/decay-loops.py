@@ -11,8 +11,9 @@ decides what counts as re-mention.
 
 Candidate = `status: open` AND its last-activity date (the max of
 `updated`/`opened`/`created`, whichever are present, and the date
-`state/recall.json` last records the loop as cited by an answer) is older than
-`elephant.json` -> `decay.loop_expiry_days` (default 45 — same defensive
+`state/recall.json` last records the loop as cited by an answer) is
+`elephant.json` -> `decay.loop_expiry_days` days back or more (default 45; the
+comparison is `>=`, so a loop exactly that old expires — same defensive
 fallback pattern as build-index.py's `hub_max_facts`: missing file, missing
 key, or malformed JSON all fall back to the default instead of crashing).
 
@@ -43,14 +44,19 @@ and its owner can rewrite the sentence.
 
 **`--apply` is gated per loop on `state/closure-sweep.json`** (E15, E18). A
 candidate is expirable only if the sweep shows it was examined on or after its
-own last activity and that the examination did not close it — the same
-"settled" test `close-loops.py` uses to drop a loop from its queue, so what
-decay may expire is exactly what left that queue. An unexamined candidate is
-refused **by name**, with the `close-loops` command to examine it, and the run
-still exits 0: expiry is a verdict of silence, and silence a routine never
-looked at is not evidence of anything. Losing the record therefore parks decay
-instead of corrupting it: every loop reads as never examined and nothing
-expires until `close-loops` records examinations again.
+own last activity and that the examination left it `open` — the same "settled"
+test `close-loops.py` uses to drop a loop from its queue, so what decay may
+expire is exactly what left that queue. "Its own last activity" there means the
+three **file** dates, the only ones `close-loops.py` reads: the citation date
+decides candidacy and never the gate, because a loop only reaches the gate once
+its citation is already older than the window, and comparing the examination
+against a date `close-loops.py` cannot see parked such a loop in both lanes at
+once. An unexamined candidate is refused **by name**, with the `close-loops`
+command to examine it, and the run still exits 0: expiry is a verdict of
+silence, and silence a routine never looked at is not evidence of anything.
+Losing the record therefore parks decay instead of corrupting it: every loop
+reads as never examined and nothing expires until `close-loops` records
+examinations again.
 
 `--skip-sweep` bypasses that gate entirely and restores the behavior this
 script had before the gate existed. It is the deliberate way out of a lost or
@@ -257,7 +263,10 @@ def load_sweep():
     its sibling. The tolerance is deliberately identical to `close-loops.py`'s
     reader of the same file, including reading a bare ISO string in place of the
     entry dict, because a hand-repaired record is a likely shape and refusing it
-    would park expiry over a formatting opinion.
+    would park expiry over a formatting opinion. The tolerance is over the
+    *shape*, not over the *values*: `gate()` still requires a readable, non-future
+    examination date and an explicit `outcome: open`, so a bare ISO string parks
+    that loop until an examination records an outcome for it.
 
     Shape (written by the `close-loops` routine, never by a script):
 
@@ -287,6 +296,35 @@ def load_sweep():
     return {"loops": loops if isinstance(loops, dict) else {}}
 
 
+def examination_date(value):
+    """The ISO date inside `value`, or None if it is not a readable past date.
+
+    `DATE.search` alone finds ten digits in the right shape and nothing more, so
+    `2026-99-99`, `2099-01-01` and a date sitting in prose all reached the gate;
+    only *forward* junk cleared it, and `resolution_paragraph()` then wrote that
+    junk verbatim into the loop file, which `build-index.py` prints onto
+    `tracking/resolved-loops.md`. A durable artifact, so the value is checked
+    here rather than trusted.
+
+    Deliberately validating the **matched group**, not the whole value:
+    `datetime.date.fromisoformat()` over the whole thing rejects the
+    `2026-09-01T09:00:00-03:00` shape `load_sweep()` tolerates on purpose, and
+    would still accept `2099-01-01`. This refuses the value, not the record —
+    every shape tolerance survives and every unreadable value reads as "never
+    examined", which parks that one loop rather than expiring it.
+    """
+    m = DATE.search(value) if isinstance(value, str) else None
+    if not m:
+        return None
+    try:
+        parsed = datetime.date.fromisoformat(m.group(0))
+    except ValueError:
+        return None  # ten digits in the right shape, not a date
+    if parsed > datetime.date.today():
+        return None  # an examination cannot be in the future
+    return m.group(0)
+
+
 def sweep_verdict(sweep, link):
     """`(examined ISO date, outcome)` for one loop, either half None."""
     entry = (sweep.get("loops") or {}).get(link)
@@ -299,38 +337,55 @@ def sweep_verdict(sweep, link):
         outcome = raw.strip().lower() if isinstance(raw, str) else None
     else:
         return None, None
-    m = DATE.search(value) if isinstance(value, str) else None
-    return (m.group(0) if m else None), outcome
+    return examination_date(value), outcome
 
 
-def gate(sweep, link, activity):
+def gate(sweep, link, file_activity):
     """`(expirable, reason)` for one candidate under the sweep gate.
 
     Expirable iff `close-loops` examined the loop on or after its own last
-    activity and did not close it. On-or-after, not strictly after, so this is
+    activity and left it `open`. On-or-after, not strictly after, so this is
     exactly `close-loops.py`'s "settled" test: what leaves that queue is what
     decay may consider, and a loop examined the same day it last moved does not
     have to wait a full extra cycle.
 
-    `activity` is decay's own last-activity date, so it includes the citation
-    date `close-loops.py` does not read. That only ever makes the gate stricter:
-    a loop the owner's answers still reach for is not expirable on an older
-    examination.
+    `file_activity` is the max of the loop's `updated`/`opened`/`created` — the
+    three dates and only the three dates `close-loops.py:newest_date()` reads.
+    Handing the citation-inclusive date here instead read as extra caution and
+    was a deadlock: a loop stale by its file dates, cited inside the recall
+    record but longer ago than the window, and examined after its file activity
+    is a candidate here and is settled over there, so neither lane would ever
+    touch it again and the `close-loops` command this gate prints was inert for
+    exactly those loops. The citation's protective role is fully spent in
+    `find_candidates()`; past it, it can only ever park.
+
+    The outcome half is a whitelist. Anything but a recorded `open` holds the
+    loop back, so an off-vocabulary verdict (`closed`, `resolved`, `done=extra`)
+    and an entry carrying no outcome at all both park the loop instead of
+    expiring it on a value this script did not understand.
     """
     examined, outcome = sweep_verdict(sweep, link)
     if examined is None:
-        return False, "never examined — state/closure-sweep.json has no entry for it"
-    if outcome == "done":
         return False, (
-            f"close-loops closed it on {examined}; a `done` loop is not decay's "
-            "to expire"
+            "never examined — state/closure-sweep.json has no readable "
+            "examination date for it"
         )
-    if activity is not None and examined < activity.isoformat():
+    if outcome != "open":
+        if outcome is None:
+            return False, (
+                f"examined {examined} with no outcome recorded — the gate expires "
+                "only a loop an examination explicitly left `open`"
+            )
         return False, (
-            f"examined {examined}, before its last activity {activity} — it "
+            f"close-loops recorded it as `{outcome}` on {examined}, not `open` — "
+            "only a loop an examination left open is decay's to expire"
+        )
+    if file_activity is not None and examined < file_activity.isoformat():
+        return False, (
+            f"examined {examined}, before its last activity {file_activity} — it "
             "moved after the examination and has not been re-read since"
         )
-    return True, f"examined {examined}, on or after its last activity {activity}"
+    return True, f"examined {examined}, on or after its last activity {file_activity}"
 
 
 def last_activity(block, cited=None):
@@ -397,7 +452,8 @@ def expire_block(block, expired_date):
     return "\n".join(lines)
 
 
-def resolution_paragraph(age_days, activity, examined, expiry_days, today):
+def resolution_paragraph(age_days, activity, examined, expiry_days, today,
+                          skipped=False):
     """The `**Resolution:**` paragraph decay appends when it expires a loop.
 
     Same shape as the one `close-loops` writes by hand (E17): a body paragraph,
@@ -406,38 +462,59 @@ def resolution_paragraph(age_days, activity, examined, expiry_days, today):
     prints next to the date and the outcome. So it names the silence in full
     rather than opening with "this one went quiet".
 
-    `examined` is the sweep's date when there is one; a `--skip-sweep` run over
-    a loop no examination ever reached says so instead of claiming one.
+    **Every claim here is window-relative, because decay checks nothing wider.**
+    The sentence used to assert three absolutes it had no standing for: "no
+    answer cited it" is false whenever recall holds a citation older than the
+    window, "no later source re-raised it" likewise whenever `catch-up` bumped
+    `updated:` longer ago than the window, and "found no evidence it was
+    delivered" was written even where `close-loops` did find evidence and simply
+    could not decide — the sweep records `outcome: open` for "no candidates" and
+    for "undecided" alike, so "did not close it" is the one phrasing accurate for
+    both. What decay can actually stand behind is that nothing has touched the
+    loop since `activity`, which is exactly what it now says.
+
+    `examined` is the sweep's date whenever the record holds one, `--skip-sweep`
+    or not: the flag decides whether the gate is *consulted*, never whether an
+    examination *happened*, and blanking it here wrote "no `close-loops`
+    examination is on record for it" onto loops that had one. `skipped` says
+    which of the two cleared the loop, so a `--skip-sweep` run never credits an
+    examination it did not consult.
     """
     if examined:
         opening = (
             f"**Resolution:** Expired on {today} after {age_days} days of "
-            "silence: no later source re-raised it, no answer cited it, and the "
-            f"`close-loops` examination on {examined} found no evidence it was "
-            "delivered."
-        )
-        middle = (
-            f"Its last activity was {activity}, older than the {expiry_days}-day "
-            "window `decay.loop_expiry_days` sets in `elephant.json`, and the "
-            "examination that cleared it for expiry is recorded in "
-            "state/closure-sweep.json."
+            f"silence: nothing re-raised or cited it after {activity}, and the "
+            f"`close-loops` examination on {examined} did not close it."
         )
     else:
         opening = (
             f"**Resolution:** Expired on {today} after {age_days} days of "
-            "silence: no later source re-raised it, no answer cited it, and no "
+            f"silence: nothing re-raised or cited it after {activity}, and no "
             "`close-loops` examination is on record for it."
         )
+    window = (
+        f"Its last activity was {activity}, at or past the {expiry_days}-day "
+        "window `decay.loop_expiry_days` sets in `elephant.json`"
+    )
+    if not skipped:
         middle = (
-            f"Its last activity was {activity}, older than the {expiry_days}-day "
-            "window `decay.loop_expiry_days` sets in `elephant.json`; this run "
-            "passed `--skip-sweep`, so the sweep gate did not stand between the "
-            "loop and expiry."
+            f"{window}, and the examination that cleared it for expiry is "
+            "recorded in state/closure-sweep.json."
+        )
+    elif examined:
+        middle = (
+            f"{window}; this run passed `--skip-sweep`, so it was the flag and "
+            "not the examination recorded in state/closure-sweep.json that "
+            "cleared it."
+        )
+    else:
+        middle = (
+            f"{window}; this run passed `--skip-sweep`, so the sweep gate did "
+            "not stand between the loop and expiry."
         )
     closing = (
-        "Expiry states silence, not a verdict on the commitment: a later source "
-        "that re-raises this loop reopens it, and closure by evidence would have "
-        "been written here by `close-loops` instead."
+        "Expiry states silence, not a verdict on the commitment: closure by "
+        "evidence would have been written here by `close-loops` instead."
     )
     return f"{opening} {middle} {closing}"
 
@@ -454,6 +531,19 @@ def append_resolution(text, paragraph):
 
 
 def find_candidates(expiry_days):
+    """Every `status: open` loop whose last activity is `expiry_days` days back
+    or more, newest-stale last.
+
+    `activity > cutoff` skips, so a loop whose last activity is *exactly*
+    `expiry_days` days old is a candidate: the boundary is `>=`, which every
+    message in this script now says out loud rather than printing `> N`.
+
+    Each candidate carries **both** activity dates. `activity` is the
+    citation-inclusive one — it decided candidacy here and it is what the age,
+    the report lines and the resolution are measured from. `file_activity` is
+    the max of the three file dates alone, and it exists for `gate()`, which
+    must compare against exactly what `close-loops.py` compares against.
+    """
     today = datetime.date.today()
     cutoff = today - datetime.timedelta(days=expiry_days)
     cited_on = recall_lookup()
@@ -466,10 +556,13 @@ def find_candidates(expiry_days):
         block = m.group(1)
         if field(block, "status") != "open":
             continue
+        file_activity = last_activity(block)
         activity = last_activity(block, cited_on(bundle_link(path)))
         if activity is None or activity > cutoff:
             continue
-        candidates.append((path, text, m, (today - activity).days, activity))
+        candidates.append(
+            (path, text, m, (today - activity).days, activity, file_activity)
+        )
     candidates.sort(key=lambda c: -c[3])
     return candidates
 
@@ -485,23 +578,27 @@ def main():
 
     expiry_days = loop_expiry_days()
     candidates = find_candidates(expiry_days)
-    sweep = None if args.skip_sweep else load_sweep()
+    # The record is loaded whether or not the gate is consulted: `--skip-sweep`
+    # decides whether an examination may hold a loop back, never whether one
+    # happened, and the resolution paragraph reports the date either way.
+    sweep_record = load_sweep()
+    sweep = None if args.skip_sweep else sweep_record
 
-    def verdict(path, activity):
+    def verdict(path, file_activity):
         """(expirable, reason) — always expirable when the gate is off."""
         if sweep is None:
             return True, "--skip-sweep: the sweep gate was not consulted"
-        return gate(sweep, bundle_link(path), activity)
+        return gate(sweep, bundle_link(path), file_activity)
 
     if not args.apply:
         n_cleared = 0
-        for path, _text, _m, age_days, activity in candidates:
-            ok, reason = verdict(path, activity)
+        for path, _text, _m, age_days, _activity, file_activity in candidates:
+            ok, reason = verdict(path, file_activity)
             n_cleared += ok
             note = "" if sweep is None else f" — {'cleared' if ok else 'held back'}: {reason}"
             print(f"{bundle_link(path)}  ({age_days}d stale){note}")
         print(f"\n{len(candidates)} candidate(s) for decay "
-              f"(status: open, stale > {expiry_days}d — dry-run, pass --apply to expire)")
+              f"(status: open, stale >= {expiry_days}d — dry-run, pass --apply to expire)")
         if sweep is not None and candidates:
             print(f"Of those, {n_cleared} cleared by state/closure-sweep.json and "
                   f"{len(candidates) - n_cleared} held back until close-loops has "
@@ -511,8 +608,8 @@ def main():
     today = datetime.date.today()
     today_str = today.isoformat()
     n_expired, held = 0, []
-    for path, text, m, age_days, activity in candidates:
-        ok, reason = verdict(path, activity)
+    for path, text, m, age_days, activity, file_activity in candidates:
+        ok, reason = verdict(path, file_activity)
         if not ok:
             held.append((bundle_link(path), age_days, reason))
             print(f"held back: {bundle_link(path)}  ({age_days}d stale) — {reason}")
@@ -522,24 +619,25 @@ def main():
             print(f"warning: {bundle_link(path)} — could not locate `status: open` line, skipped",
                   file=sys.stderr)
             continue
-        examined = None if sweep is None else sweep_verdict(sweep, bundle_link(path))[0]
+        examined = sweep_verdict(sweep_record, bundle_link(path))[0]
         new_text = text[:m.start(1)] + new_block + text[m.end(1):]
         new_text = append_resolution(
             new_text,
-            resolution_paragraph(age_days, activity, examined, expiry_days, today_str),
+            resolution_paragraph(age_days, activity, examined, expiry_days,
+                                  today_str, skipped=sweep is None),
         )
         path.write_text(new_text, encoding="utf-8")
         n_expired += 1
         print(f"expired: {bundle_link(path)}  ({age_days}d stale)")
 
-    print(f"\n{n_expired} loop(s) expired (status: open -> expired, stale > {expiry_days}d). "
+    print(f"\n{n_expired} loop(s) expired (status: open -> expired, stale >= {expiry_days}d). "
           f"Run build-index.py next.")
     if held:
         print(f"{len(held)} candidate(s) held back: state/closure-sweep.json does not show "
-              f"them examined after their own last activity, so their silence is a lane "
-              f"nothing has read. Run the close-loops routine — python3 "
-              f"scripts/close-loops.py — and they expire on a later run. "
-              f"--skip-sweep expires them without the gate.")
+              f"them examined on or after their own last activity and left open, so "
+              f"their silence is a lane nothing has read. Run the close-loops "
+              f"routine — python3 scripts/close-loops.py — and they expire on a "
+              f"later run. --skip-sweep expires them without the gate.")
         if not n_expired:
             print("Nothing was written this run: no rebuild and no commit are needed.")
     return 0

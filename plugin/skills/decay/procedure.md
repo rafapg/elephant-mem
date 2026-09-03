@@ -22,10 +22,11 @@ it.
    Then run `python3 scripts/decay-loops.py`. It scans every `status: open`
    loop, computes its last-activity date (the max of `updated` / `opened` /
    `created`, whichever are present, and the date `state/recall.json` last
-   records the loop as cited by an answer), and lists every one older than
-   `elephant.json` -> `decay.loop_expiry_days` (default 45 — same defensive
-   fallback as `hub_max_facts`) as a candidate, one per line with its age in
-   days, plus a trailing count. Each line also says whether
+   records the loop as cited by an answer), and lists every one whose last
+   activity is `elephant.json` -> `decay.loop_expiry_days` days back or more
+   (default 45; the comparison is `>=`, so a loop exactly that old is a
+   candidate — same defensive fallback as `hub_max_facts`) as a candidate, one
+   per line with its age in days, plus a trailing count. Each line also says whether
    `state/closure-sweep.json` clears that loop for expiry or holds it back, and
    the trailing count is followed by the split — the dry run is where you see
    how much of this run's lane `close-loops` has actually examined. The scan is
@@ -59,7 +60,14 @@ it.
 
    **The gate.** `--apply` expires a candidate only if
    `state/closure-sweep.json` shows `close-loops` examined it on or after its
-   own last activity and did not close it. That record is written by the
+   own last activity and recorded `outcome: open` for it. Two details the
+   script is strict about, because both once let a loop through on something
+   nobody checked: "last activity" here is the loop's three **file** dates
+   only, the same ones `close-loops` reads, so a citation can keep a loop out
+   of the candidate list but never out of the gate; and the outcome is a
+   whitelist, so an unreadable or future examination date, an off-vocabulary
+   outcome and an entry carrying no outcome at all all read as never examined.
+   That record is written by the
    `close-loops` routine — see `../close-loops/procedure.md` → **The sweep
    record** for its shape and the one command that writes it; nothing here
    writes it, and it must not be hand-edited. A candidate the record does not
@@ -92,10 +100,10 @@ it.
    only the derived surfaces need a successful rebuild).
 
 5. **Log + commit.** Append one dated line to `knowledge/log.md`:
-   `**Decay**: N loops expired (>Xd stale)` (X = the effective
+   `**Decay**: N loops expired (>=Xd stale)` (X = the effective
    `loop_expiry_days`; N is what was actually written, held-back candidates
    excluded). Then `git -C <bundle> add -A && git -C <bundle>
-   commit -m "decay: N loops expired (>Xd stale)"`. **Never push.** If step 1
+   commit -m "decay: N loops expired (>=Xd stale)"`. **Never push.** If step 1
    found 0 candidates, there is nothing to commit — skip this step entirely.
 
 ## Cadence
