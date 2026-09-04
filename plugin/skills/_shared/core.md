@@ -59,7 +59,7 @@ multiple-times-daily ingestion:
 | Lane | Type / location | Lifetime | Reached via |
 |------|-----------------|----------|-------------|
 | **Durable** | `type: fact` in `facts/` | grows slowly (dedup bounds it) | entity backlinks |
-| **Open loop** | `type: open-loop` in `tracking/loops/` | bounded — closes & archives | `tracking/open-loops.md` board |
+| **Open loop** | `type: open-loop` in `tracking/loops/` | bounded — closes & archives | `tracking/open-loops.md` board, then `tracking/resolved-loops.md` |
 | **Episodic** | `type: source` in `sources/<YYYY-MM>/` + `log.md` | linear with volume; archival | only by date |
 
 Why this scales: input volume ≠ fact count. The same fact re-observed across many
@@ -70,9 +70,17 @@ entity-centric (see below).
 
 An **open-loop** is a commitment/action-item ("the owner will produce the
 planning materials"). It is NOT a durable fact — it completes. Give it a `status`
-(`open|done|dropped`) and a `**Closure signal:**`. When a later source shows it
-was done, `maintain` flips it to `done` (it leaves the active board but stays as
-history). Use open-loops to track "what got done vs not".
+(`open|done|dropped|expired`) and a `**Closure signal:**`. `close-loops` reads
+that signal against the evidence and writes `status: done` itself; `catch-up`
+step 4 does the same for a loop a new source shows done; `decay` flips a loop
+that went quiet and survived examination to `status: expired`; `dropped` stays a
+hand-set state. Those are the only writers, and `maintain` never touches a
+loop. Any status other than `open` takes the loop off the board, out of the
+manifest and out of the entity hubs, and `build-index.py` lists it on
+`tracking/resolved-loops.md`, newest first, capped at `index.resolved_max`
+(default 200) with the older ones spilling into a linked sibling shard. So a
+resolved loop older than that cap is on the shard, not on the page. Use
+open-loops to track "what got done vs not".
 
 ## Aggregator facts (the rollup rule)
 
@@ -102,7 +110,8 @@ A `snapshot` fact is a **point-in-time editorial rollup**:
 - **Write knowledge in `knowledge_language`; converse in `conversation_language`**
   (see Languages above).
 - Non-reserved `.md` files MUST have frontmatter with a non-empty `type`.
-  Reserved files (`index.md`, `log.md`, `open-loops.md`) have **no** frontmatter.
+  Reserved files (`index.md`, `log.md`, `open-loops.md`, `resolved-loops.md`) have
+  **no** frontmatter.
 - **Quote every free-text frontmatter scalar** (`description`, `title`) and
   **escape inner `"` as `\"`** — or single-quote the value instead:
   `description: "Angelo asked for help: the export was failing"`. Unquoted, a
@@ -123,9 +132,11 @@ A `snapshot` fact is a **point-in-time editorial rollup**:
   commit. (`python3` throughout this plugin means the bundle's Python 3
   interpreter — on Windows, substitute `python` or `py -3` if `python3` isn't on
   PATH.)
-- `index.md`, `entities/index.md`, `tracking/open-loops.md`, and entity/source
-  backlinks are **derived** — never hand-edit; regenerate them.
-- Reserved (no frontmatter): `index.md`, `log.md`, `open-loops.md`.
+- `index.md`, `entities/index.md`, `tracking/open-loops.md`,
+  `tracking/resolved-loops.md`, and entity/source backlinks are **derived** —
+  never hand-edit; regenerate them.
+- Reserved (no frontmatter): `index.md`, `log.md`, `open-loops.md`,
+  `resolved-loops.md`.
 - Episodic files are partitioned by month: `sources/<YYYY-MM>/<date>-slug.md`.
 - **Local commits only — never push.** The bundle holds sensitive private data;
   it stays on the machine.
@@ -152,38 +163,63 @@ Provenance carries **trust**, not just source. Before answering, every read mode
   `--entity <owner.slug>` (from `elephant.json`) plus the owner's projects/team.
   Capture keeps everything; retrieval is where the owner's frame is applied.
 
-## Consumption log (read modes, best-effort telemetry)
+## Consumption log (read modes, part of the read contract)
 
 At the very end of answering — after the final user-facing answer is decided,
-never before — a read mode that has adopted this (currently `query` and
-`briefing`; see their procedures) appends **one** JSON line to
-`<bundle>/state/consumption-log.jsonl`:
+never before — every read mode records what that answer actually used, by
+running one command from `<bundle>`:
 
-```json
-{"ts": "<ISO datetime>", "mode": "query", "entities": ["<slug>", "..."], "facts_cited": ["<bundle-absolute path>", "..."]}
+```bash
+python3 scripts/recall.py log --mode query \
+  --item /entities/person/angelo.md --item /facts/2026-08/export-fix.md \
+  --entity angelo --entity acme
 ```
 
-- `mode` — the read mode's name (`"query"` or `"briefing"`).
-- `entities` — the entity slugs the answer was actually about (best guess is
-  fine — this is telemetry, not a citation).
-- `facts_cited` — the bundle-absolute paths of the fact/open-loop files the
-  final answer actually cited.
-- **This is best-effort telemetry, not OKF knowledge.** `state/` is outside
-  the OKF bundle (`validate-okf.py` never touches it — same standing as
-  `state/cursors.json`). A logging failure (missing `state/` dir, a write
-  error) must never fail the read or change the answer: append, swallow any
-  exception, move on silently.
-- `state/consumption-log.jsonl` is git-ignored (see the bundle's `.gitignore`)
-  — a read must never generate git churn.
+- **The five read modes all call it**: `query`, `briefing`, `start-day`,
+  `end-day`, and the whole-field scan (`--mode whole-field`), each with its own
+  name. `expand` and `review` do not.
+- `--item` — repeat once per fact, open-loop or source file the final answer
+  cited. Pass whatever spelling you are holding (a bundle-absolute link as
+  written in the markdown, a `knowledge/`-relative path, the filesystem path a
+  tool printed); `recall.py` normalizes and de-duplicates them.
+- `--entity` — repeat once per entity the answer was about. A slug or an entity
+  file path, either way.
+- **The model never types the line.** `recall.py log` writes it, which is why
+  neither the JSON shape nor the field names appear in any procedure. It
+  appends one line to `<bundle>/state/consumption-log.jsonl`, shaped
+  `{"ts": …, "mode": …, "entities": […], "facts_cited": […]}`.
+- **The write is non-fatal and never delays an answer.** A missing or
+  unwritable `state/` makes `log` write nothing, print nothing and exit 0. So
+  the call needs no error handling and no mention in the answer: run it, ignore
+  the result. Never skip the answer, or hold it back, on account of it.
+- **It is read, so an omitted call costs something.** `recall.py roll` folds
+  the log into `state/recall.json`, and `decay` reads that record as a loop's
+  fourth activity date: a loop your answer cited and did not log looks
+  untouched to the next expiry sweep. No read mode ever calls `roll` — the two
+  write routines do, `catch-up` after its commit and `decay` before its scan,
+  so a read only ever appends. This is why the log stopped being
+  best-effort telemetry. It is still not OKF knowledge — `state/` sits outside
+  the OKF bundle and `validate-okf.py` never touches it, the same standing as
+  `state/cursors.json`.
+- Both `state/consumption-log.jsonl` and `state/recall.json` are git-ignored —
+  a read must never generate git churn. They record which entities were
+  consulted and when, so they stay on the machine. The seed `.gitignore` carries
+  the rules for a new bundle, and `recall.py roll` appends any that are missing
+  before it writes, since `update` never re-syncs `.gitignore` and every write
+  routine ends in `git add -A`. A roll that cannot confirm the rules, an
+  unreadable `.gitignore` or an append that failed, writes no record and exits
+  non-zero rather than leaving that file unprotected in front of the next
+  `git add -A`. Treat it as a stop for the routine that called it, not as a
+  missing roll.
 
 ## Optional connectors (automatic ingestion degrades gracefully)
 
 Core knowledge modes (`query`, `briefing`, `capture`, `ingest`, `maintain`,
-`expand`, `review`, `start-day`, `end-day`) work with **zero MCP connectors** —
-they are pure local-bundle operations. Automatic ingestion (`catch-up`,
-`push-start-day`) is **optional** and driven by the `sources` block in
-`elephant.json` (see `docs/configuration.md`). When a configured connector is not
-available:
+`close-loops`, `decay`, `expand`, `review`, `start-day`, `end-day`) work with
+**zero MCP connectors** — they are pure local-bundle operations. Automatic
+ingestion (`catch-up`, `push-start-day`) is **optional** and driven by the
+`sources` block in `elephant.json` (see `docs/configuration.md`). When a
+configured connector is not available:
 
 - **Skip that source, don't fail the run.** A missing Calendar connector means
   the agenda block is skipped with a one-line note; a missing Slack connector

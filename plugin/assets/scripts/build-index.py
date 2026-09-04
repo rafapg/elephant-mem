@@ -8,6 +8,17 @@ through the entity pages that link them. So this script regenerates:
   1. knowledge/entities/index.md   — the entity CATALOG (the navigation spine),
                                       grouped by kind. Bounded by # of entities.
   2. knowledge/tracking/open-loops.md — board of `status: open` loops by owner.
+  2b. knowledge/tracking/resolved-loops.md — the archive of loops that reached
+                                      `done`, `dropped` or `expired`: newest
+                                      first, one line each carrying the date,
+                                      the outcome and the first sentence of the
+                                      resolution written in the loop's body.
+                                      Capped at `index.resolved_max` (200) with
+                                      the overflow in a sibling archive shard.
+                                      The loop FILE never moves — its path is
+                                      cited from thousands of source bodies and
+                                      facts — so this page, not a new location
+                                      on disk, is where a resolved loop goes.
   3. knowledge/index.md            — a thin ROUTER: pointers + recent activity.
                                       Does NOT list every fact.
   4. entity/source backlinks       — the auto-facts block in each entity/source
@@ -67,14 +78,21 @@ if __name__ == "__main__" and os.path.basename(ROOT) == "assets" and os.path.isd
         "is plugin/assets/, and it would write into the assets the marketplace\n"
         "publishes. Run it from an installed bundle instead."
     )
-RESERVED = {"index.md", "log.md", "open-loops.md"}
+RESERVED = {"index.md", "log.md", "open-loops.md", "resolved-loops.md"}
 RECENT_N = 12
-# Regenerated hub-sharding shard: never a first-class OKF type, so it carries
-# no frontmatter and is excluded from concept-scanning / validate-okf.py's
+# Regenerated sharding shard: never a first-class OKF type, so it carries no
+# frontmatter and is excluded from concept-scanning / validate-okf.py's
 # frontmatter rule (mirrors RESERVED, but by suffix since the basename varies
-# per entity/source).
+# per entity/source). Carries the overflow of a hub past HUB_MAX_FACTS and, on
+# `tracking/`, the overflow of the resolved page past RESOLVED_MAX — the same
+# mechanism, so the resolved shard needs no name of its own in the four
+# RESERVED copies.
 ARCHIVE_SUFFIX = ".facts-archive.md"
 HUB_MAX_FACTS_DEFAULT = 50
+RESOLVED_MAX_DEFAULT = 200
+RESOLVED_REL = "tracking/resolved-loops.md"
+RESOLVED_ARCHIVE_REL = "tracking/resolved-loops" + ARCHIVE_SUFFIX
+RESOLUTION_HEAD = "**Resolution:**"
 
 FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 INLINE_LIST = re.compile(r"^\[(.*)\]$")
@@ -127,11 +145,26 @@ def hub_max_facts():
     return v if isinstance(v, int) and v > 0 else HUB_MAX_FACTS_DEFAULT
 
 
-# fact_status / loop_status default lists mirror the exact values the old
-# hardcoded HISTORY_STATUS / active() sets covered — see vocab.json for the
-# full controlled vocabulary (adds "expired" for loops, used by decay).
+def resolved_max():
+    """How many resolved loops `tracking/resolved-loops.md` keeps inline, from
+    `index.resolved_max` in elephant.json, else 200. Same section and the same
+    defensive read as hub_max_facts(): the resolved page is the surface that
+    would otherwise grow with every closure, forever."""
+    cfg = load_json_config("elephant.json") or {}
+    v = cfg.get("index", {}).get("resolved_max") if isinstance(cfg.get("index"), dict) else None
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else RESOLVED_MAX_DEFAULT
+
+
+# fact_status / loop_status default lists mirror vocab.json, which no bundle has
+# ever received: `init` copies scripts/, templates/, config.md, README.md and
+# cursors.json, and `update` re-syncs scripts/ and templates/ — so until a bundle
+# is initialized by a version that copies it, THIS is the vocabulary that runs in
+# the field. `expired` is in the loop default for that reason: without it
+# `LOOP_HISTORY_STATUS` was `{done, dropped}`, `is_history()` returned false for
+# an expired loop, and decay's own output rendered on the entity hub as a current
+# item, consuming a slot of hub_max_facts.
 FACT_STATUS = vocab_set("fact_status", ["active", "superseded", "deprecated"])
-LOOP_STATUS = vocab_set("loop_status", ["open", "done", "dropped"])
+LOOP_STATUS = vocab_set("loop_status", ["open", "done", "dropped", "expired"])
 FACT_HISTORY_STATUS = FACT_STATUS - {"active"}
 LOOP_HISTORY_STATUS = LOOP_STATUS - {"open"}
 
@@ -334,6 +367,82 @@ def line(c):
     return f"- [{title}]({c['link']}){desc}"
 
 
+def resolution_sentence(body):
+    """The first sentence of a loop body's `**Resolution:**` paragraph, or "".
+
+    The resolution is prose in the body, never a frontmatter field — a sentence
+    of judgment carries `: ` and sometimes ` #`, which the loop template warns
+    breaks or silently truncates an unquoted value. Both writers put the
+    sentence that stands alone first (`close-loops` by hand, decay-loops.py's
+    resolution_paragraph()) precisely because this is where it lands.
+
+    Split on `. ` only, so `elephant.json` and `decay.loop_expiry_days` are not
+    sentence ends. A paragraph wrapped across lines is collapsed first.
+    """
+    for para in body.split("\n\n"):
+        para = " ".join(para.split())
+        if not para.startswith(RESOLUTION_HEAD):
+            continue
+        rest = para[len(RESOLUTION_HEAD):].strip()
+        head, sep, _ = rest.partition(". ")
+        return head + "." if sep else head
+    return ""
+
+
+def fact_status(c, default="active"):
+    """A fact's status, normalized: stripped and lowercased. THE single rule that
+    partitions the fact lane, exactly as loop_status() partitions the loop one:
+    the catalog, the roster, the manifest and a hub's `## Related facts` on one
+    side, the hub's `### Superseded / deprecated (history)` on the other, so the
+    two sides can never disagree about one file. It reads entities too, which
+    carry the same vocabulary and leave the catalog and the roster once
+    deprecated.
+
+    Without it the three sites read the raw field three different ways, and a
+    single build both published `status: Superseded` in the manifest as current
+    while filing it under history on the hub, and published `status:
+    "superseded "` as current on every surface, since the loop rule strips and
+    this one did not. `default` is the value each site already read for a
+    missing status (`active` where the status doubles as a display field, `""`
+    on the hub); it stays per site because changing it is a separate decision.
+    Matches the normalization briefing.py's is_history() applies to the same
+    field."""
+    return str(c["fm"].get("status", default)).strip().lower()
+
+
+def loop_status(c):
+    """A loop's status, normalized: stripped and lowercased, defaulting to
+    `open`. THE single rule that partitions the loop lane — the board, the
+    manifest and the entity hubs on one side, `tracking/resolved-loops.md` on
+    the other — so the two sides can never disagree about one file. A loop
+    carrying `status: Open` (close-loops/procedure.md has the model editing that
+    field by hand) used to change sides rather than fall out of the partition: a
+    commitment its author means as open was silently filed as settled, absent
+    from the board, the manifest and the hub, and published on the resolved page
+    as resolved. Matches the normalization briefing.py's is_resolved() applies
+    to the same field."""
+    return str(c["fm"].get("status", "open")).strip().lower()
+
+
+def resolved_on(c):
+    """The date a resolved loop was resolved: `closed` for a closure, `expired`
+    for a decay expiry, and the file's own `updated`/`opened` for a loop whose
+    status was flipped by hand without either. Sorts the resolved page."""
+    for key in ("closed", "expired"):
+        v = str(c["fm"].get(key) or "").strip()
+        if v:
+            return v
+    return str(c["fm"].get("updated") or c["fm"].get("opened") or "")
+
+
+def resolved_line(c):
+    """`- <date> · <status> · [description](link) — <first sentence>`. A loop
+    resolved before the resolution paragraph existed simply ends at the link."""
+    label = c["description"] or c["title"]
+    tail = f" — {c['resolution']}" if c["resolution"] else ""
+    return f"- {resolved_on(c)} · {c['status']} · [{label}]({c['link']}){tail}"
+
+
 def write(rel, lines):
     path = os.path.join(BUNDLE, rel)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -398,10 +507,15 @@ def main():
             "link": bundle_link(path),
             "fm": fm,
             "path": path,
+            # Only a loop's body is kept, and only its resolution sentence out of
+            # it: the resolved page needs that one line, and holding every body
+            # in memory would cost the whole bundle instead of one field per loop.
+            "resolution": (resolution_sentence(text[m.end():])
+                           if str(fm.get("type", "")) == "open-loop" else ""),
         })
 
     def active(items):
-        return [c for c in items if c["status"] not in FACT_HISTORY_STATUS]
+        return [c for c in items if fact_status(c) not in FACT_HISTORY_STATUS]
 
     entities = [c for c in concepts if c["type"] == "entity"]
     facts = [c for c in concepts if c["type"] == "fact"]
@@ -435,7 +549,7 @@ def main():
 
     # 2. tracking/open-loops.md — board of open loops by owner
     board = ["# Open loops", "", "Action items / commitments still open. Derived — do not edit by hand.", ""]
-    open_loops = [c for c in loops if str(c["fm"].get("status", "open")) == "open"]
+    open_loops = [c for c in loops if loop_status(c) == "open"]
     if not open_loops:
         board.append("_No open loops._")
     else:
@@ -453,6 +567,53 @@ def main():
             board.append("")
     write("tracking/open-loops.md", board)
 
+    # 2b. tracking/resolved-loops.md — the one listing of resolved loops.
+    # A resolved loop's FILE never moves: its path is cited thousands of times
+    # from source bodies, facts and log.md, and validate-okf.py fails the run on
+    # a link that no longer resolves. So resolution is a state change plus a
+    # written justification, and THIS page is the archive.
+    resolved_loops = [c for c in loops if loop_status(c) != "open"]
+
+    def write_resolved(items):
+        """Emit the resolved page newest first, capped at resolved_max(), with
+        the overflow in a sibling ARCHIVE_SUFFIX shard so the page cannot become
+        a second 541 KB board. Returns the shard paths written, so the archive
+        cleanup in section 4 does not delete a shard this run created."""
+        ordered = sorted(items, key=lambda c: (resolved_on(c), c["link"]), reverse=True)
+        cap = resolved_max()
+        inline, overflow = ordered[:cap], ordered[cap:]
+        # Split the REL on "/" before joining: this path is compared against
+        # md_files()'s walk in the archive cleanup below, and on Windows a
+        # join of a slash-bearing relative path keeps the slash, so the two
+        # strings never match and the same build deletes the shard it wrote.
+        shard_path = os.path.join(BUNDLE, *RESOLVED_ARCHIVE_REL.split("/"))
+        page = [
+            "# Resolved loops",
+            "",
+            "Loops that reached `done`, `dropped` or `expired`, newest first, each with the "
+            "first sentence of its resolution. Derived — do not edit by hand.",
+            "",
+        ]
+        page += [resolved_line(c) for c in inline] or ["_No resolved loops._"]
+        if overflow:
+            page += ["", f"→ {len(overflow)} older resolved loop(s): "
+                         f"[archive]({bundle_link(shard_path)})"]
+        write(RESOLVED_REL, page)
+        if not overflow:
+            return set()
+        write(RESOLVED_ARCHIVE_REL, [
+            "# Resolved loops — archive",
+            "",
+            f"Resolved loops past the newest {cap} on "
+            f"[the resolved page](/{RESOLVED_REL}), sharded out by "
+            "`scripts/build-index.py` (page too large). Regenerated every build — "
+            "do not edit by hand.",
+            "",
+        ] + [resolved_line(c) for c in overflow])
+        return {shard_path}
+
+    resolved_shards = write_resolved(resolved_loops)
+
     # 3. knowledge/index.md — thin router
     n_kind = {k: len(v) for k, v in by_kind.items()}
     kinds_str = ", ".join(f"{n} {k}" for k, n in sorted(n_kind.items())) or "none yet"
@@ -465,6 +626,7 @@ def main():
         "",
         f"- **Entities** → [catalog](/entities/index.md) ({kinds_str})",
         f"- **Open loops** → [board](/tracking/open-loops.md) ({len(open_loops)} open)",
+        f"- **Resolved loops** → [archive](/{RESOLVED_REL}) ({len(resolved_loops)} resolved)",
         "- **Log** → [log.md](/log.md)",
         f"- **Counts**: {len(active(facts))} active facts · {len(sources)} sources",
         "",
@@ -480,6 +642,10 @@ def main():
 
     # 4. backlinks into entity & source files — trust-aware (see SKILL "Retrieval trust")
     fact_by_link = {c["link"]: c for c in facts}
+    # The union survives the loops leaving: `refs` below is facts + OPEN loops,
+    # so LOOP_HISTORY_STATUS matches nothing here any more, and is_history() is
+    # in practice the fact test. Kept whole rather than narrowed, so a hub that
+    # is ever asked to carry loops again classifies them the same way.
     HISTORY_STATUS = FACT_HISTORY_STATUS | LOOP_HISTORY_STATUS
     HUB_MAX_FACTS = hub_max_facts()
 
@@ -487,8 +653,9 @@ def main():
         return str(c["fm"].get("occurred") or c["fm"].get("opened") or c["updated"] or "")
 
     def is_history(r):
-        st = str(r["fm"].get("status", "")).lower()
-        return st in HISTORY_STATUS
+        # The empty default is this site's own, from before fact_status()
+        # existed: on a hub a file with no status at all is not history.
+        return fact_status(r, "") in HISTORY_STATUS
 
     def marked(r):
         """Prefix ⚠️ for low-confidence or needs-review active items; leave others clean."""
@@ -537,13 +704,17 @@ def main():
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines).rstrip() + "\n")
 
+    # Resolved loops leave the entity pages: `tracking/resolved-loops.md` is
+    # their one listing, and a hub that kept re-filing them spent a slot of
+    # hub_max_facts on each. Open loops only, the same partition the board and
+    # the manifest already use.
     backlinks = {}
-    for c in facts + loops:
+    for c in facts + open_loops:
         for tgt in as_list(c["fm"].get("entities")) + as_list(c["fm"].get("sources")) + as_list(c["fm"].get("owner")):
             backlinks.setdefault(tgt, []).append(c)
 
     injected = []
-    archives_written = set()
+    archives_written = set(resolved_shards)
     for c in entities + sources:
         refs = sorted(backlinks.get(c["link"], []), key=lambda x: x["link"])
         active_refs = [r for r in refs if not is_history(r)]
@@ -616,7 +787,8 @@ def main():
     write("manifest.jsonl", manifest)
 
     print(f"Rebuilt: {len(active(entities))} entities, {len(active(facts))} facts, "
-          f"{len(open_loops)} open loops, {len(sources)} sources. "
+          f"{len(open_loops)} open loops, {len(resolved_loops)} resolved loops, "
+          f"{len(sources)} sources. "
           f"manifest.jsonl: {len(manifest)} rows. "
           f"roster.tsv: {len(roster_rows)} rows, {roster_bytes} bytes.")
     return 0

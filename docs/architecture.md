@@ -20,10 +20,12 @@ machine, and never travels except by you moving the folder.
     entities/index.md                 # derived: the entity CATALOG (navigation spine)
     tracking/loops/<slug>.md          # open loops (type: open-loop)
     tracking/open-loops.md            # derived: board of active open loops
+    tracking/resolved-loops.md        # derived: archive of done/dropped/expired loops
     sources/<YYYY-MM>/<date>-<slug>.md # provenance, one per source, month-partitioned
     index.md                          # derived: thin router (reserved, no frontmatter)
     log.md                            # episodic ledger (reserved, no frontmatter)
   elephant.json                       # bundle config: owner, languages, timezone, sources
+  vocab.json                          # controlled vocabulary; yours to extend, never re-synced
   config.md                           # bundle conventions (human + agent readable)
   raw/                                # optional unprocessed capture of a source
   state/                              # incremental-routine cursors (NOT part of the OKF bundle)
@@ -55,9 +57,11 @@ Why three lanes instead of one big pile:
 - **A durable fact and a commitment are different things.** A fact ("the billing
   service runs on Acme Cloud") stays true; a commitment ("Jane will draft the
   migration plan") *completes*. Open loops carry a `status` (`open | done |
-  dropped`) and a **closure signal**; when a later source shows the work was done,
-  `maintain` flips it to `done`. The lane is what lets you answer "what got done
-  vs. what's still hanging".
+  dropped | expired`) and a **closure signal**; `close-loops` reads that signal
+  against the evidence and flips the loop to `done`, and `decay` flips one that
+  went quiet and survived examination to `expired`. Those two are the writers —
+  `maintain` never touches a loop. The lane is what lets you answer "what got
+  done vs. what's still hanging".
 
 ### event time vs. record time
 
@@ -139,6 +143,7 @@ Some files are **generated**, never authored by hand:
 - `index.md` (the router)
 - `entities/index.md` (the catalog)
 - `tracking/open-loops.md` (the board)
+- `tracking/resolved-loops.md` (the resolved archive, capped at `index.resolved_max`)
 - the backlinks blocks on entity and source files
 
 `build-index.py` regenerates all of them from the atomic facts and their links.
@@ -151,7 +156,8 @@ fact, add a link, rebuild.
 must exit 0 before any commit:
 
 - Every non-reserved `.md` file has frontmatter with a non-empty `type`.
-- Reserved files (`index.md`, `log.md`, `open-loops.md`) have **no** frontmatter.
+- Reserved files (`index.md`, `log.md`, `open-loops.md`, `resolved-loops.md`) have
+  **no** frontmatter.
 - Links are **bundle-absolute markdown** (`/entities/...`) — **no `[[wikilinks]]`**
   — and resolve to real files.
 - Episodic files are month-partitioned under `sources/<YYYY-MM>/`.
@@ -182,6 +188,8 @@ The workflow after any write batch is fixed: run `build-index.py`, then
 | `briefing.py` | time-first digest (`--days` / `--since` / `--until` / `--channel` / `--tag` / `--entity` / `--kind`) |
 | `state.py` | catch-up cursor bookkeeping (advance live/backfill, mark seen ids, render watermarks) |
 | `backlog.py` | catch-up's deferred-work ledger — findings the unattended routine may not fix on its own, filed once and counted, never re-narrated in `log.md` |
+| `recall.py` | the consumption log and its pyramid — `log` appends one citation line per answered read, `roll` folds the log into `state/recall.json`'s day/week/month buckets and keeps the bundle's `.gitignore` covering both files, refusing to write at all when it cannot, `score` is the citation date `decay` reads |
+| `close-loops.py` | read-only proposal for the `close-loops` routine — the bounded two-band queue over `tracking/loops/`, each queued loop's closure criterion and up to 10 ranked evidence candidates |
 | `snapshot-drift.py` | flag `snapshot` rollups whose underlying facts became newer than the snapshot's last-tended date |
 | `ingest-audio.py` | pull a transferred voice recording and transcribe it locally (WhisperX, diarized) for `ingest-audio` |
 

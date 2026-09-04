@@ -24,8 +24,10 @@ starting state, not an error to send the user back with.
 ## What this produces
 
 - A **bundle directory** (default `~/elephant`) holding `knowledge/`, `state/`,
-  `scripts/`, `templates/`, `config.md`, `elephant.json`, `.gitignore`,
-  `README.md` — a self-contained, git-versioned OKF bundle.
+  `scripts/`, `templates/`, `config.md`, `elephant.json`, `vocab.json`,
+  `.gitignore`, `README.md` — a self-contained, git-versioned OKF bundle.
+  `vocab.json` is the controlled vocabulary every script prefers over its own
+  hard-coded default; `update` never re-syncs it, since it is yours to extend.
 - The machine **pointer** `~/.config/elephant-mem/config.json` → `bundle_path`,
   so every other mode can find the bundle.
 - The **owner entity** plus a few clearly-marked example items, an initial

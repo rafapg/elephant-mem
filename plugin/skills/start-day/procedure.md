@@ -42,14 +42,32 @@ never auto-update. Follow `../_shared/core.md`'s **Update check** convention:
 3. If the remote is newer, show `claude plugin update elephant-mem@elephant-mem`
    once — do not auto-update.
 4. Always stamp `last_checked` (even on fetch failure — offline just skips
-   silently) so the 7-day gate holds. This is the one write this procedure
-   makes — write it to `<bundle>/state/last-update-check.json` directly.
+   silently) so the 7-day gate holds — write it to
+   `<bundle>/state/last-update-check.json` directly.
 
 Run this after the three orientation blocks above, so a slow or offline check
 never delays the orientation itself.
+
+## Consumption log
+
+Once the orientation is finalized, run from `<bundle>`, with one `--item` per
+fact/loop file the three blocks cited (the loops of block 3 included) and one
+`--entity` per entity they were about:
+
+```bash
+python3 scripts/recall.py log --mode start-day --item <path>… --entity <slug>…
+```
+
+See `../_shared/core.md`'s Consumption log section. The script writes the line,
+swallows any failure and always exits 0, so there is nothing to handle and
+nothing to say about it in the orientation. This and the update-check stamp are
+the only two writes this procedure makes, both into `state/` and both git-ignored
+(`recall.py roll` appends the rules to the bundle's `.gitignore` when a bundle
+predates them), neither into the knowledge bundle.
 
 ## Final answer
 
 Return only the three-block orientation (agenda / what happened / open loops)
 in the bundle's `conversation_language`, plus the update-check nudge line when
-it fires. No preamble, no step-by-step narration.
+it fires. No preamble, no step-by-step narration, and no mention of the
+consumption-log line.

@@ -16,7 +16,7 @@ entity matches. (3) Load the bodies of only those facts. (4) Answer in the
 bundle's `conversation_language` (from `elephant.json`) **with provenance** —
 cite the fact files and their `sources`. Never enumerate the whole `facts/`
 dir. Do not write knowledge (no OKF churn on reads); the one write this mode
-does make is the best-effort consumption-log line in step 5.
+does make is the consumption-log line in step 5, into git-ignored `state/`.
 
 **Sharded hubs:** when an entity/source hub's auto-facts block ends with
 `→ N older/superseded facts: [archive](...)` (see build-index.py's hub
@@ -27,10 +27,17 @@ X", "show me everything, including old stuff"); for an ordinary "what do we
 know about X" question, the inline block is the current truth and the archive
 is out of scope.
 
-5. **Consumption log.** After the answer is finalized, append one line to
-   `state/consumption-log.jsonl` per `../_shared/core.md`'s Consumption log
-   section (`mode: "query"`). Best-effort — never let a logging failure change
-   or delay the answer.
+5. **Consumption log.** After the answer is finalized, run from `<bundle>`,
+   with one `--item` per fact/loop/source file the answer cited and one
+   `--entity` per entity it was about:
+
+   ```bash
+   python3 scripts/recall.py log --mode query --item <path>… --entity <slug>…
+   ```
+
+   See `../_shared/core.md`'s Consumption log section. The script writes the
+   line, swallows any failure and always exits 0, so there is nothing to
+   handle and nothing to say about it in the answer.
 
 > **Recall escape hatch:** when no entity matches and the `rg` fallback is too
 > noisy, don't reach for vectors — use the **whole-field scan** (see

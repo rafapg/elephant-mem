@@ -76,7 +76,8 @@ already current, proceed straight to step 3.
 
 Reconcile the bundle's copies with the installed plugin's assets. **Only**
 `scripts/` and `templates/` — never `knowledge/`, never `state/`, never
-`elephant.json` or `config.md` (those are the user's data/identity).
+`elephant.json`, `config.md` or `vocab.json` (those are the user's
+data/identity, and `vocab.json` is a vocabulary the owner may have extended).
 
 1. Diff first, show a summary, and **ask before writing** (AskUserQuestion):
    ```

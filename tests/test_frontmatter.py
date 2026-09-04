@@ -644,7 +644,7 @@ def test_templates_bundle_without_pyyaml(root):
     record("templates bundle, PyYAML forced absent: one document of each type — "
            "the open loop counted 0 while `status: open  # open | done | dropped` "
            "did not equal `open`",
-           "1 entities, 1 facts, 1 open loops, 1 sources" in r.stdout, r.stdout + r.stderr)
+           "1 entities, 1 facts, 1 open loops, 0 resolved loops, 1 sources" in r.stdout, r.stdout + r.stderr)
 
     rows = (bundle / "knowledge" / "entities" / "roster.tsv").read_text(
         encoding="utf-8").splitlines()
@@ -725,7 +725,7 @@ def test_regex_readers_share_the_rule(root):
     the comment too because that script also writes the line back."""
     copies = [(name, load_script(name).strip_comment) for name in
               ("build-index.py", "briefing.py", "validate-okf.py",
-               "snapshot-drift.py", "decay-loops.py")]
+               "snapshot-drift.py", "decay-loops.py", "close-loops.py")]
     renamer = load_script("rename-entity.py")
     copies.append(("rename-entity.py", lambda v: renamer.split_comment(v)[0].strip()))
 

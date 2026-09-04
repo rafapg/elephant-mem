@@ -17,6 +17,7 @@ Exit code 0 only if every check below passes.
 """
 import datetime
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -429,6 +430,69 @@ def checkout_guard_checks(scratch_root):
                f"rc={r2.returncode}\n{r2.stdout}\n{r2.stderr}")
 
 
+def published_numbers_checks():
+    """The numbers the repo publishes about itself, against what it is.
+
+    Two of them, and both went stale by hand inside a single pull request. The
+    check counts in the CHANGELOG's newest section are the ones that become
+    `gh release create --notes`, so a wrong number there is a wrong number in
+    the published release; four of the five were wrong for a day. The README's
+    version badge is the number a reader compares against `claude plugin
+    update`, and it is written in a second place from `plugin.json`.
+
+    Both are read out of the files rather than restated here, so this check has
+    nothing of its own to keep current. A suite the CHANGELOG does not mention
+    is not an error: only the numbers actually claimed are compared.
+    """
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    newest = changelog.split("\n## [", 2)
+    section = newest[1] if len(newest) > 1 else changelog
+
+    claimed = dict(re.findall(
+        r"`tests/(\w+\.py)`[^`\n]{0,40}?\((\d+)(?: checks?)?\)", section))
+    claimed.update(dict(re.findall(
+        r"`tests/(\w+\.py)`[^`\n]{0,40}?\bgrew to (\d+)", section)))
+    claimed.update(dict(re.findall(
+        r"`tests/(\w+\.py)`[^`\n]{0,40}?\bto (\d+)\b", section)))
+    record("the newest CHANGELOG section claims a check count for at least one "
+           "suite, so this check is not passing vacuously", bool(claimed),
+           sorted(claimed))
+
+    for name, want in sorted(claimed.items()):
+        suite = REPO_ROOT / "tests" / name
+        if not suite.is_file():
+            record(f"CHANGELOG names tests/{name}, which exists", False,
+                   str(suite))
+            continue
+        # Not the module's run(): the two streams are merged into one pipe
+        # and decoded leniently. A Windows runner handed this check a
+        # CompletedProcess whose `stdout` was None while `stderr` was a str,
+        # and concatenating them took the whole smoke run down mid-way. The
+        # same class of Windows-only surprise as the cp1252 decode this repo
+        # already carries a guard for, so it gets the same treatment: one
+        # stream, `errors="replace"`, and `or ""` so an absent stream fails
+        # this check loudly instead of raising through everything after it.
+        r = subprocess.run(
+            [sys.executable, str(suite)], cwd=str(REPO_ROOT),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        out = r.stdout or ""
+        got = re.findall(r"(\d+)/(\d+) checks passed", out)
+        actual = got[-1][1] if got else None
+        record(f"CHANGELOG says tests/{name} has {want} checks, and it does",
+               actual == want,
+               f"actual={actual} rc={r.returncode}\n{out[-400:]}")
+
+    version = json.loads(
+        (REPO_ROOT / "plugin" / ".claude-plugin" / "plugin.json").read_text(
+            encoding="utf-8"))["version"]
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    badge = version.replace("-", "--").replace(".", ".")
+    record("the README badge carries the version plugin.json declares",
+           f"elephant--mem-v{badge}-" in readme, f"version={version}")
+
+
 def main():
     print("elephant-mem cross-platform smoke test")
     print(f"python:   {sys.version.splitlines()[0]}")
@@ -470,6 +534,11 @@ def main():
     regen_check(bundle, source_rel)
 
     checkout_guard_checks(scratch_root)
+
+    try:
+        published_numbers_checks()
+    except Exception as e:  # noqa: BLE001 - a crash here must not eat the run
+        record("the published-numbers checks run at all", False, repr(e))
 
     return finish(scratch_root)
 

@@ -7,8 +7,17 @@ loops; a recent `updated` (re-mention resets the clock) protects an
 otherwise-old loop; `done`/`dropped`/already-`expired` loops are never
 touched; the `expired: YYYY-MM-DD` field is stamped correctly; the default
 45-day threshold vs. a custom `elephant.json` -> `decay.loop_expiry_days`;
-and that `build-index.py`, run after `--apply`, drops the newly-expired loops
-from the open-loop count/board/manifest.
+that `build-index.py`, run after `--apply`, drops the newly-expired loops
+from the open-loop count/board/manifest; that `--apply` refuses a candidate
+`state/closure-sweep.json` does not show `close-loops` examining after its own
+last activity, names it, prints the command that would examine it and still
+exits 0, while `--skip-sweep` bypasses that gate; that every expiry writes a
+`**Resolution:**` paragraph in the same shape a closure does; and that a recent
+citation in
+`state/recall.json` counts as a fourth activity date while every degraded
+shape of that record — absent, empty, malformed, no entry for this loop, no
+`recall.py` in the bundle at all — leaves the scan behaving exactly as it did
+before recall existed.
 
 Pure stdlib, Python 3.10+, same scaffolding style as tests/smoke.py and
 tests/test_index.py: every check builds its own throwaway bundle under a
@@ -56,14 +65,25 @@ def days_ago(n):
     return (TODAY - datetime.timedelta(days=n)).isoformat()
 
 
-def new_bundle(root, name, expiry_days=None):
+def days_ahead(n):
+    return (TODAY + datetime.timedelta(days=n)).isoformat()
+
+
+def new_bundle(root, name, expiry_days=None, with_recall=True):
     """Minimal throwaway bundle: decay-loops.py + build-index.py (the latter
-    only needed by the cross-script integration check), a reserved log.md,
-    and an empty knowledge/tracking/loops/ dir — mirrors the real bundle path
-    confirmed against ~/elephant-mem."""
+    only needed by the cross-script integration check) + recall.py (the sibling
+    decay reads the citation date through), a reserved log.md, and an empty
+    knowledge/tracking/loops/ dir — mirrors the real bundle path confirmed
+    against ~/elephant-mem.
+
+    `with_recall=False` builds the bundle an installed user has when `update`
+    has not yet re-synced `scripts/`: decay is there, its sibling is not."""
     bundle = root / name
     (bundle / "scripts").mkdir(parents=True, exist_ok=True)
-    for f in ("decay-loops.py", "build-index.py"):
+    scripts = ["decay-loops.py", "build-index.py", "validate-okf.py"]
+    if with_recall:
+        scripts.append("recall.py")
+    for f in scripts:
         shutil.copy2(ASSETS / "scripts" / f, bundle / "scripts" / f)
     if expiry_days is not None:
         (bundle / "elephant.json").write_text(
@@ -74,7 +94,8 @@ def new_bundle(root, name, expiry_days=None):
     return bundle
 
 
-def write_loop(bundle, name, desc, status="open", opened=None, created=None, updated=None, extra=""):
+def write_loop(bundle, name, desc, status="open", opened=None, created=None,
+               updated=None, extra="", signal=None):
     opened = opened or TODAY.isoformat()
     created = created or opened
     updated = updated or created
@@ -96,9 +117,71 @@ def write_loop(bundle, name, desc, status="open", opened=None, created=None, upd
         f"{extra}"
         "---\n\n"
         f"{desc}\n"
+        + (f"\n**Closure signal:** {signal}\n" if signal else "")
     )
     path = bundle / "knowledge" / "tracking" / "loops" / name
     path.write_text(text, encoding="utf-8")
+    return path
+
+
+def write_recall(bundle, cited, raw=None):
+    """Write `state/recall.json`. `cited` maps a loop's bundle-absolute path to
+    the ISO date it was last cited; `raw` overrides the whole file with a
+    literal string, for the malformed and empty shapes.
+
+    Hand-built rather than produced by driving `recall.py log` + `roll`: what
+    this suite is pinning is decay's reading of the record, and building it here
+    keeps the check from passing or failing on the roller's behavior, which
+    tests/test_recall.py owns."""
+    state = bundle / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    path = state / "recall.json"
+    if raw is not None:
+        path.write_text(raw, encoding="utf-8")
+        return path
+    items = {
+        key: {"total": 1, "last": day, "buckets": {day: 1}}
+        for key, day in cited.items()
+    }
+    path.write_text(
+        json.dumps(
+            {"schema": 1, "rolled_through": None, "generated": None,
+             "items": items, "entities": {}},
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_sweep(bundle, entries, raw=None):
+    """Write `state/closure-sweep.json`, the record `close-loops` keeps and
+    `decay-loops.py --apply` gates on. `entries` maps a loop's bundle-absolute
+    path to its examination date, or to an `(examined, outcome)` pair; `raw`
+    overrides the whole file with a literal string, for the malformed shape.
+
+    Hand-built rather than produced by running the `close-loops` routine: the
+    routine writes this file from prose (its `procedure.md` -> "The sweep
+    record"), and tests/test_close_loops.py owns whether that recipe writes what
+    this script reads. What this suite pins is decay's reading of it.
+    """
+    state = bundle / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    path = state / "closure-sweep.json"
+    if raw is not None:
+        path.write_text(raw, encoding="utf-8")
+        return path
+    loops = {}
+    for link, value in entries.items():
+        examined, outcome = value if isinstance(value, tuple) else (value, "open")
+        entry = {"examined": examined}
+        if outcome is not None:  # `(date, None)` writes the outcome-less entry
+            entry["outcome"] = outcome
+        loops[link] = entry
+    path.write_text(
+        json.dumps({"schema": 1, "generated": None, "loops": loops}, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return path
 
 
@@ -134,7 +217,10 @@ def test_apply_expires_only_old_open(root):
     fresh = write_loop(bundle, "fresh.md", "Fresh loop",
                         opened=days_ago(2), created=days_ago(2), updated=days_ago(2))
 
-    result = run_script(bundle, "decay-loops.py", ["--apply"])
+    # --skip-sweep because this check is about the dates, not about the sweep
+    # gate: with the gate on, neither loop would be expirable and the check
+    # would pass for the wrong reason.
+    result = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
     record("--apply exits 0", result.returncode == 0, result.stdout + result.stderr)
 
     old_text = old.read_text(encoding="utf-8")
@@ -160,9 +246,10 @@ def test_recent_update_protects(root):
            "reopened.md" not in result.stdout, result.stdout)
     record("dry-run reports 0 candidates", "0 candidate(s)" in result.stdout, result.stdout)
 
-    run_script(bundle, "decay-loops.py", ["--apply"])
+    run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
     text = p.read_text(encoding="utf-8")
-    record("--apply leaves the recently-updated loop untouched",
+    record("--apply leaves the recently-updated loop untouched even with the "
+           "sweep gate off — it is the date that protects it",
            "status: open" in text and "expired" not in text, text)
 
 
@@ -188,7 +275,7 @@ def test_other_statuses_untouched(root):
     record("dry-run lists none of done/dropped/already-expired as candidates",
            all(p.name not in dry.stdout for p in watched), dry.stdout)
 
-    apply_result = run_script(bundle, "decay-loops.py", ["--apply"])
+    apply_result = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
     record("--apply exits 0 with nothing to do",
            apply_result.returncode == 0, apply_result.stdout + apply_result.stderr)
 
@@ -205,7 +292,7 @@ def test_expired_field_written(root):
     p = write_loop(bundle, "old.md", "Old stale loop",
                     opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
 
-    run_script(bundle, "decay-loops.py", ["--apply"])
+    run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
     text = p.read_text(encoding="utf-8")
     record(f"expired: {TODAY.isoformat()} field stamped", f"expired: {TODAY.isoformat()}" in text, text)
     record("status flipped to expired", "status: expired" in text, text)
@@ -252,6 +339,9 @@ def test_build_index_excludes_expired_after_apply(root):
                opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
     write_loop(bundle, "fresh.md", "Fresh loop stays open",
                opened=days_ago(2), created=days_ago(2), updated=days_ago(2))
+    # The full path, gate included: `close-loops` examined the stale loop after
+    # its last activity and left it open, which is what clears it for expiry.
+    write_sweep(bundle, {"/tracking/loops/old.md": days_ago(3)})
 
     result_pre = run_script(bundle, "build-index.py")
     if not record("build-index.py exits 0 (pre-decay)", result_pre.returncode == 0,
@@ -292,13 +382,14 @@ def test_build_index_excludes_expired_after_apply(root):
 # ---------------------------------------------------------------------------
 # 8. a loop written from open-loop.md — the trailing vocabulary comment
 # ---------------------------------------------------------------------------
-# open-loop.md ships `status: open          # open | done | dropped`, and the
-# model that writes a loop from it keeps that comment: it is the documentation.
-# field() read the whole line, so `field(block, "status") != "open"` was true
-# for every template-derived loop and the entire script was a no-op. On every
-# machine — this script has no PyYAML path to fall back to.
+# open-loop.md ships `status: open          # open | done | dropped | expired`,
+# and the model that writes a loop from it keeps that comment: it is the
+# documentation. field() read the whole line, so
+# `field(block, "status") != "open"` was true for every template-derived loop
+# and the entire script was a no-op. On every machine — this script has no
+# PyYAML path to fall back to.
 
-STATUS_DOC = "        # open | done | dropped"
+STATUS_DOC = "        # open | done | dropped | expired"
 
 
 def test_template_shaped_loop_decays(root):
@@ -312,7 +403,7 @@ def test_template_shaped_loop_decays(root):
                       opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
 
     result = run_script(bundle, "decay-loops.py")
-    record("a loop that kept `# open | done | dropped` is seen as open and "
+    record("a loop that kept `# open | done | dropped | expired` is seen as open and "
            "listed as a candidate (the script used to find none, ever)",
            "old.md" in result.stdout and "1 candidate(s)" in result.stdout, result.stdout)
     record("…and its `updated:` is read through its own comment, so the age is "
@@ -322,7 +413,7 @@ def test_template_shaped_loop_decays(root):
            "candidate — the reader did not simply learn to match everything",
            "done.md" not in result.stdout, result.stdout)
 
-    run_script(bundle, "decay-loops.py", ["--apply"])
+    run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
     status_line = next(ln for ln in old.read_text(encoding="utf-8").splitlines()
                        if ln.startswith("status:"))
     record("--apply expires it and keeps the vocabulary comment on the line — "
@@ -332,6 +423,602 @@ def test_template_shaped_loop_decays(root):
     record("…and the `done` loop is still untouched after --apply",
            "status: done" in done.read_text(encoding="utf-8"),
            done.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# 8b. one rule for the status field, on both sides of the lane
+# ---------------------------------------------------------------------------
+# build-index.py normalizes the field through its own `loop_status()`, which
+# strips and lowercases, so `status: Open` counts as open on the board, in the
+# manifest and on the entity hubs. Decay compared the raw scalar, so the same
+# loop was open everywhere and invisible here: it sat on the board as a live
+# commitment forever and decay never so much as considered it. The two sides
+# now read the field by the same rule, which is what this check pins, run
+# across both scripts rather than against decay alone.
+
+def test_status_spelling_agrees_with_build_index(root):
+    bundle = new_bundle(root, "status-spelling")
+    variants = {
+        "capital.md": ("Open", "Capitalized status, edited by hand"),
+        "spaced.md": ("open ", "Trailing space after the status"),
+        "quoted.md": ('"open"', "Quoted status, as a --fix pass writes it"),
+    }
+    paths = {}
+    for name, (status, desc) in variants.items():
+        paths[name] = write_loop(bundle, name, desc, status=status,
+                                 opened=days_ago(100), created=days_ago(100),
+                                 updated=days_ago(100))
+    decoy = write_loop(bundle, "done.md", "Capitalized and long finished",
+                       status="Done", opened=days_ago(100),
+                       created=days_ago(100), updated=days_ago(100))
+
+    index_pre = run_script(bundle, "build-index.py")
+    if not record("build-index.py exits 0 over the odd spellings",
+                   index_pre.returncode == 0,
+                   index_pre.stdout + index_pre.stderr):
+        return
+    board_pre = (bundle / "knowledge" / "tracking" / "open-loops.md").read_text(encoding="utf-8")
+    record("build-index reads all three spellings as open and boards them",
+           all(desc in board_pre for _status, desc in variants.values()), board_pre)
+
+    dry = run_script(bundle, "decay-loops.py")
+    record("…and decay reaches every one of them as a candidate, the count "
+           "agreeing with the board rather than reading 0",
+           all(name in dry.stdout for name in variants) and "3 candidate(s)" in dry.stdout,
+           dry.stdout)
+    record("…while a `Done` loop is still no candidate: the reader was "
+           "normalized, not taught to match everything",
+           "done.md" not in dry.stdout, dry.stdout)
+
+    apply_result = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    record("--apply expires all three, so the reader and the writer accept the "
+           "same spellings", "3 loop(s) expired" in apply_result.stdout,
+           apply_result.stdout + apply_result.stderr)
+    for name, path in paths.items():
+        text = path.read_text(encoding="utf-8")
+        status_line = next(ln for ln in text.splitlines() if ln.startswith("status:"))
+        record(f"…{name}: the status line now reads expired",
+               "expired" in status_line and "open" not in status_line.lower(),
+               repr(status_line))
+        record(f"…{name}: and carries today's expiry date",
+               f"expired: {TODAY.isoformat()}" in text, text)
+
+    index_post = run_script(bundle, "build-index.py")
+    board_post = (bundle / "knowledge" / "tracking" / "open-loops.md").read_text(encoding="utf-8")
+    record("build-index, run after, drops all three from the board: the two "
+           "sides end where they started, agreeing about every file",
+           index_post.returncode == 0
+           and all(desc not in board_post for _status, desc in variants.values()),
+           board_post + index_post.stderr)
+    record("…and the untouched `Done` loop is byte-identical",
+           "status: Done" in decoy.read_text(encoding="utf-8"),
+           decoy.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# 9. a recent citation is a fourth activity date
+# ---------------------------------------------------------------------------
+
+def test_recall_citation_protects(root):
+    """E7: cited 3 days ago, `updated` 100 days old -> not a candidate."""
+    bundle = new_bundle(root, "recall-protects")
+    cited = write_loop(bundle, "cited.md", "Stale on paper, still consulted",
+                       opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    uncited = write_loop(bundle, "uncited.md", "Stale and never consulted",
+                         opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    write_recall(bundle, {"/tracking/loops/cited.md": days_ago(3)})
+
+    result = run_script(bundle, "decay-loops.py")
+    record("dry-run exits 0 with a recall record present",
+           result.returncode == 0, result.stdout + result.stderr)
+    record("a loop cited 3 days ago is not a candidate, though `updated` is 100d old",
+           "cited.md" not in result.stdout.replace("uncited.md", ""), result.stdout)
+    record("…while its uncited twin, identical on every file date, still is",
+           "uncited.md" in result.stdout and "1 candidate(s)" in result.stdout,
+           result.stdout)
+
+    run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    record("--apply leaves the cited loop open",
+           "status: open" in cited.read_text(encoding="utf-8"),
+           cited.read_text(encoding="utf-8"))
+    record("…and expires the uncited one",
+           "status: expired" in uncited.read_text(encoding="utf-8"),
+           uncited.read_text(encoding="utf-8"))
+
+
+def test_stale_citation_does_not_protect(root):
+    """A citation older than the window is not a rescue — it is just a date."""
+    bundle = new_bundle(root, "recall-stale-citation")
+    write_loop(bundle, "old-cite.md", "Cited once, long ago",
+               opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    write_recall(bundle, {"/tracking/loops/old-cite.md": days_ago(80)})
+
+    result = run_script(bundle, "decay-loops.py")
+    record("a loop last cited 80 days ago is still a candidate",
+           "old-cite.md" in result.stdout and "1 candidate(s)" in result.stdout,
+           result.stdout)
+    record("…and its age is measured from the citation, the newest of the four dates",
+           "80d stale" in result.stdout, result.stdout)
+
+
+def test_recall_never_ages_a_loop(root):
+    """The citation only ever protects: it cannot make a fresh loop a candidate."""
+    bundle = new_bundle(root, "recall-only-protects")
+    write_loop(bundle, "fresh.md", "Fresh loop, ancient citation",
+               opened=days_ago(2), created=days_ago(2), updated=days_ago(2))
+    write_recall(bundle, {"/tracking/loops/fresh.md": days_ago(400)})
+
+    result = run_script(bundle, "decay-loops.py")
+    record("an old citation on a fresh loop leaves it out of the candidates",
+           "fresh.md" not in result.stdout and "0 candidate(s)" in result.stdout,
+           result.stdout)
+
+
+def test_recall_degraded_shapes(root):
+    """E2, E8: absent, empty, malformed, no entry, no recall.py — all collapse
+    to the behavior this script had before recall existed."""
+    shapes = [
+        ("absent", None, None),
+        ("empty", None, "{}\n"),
+        ("malformed", None, "{ not json at all\n"),
+        ("no entry for this loop", {"/facts/2026-09/other.md": days_ago(1)}, None),
+    ]
+    for label, cited, raw in shapes:
+        bundle = new_bundle(root, "recall-degraded-" + label.replace(" ", "-"))
+        write_loop(bundle, "old.md", "Old stale loop",
+                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+        if cited is not None or raw is not None:
+            write_recall(bundle, cited or {}, raw=raw)
+
+        result = run_script(bundle, "decay-loops.py")
+        record(f"recall.json {label}: the scan still exits 0",
+               result.returncode == 0, result.stdout + result.stderr)
+        record(f"recall.json {label}: the stale loop is a candidate, as it was before recall",
+               "old.md" in result.stdout and "1 candidate(s)" in result.stdout,
+               result.stdout)
+
+    # A bundle that has decay-loops.py but not yet its sibling — `update`
+    # re-syncs scripts/ as a set, but a half-updated bundle must still decay.
+    bundle = new_bundle(root, "recall-script-absent", with_recall=False)
+    write_loop(bundle, "old.md", "Old stale loop",
+               opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    result = run_script(bundle, "decay-loops.py")
+    record("no recall.py in the bundle: the scan still exits 0",
+           result.returncode == 0, result.stdout + result.stderr)
+    record("no recall.py in the bundle: the stale loop is still a candidate",
+           "old.md" in result.stdout and "1 candidate(s)" in result.stdout, result.stdout)
+    record("no recall.py in the bundle: and the scan says nothing about it",
+           result.stderr.strip() == "", result.stderr)
+
+
+# ---------------------------------------------------------------------------
+# 10. the sweep gate: --apply only expires what close-loops has examined
+# ---------------------------------------------------------------------------
+# Expiry is a verdict of silence. Silence nothing has read is not evidence, so
+# `--apply` consults `state/closure-sweep.json` per loop and refuses a candidate
+# `close-loops` has not examined after that loop's own last activity.
+
+
+def sentences(paragraph):
+    """The paragraph split into sentences, the way a reader of the first one
+    would: on `. ` only, so `elephant.json` and `decay.loop_expiry_days` are not
+    sentence ends."""
+    return [part for part in paragraph.replace(". ", ".\n").split("\n") if part.strip()]
+
+
+def resolution_of(path):
+    """The `**Resolution:**` paragraph of a loop file, or ""."""
+    for para in path.read_text(encoding="utf-8").split("\n\n"):
+        if para.strip().startswith("**Resolution:**"):
+            return " ".join(para.split())
+    return ""
+
+
+def test_gate_refuses_the_unexamined(root):
+    """E15: a candidate no sweep entry covers is refused by name, the command
+    that would examine it is printed, and the run still exits 0."""
+    bundle = new_bundle(root, "gate-unexamined")
+    p = write_loop(bundle, "old.md", "Old stale loop",
+                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    before = p.read_text(encoding="utf-8")
+
+    dry = run_script(bundle, "decay-loops.py")
+    record("dry-run still lists the unexamined candidate, marked held back",
+           "old.md" in dry.stdout and "held back" in dry.stdout, dry.stdout)
+
+    result = run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply over an unexamined candidate exits 0 — a lane nothing has "
+           "read is not an error", result.returncode == 0,
+           f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+    record("…names the loop it refused", "/tracking/loops/old.md" in result.stdout,
+           result.stdout)
+    record("…prints the close-loops command that would examine it",
+           "scripts/close-loops.py" in result.stdout, result.stdout)
+    record("…and reports 0 expired", "0 loop(s) expired" in result.stdout, result.stdout)
+    record("the refused loop is byte-identical after the run",
+           p.read_text(encoding="utf-8") == before, p.read_text(encoding="utf-8"))
+
+
+def test_gate_expires_the_examined(root):
+    """H8: examined after its own last activity, left open — expirable."""
+    bundle = new_bundle(root, "gate-examined")
+    cleared = write_loop(bundle, "cleared.md", "Examined and still silent",
+                         opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    stale_exam = write_loop(bundle, "stale-exam.md", "Examined before it last moved",
+                            opened=days_ago(200), created=days_ago(200), updated=days_ago(60))
+    closed = write_loop(bundle, "closed.md", "Examined and closed",
+                        opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    write_sweep(bundle, {
+        "/tracking/loops/cleared.md": days_ago(4),
+        "/tracking/loops/stale-exam.md": days_ago(90),
+        "/tracking/loops/closed.md": (days_ago(4), "done"),
+    })
+
+    result = run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply exits 0 with a sweep record present", result.returncode == 0,
+           result.stdout + result.stderr)
+    record("a loop examined after its last activity and left open is expired",
+           "status: expired" in cleared.read_text(encoding="utf-8"),
+           cleared.read_text(encoding="utf-8"))
+    record("a loop whose last activity is newer than its examination is held back "
+           "— it moved after the routine read it",
+           "status: open" in stale_exam.read_text(encoding="utf-8")
+           and "stale-exam.md" in result.stdout,
+           stale_exam.read_text(encoding="utf-8") + "\n---\n" + result.stdout)
+    record("a loop the sweep records as closed is not decay's to expire",
+           "status: open" in closed.read_text(encoding="utf-8"),
+           closed.read_text(encoding="utf-8"))
+    record("…and the run reports one expiry and two held back",
+           "1 loop(s) expired" in result.stdout and "2 candidate(s) held back" in result.stdout,
+           result.stdout)
+
+
+def test_skip_sweep_bypasses_the_gate(root):
+    """E16: `--apply --skip-sweep` over the same unexamined lane expires it."""
+    bundle = new_bundle(root, "gate-skipped")
+    a = write_loop(bundle, "a.md", "Old stale loop",
+                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    b = write_loop(bundle, "b.md", "Another old stale loop",
+                   opened=days_ago(120), created=days_ago(120), updated=days_ago(120))
+
+    result = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    record("--apply --skip-sweep exits 0", result.returncode == 0,
+           result.stdout + result.stderr)
+    record("every candidate expires with the gate bypassed, examined or not",
+           "status: expired" in a.read_text(encoding="utf-8")
+           and "status: expired" in b.read_text(encoding="utf-8")
+           and "2 loop(s) expired" in result.stdout, result.stdout)
+    record("…and nothing is reported as held back",
+           "held back" not in result.stdout, result.stdout)
+    record("the resolution of a loop no examination reached says exactly that, "
+           "rather than claiming one",
+           "no `close-loops` examination is on record" in resolution_of(a)
+           and "--skip-sweep" in resolution_of(a), resolution_of(a))
+
+
+def test_lost_sweep_parks_decay(root):
+    """E18: absent or malformed, the record reads as empty — every loop reads as
+    never examined and nothing expires, rather than everything expiring."""
+    for label, raw in (("malformed", "{ not json at all\n"),
+                       ("empty object", "{}\n"),
+                       ("no loops key", '{"schema": 1}\n')):
+        bundle = new_bundle(root, "gate-lost-" + label.replace(" ", "-"))
+        p = write_loop(bundle, "old.md", "Old stale loop",
+                       opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+        write_sweep(bundle, {}, raw=raw)
+
+        result = run_script(bundle, "decay-loops.py", ["--apply"])
+        record(f"closure-sweep.json {label}: --apply exits 0",
+               result.returncode == 0, result.stdout + result.stderr)
+        record(f"closure-sweep.json {label}: nothing expires — expiry is parked, "
+               "not corrupted",
+               "status: open" in p.read_text(encoding="utf-8")
+               and "0 loop(s) expired" in result.stdout,
+               result.stdout + "\n---\n" + p.read_text(encoding="utf-8"))
+        if label == "malformed":
+            record("closure-sweep.json malformed: one warning on stderr, no crash",
+                   "closure-sweep.json is unreadable" in result.stderr, result.stderr)
+
+    # …and the way out is the flag, not a hand-repaired record.
+    bundle = new_bundle(root, "gate-lost-escape")
+    p = write_loop(bundle, "old.md", "Old stale loop",
+                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    write_sweep(bundle, {}, raw="{ not json at all\n")
+    result = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    record("--skip-sweep is the deliberate way out of a lost record",
+           "status: expired" in p.read_text(encoding="utf-8"), result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# 11. the expiry resolution, in the same shape a closure's is
+# ---------------------------------------------------------------------------
+
+
+def test_expiry_writes_a_resolution(root):
+    """E17: `expired`, the date, and a `**Resolution:**` paragraph naming the
+    silence — body prose, never a frontmatter field, first sentence standalone."""
+    bundle = new_bundle(root, "expiry-resolution")
+    p = write_loop(bundle, "old.md", "Ship the quarterly export",
+                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100),
+                   signal="a source showing the export was delivered.")
+    write_sweep(bundle, {"/tracking/loops/old.md": days_ago(6)})
+
+    result = run_script(bundle, "decay-loops.py", ["--apply"])
+    text = p.read_text(encoding="utf-8")
+    para = resolution_of(p)
+    body = text.split("---\n", 2)[2]
+
+    record("--apply exits 0", result.returncode == 0, result.stdout + result.stderr)
+    record("the expired loop carries exactly one `**Resolution:**` paragraph",
+           text.count("**Resolution:**") == 1, text)
+    record("…in the body, after the `**Closure signal:**` section, and not in "
+           "the frontmatter — a sentence of judgment carries `: `, which would "
+           "break the block",
+           "**Resolution:**" in body
+           and body.index("**Closure signal:**") < body.index("**Resolution:**"),
+           text)
+    record("…alongside `status: expired` and today's `expired:` date",
+           "status: expired" in text and f"expired: {TODAY.isoformat()}" in text, text)
+
+    parts = sentences(para)
+    record("…two to four sentences, like the closure it mirrors",
+           2 <= len(parts) <= 4, f"{len(parts)}: {parts}")
+    first = parts[0] if parts else ""
+    record("…whose first sentence stands alone: it dates the expiry, gives the "
+           "silence in days and says the examination found nothing, so "
+           "resolved-loops.md can print it and nothing else",
+           first.startswith("**Resolution:**") and TODAY.isoformat() in first
+           and "100 days" in first and "close-loops" in first, first)
+    record("…and names the last-activity date and the window it fell past",
+           days_ago(100) in para and "45-day" in para, para)
+    record("…referring to state/closure-sweep.json without a leading slash — a "
+           "bundle-absolute link there would point outside knowledge/",
+           "state/closure-sweep.json" in para and "/state/closure-sweep.json" not in para,
+           para)
+
+    index = run_script(bundle, "build-index.py")
+    valid = run_script(bundle, "validate-okf.py")
+    record("build-index.py and validate-okf.py both pass over the rewritten loop "
+           "— the paragraph is prose the validator accepts",
+           index.returncode == 0 and valid.returncode == 0,
+           f"index={index.returncode}\n{index.stdout}\n{index.stderr}\n"
+           f"valid={valid.returncode}\n{valid.stdout}\n{valid.stderr}")
+
+
+def test_gate_reads_the_file_dates_not_the_citation(root):
+    """The gate compares the examination against the loop's **file** dates, the
+    only ones `close-loops.py` reads, and not against the citation-inclusive
+    date that decided candidacy.
+
+    Comparing against the citation deadlocked a whole class of loop: stale by
+    its file dates, cited inside the recall record but longer ago than the
+    window (so still a candidate), and examined after its file activity (so
+    settled for `close-loops`, which never reads the citation). Neither lane
+    would touch it again, and the `close-loops` command decay prints to unstick
+    it was inert for exactly these loops. No check combined `write_recall` with
+    `write_sweep` before this one, which is why the deadlock shipped.
+    """
+    bundle = new_bundle(root, "gate-citation-deadlock")
+    deadlocked = write_loop(bundle, "deadlocked.md", "Stale, cited long ago, examined since",
+                            opened=days_ago(200), created=days_ago(200), updated=days_ago(200))
+    write_recall(bundle, {"/tracking/loops/deadlocked.md": days_ago(60)})
+    write_sweep(bundle, {"/tracking/loops/deadlocked.md": days_ago(100)})
+
+    dry = run_script(bundle, "decay-loops.py")
+    record("a loop cited longer ago than the window is still a candidate, aged "
+           "from the citation", "deadlocked.md" in dry.stdout and "60d stale" in dry.stdout,
+           dry.stdout)
+    record("…and the gate clears it: the examination is after the file activity "
+           "the close-loops queue reads, so the loop already left that queue",
+           "— cleared:" in dry.stdout and "and 0 held back" in dry.stdout, dry.stdout)
+
+    result = run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply expires it instead of parking it in both lanes forever",
+           "status: expired" in deadlocked.read_text(encoding="utf-8")
+           and "1 loop(s) expired" in result.stdout, result.stdout)
+
+    para = resolution_of(deadlocked)
+    record("…and its resolution does not claim no answer ever cited it — recall "
+           "holds a citation, it is simply older than the window",
+           "no answer cited it" not in para and f"after {days_ago(60)}" in para, para)
+
+
+def test_gate_clears_a_same_day_examination(root):
+    """`examined == last_activity` is the deciding case of the on-or-after rule
+    and nothing exercised it: mutating `<` to `<=` in `gate()` left the whole
+    suite green, so a maintainer reading "after" somewhere could invert the
+    boundary of an irreversible operation without a red check."""
+    bundle = new_bundle(root, "gate-same-day")
+    p = write_loop(bundle, "same-day.md", "Examined the day it last moved",
+                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    write_sweep(bundle, {"/tracking/loops/same-day.md": days_ago(100)})
+
+    result = run_script(bundle, "decay-loops.py", ["--apply"])
+    record("a loop examined on the very day of its last activity is cleared — "
+           "on or after, not strictly after",
+           "status: expired" in p.read_text(encoding="utf-8")
+           and "1 loop(s) expired" in result.stdout,
+           result.stdout + "\n---\n" + p.read_text(encoding="utf-8"))
+
+
+def test_gate_refuses_an_unvalidated_examination(root):
+    """The gate used to accept any ten digits shaped like a date, and only
+    *forward* junk cleared it — `resolution_paragraph()` then wrote that junk
+    verbatim into the loop file and `build-index.py` printed it onto
+    `tracking/resolved-loops.md`. Each shape below must park its loop.
+
+    Validating the matched group closed the forward half only: a *past* date
+    sitting in prose still parsed, so `"could not decide on 2026-09-02"`, the
+    shape a human writing a refusal into the record leaves behind, expired the
+    loop irreversibly and had the resolution paragraph assert that an
+    examination on that date did not close it, which never happened. Same for
+    two dates in one value, where the first won silently. Anchoring the match at
+    the start and allowing only a time of day after it is what refuses those,
+    and the two kept shapes below are the ceiling on that strictness."""
+    refused = [
+        ("impossible", "an impossible date", "2026-99-99"),
+        ("future", "a future date", days_ahead(30)),
+        ("forward-prose", "forward junk sitting in prose",
+         f"see notes {days_ahead(400)}"),
+        ("past-prose", "a past date sitting in prose",
+         f"could not decide on {days_ago(4)}"),
+        ("two-dates", "two dates in one value",
+         f"{days_ago(4)} then {days_ago(400)}"),
+    ]
+    for slug, label, examined in refused:
+        bundle = new_bundle(root, "gate-junk-" + slug)
+        p = write_loop(bundle, "old.md", "Old stale loop",
+                       opened=days_ago(120), created=days_ago(120), updated=days_ago(120))
+        write_sweep(bundle, {"/tracking/loops/old.md": examined})
+        before = p.read_text(encoding="utf-8")
+
+        result = run_script(bundle, "decay-loops.py", ["--apply"])
+        after = p.read_text(encoding="utf-8")
+        record(f"an examination recorded as {label} reads as never examined",
+               "status: open" in after and "0 loop(s) expired" in result.stdout,
+               result.stdout + "\n---\n" + after)
+        # Not just "the junk is absent": a date read out of prose reaches the
+        # file as the date alone, so the value being missing proves nothing.
+        # The whole file has to be untouched.
+        record(f"…so neither {label} nor any date read out of it reaches the "
+               "loop file, which is byte-for-byte what it was",
+               after == before and examined not in after, after)
+
+    # The shape tolerances survive: a bare date and an ISO *datetime* are both
+    # valid records, which is why the date is validated on the matched group and
+    # not on the whole value, and why the anchor allows a time of day after it.
+    kept = [
+        ("bare-date", "a bare ISO date", days_ago(4),
+         "a bare date is what the record normally holds — the anchor must not "
+         "have made the ordinary shape unreadable"),
+        ("iso-datetime", "an ISO datetime", days_ago(4) + "T09:00:00-03:00",
+         "an ISO datetime is still read as its date — validating the whole "
+         "value would have rejected the shape load_sweep() tolerates on purpose"),
+    ]
+    for slug, label, examined, why in kept:
+        bundle = new_bundle(root, "gate-" + slug)
+        p = write_loop(bundle, "old.md", "Old stale loop",
+                       opened=days_ago(120), created=days_ago(120), updated=days_ago(120))
+        write_sweep(bundle, {"/tracking/loops/old.md": examined})
+        result = run_script(bundle, "decay-loops.py", ["--apply"])
+        record(why,
+               "status: expired" in p.read_text(encoding="utf-8")
+               and "1 loop(s) expired" in result.stdout,
+               f"{label}: {examined}\n" + result.stdout)
+
+
+def test_gate_outcome_is_a_whitelist(root):
+    """Only a recorded `outcome: open` clears the gate. It was a blacklist of the
+    single literal `done`, so `closed`, `resolved` and the `done=extra` the step-4
+    recipe accepts all expired the loop, and the tolerated bare-ISO-string entry
+    carries no outcome at all, so that half vanished silently."""
+    for label, outcome in (("closed", "closed"), ("resolved", "resolved"),
+                            ("done=extra", "done=extra")):
+        bundle = new_bundle(root, "gate-outcome-" + label.replace("=", "-"))
+        p = write_loop(bundle, "old.md", "Old stale loop",
+                       opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+        write_sweep(bundle, {"/tracking/loops/old.md": (days_ago(4), outcome)})
+
+        result = run_script(bundle, "decay-loops.py", ["--apply"])
+        record(f"an off-vocabulary outcome (`{label}`) holds the loop back rather "
+               "than expiring it on a verdict this script did not understand",
+               "status: open" in p.read_text(encoding="utf-8")
+               and "0 loop(s) expired" in result.stdout,
+               result.stdout + "\n---\n" + p.read_text(encoding="utf-8"))
+
+    bundle = new_bundle(root, "gate-outcome-missing")
+    p = write_loop(bundle, "old.md", "Old stale loop",
+                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    write_sweep(bundle, {"/tracking/loops/old.md": (days_ago(4), None)})
+    result = run_script(bundle, "decay-loops.py", ["--apply"])
+    record("an entry carrying no outcome at all is parked too — the shape is "
+           "tolerated, the missing verdict is not",
+           "status: open" in p.read_text(encoding="utf-8")
+           and "0 loop(s) expired" in result.stdout, result.stdout)
+
+    # …and the whitelist still lets the ordinary record through.
+    bundle = new_bundle(root, "gate-outcome-open")
+    p = write_loop(bundle, "old.md", "Old stale loop",
+                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    write_sweep(bundle, {"/tracking/loops/old.md": (days_ago(4), "open")})
+    result = run_script(bundle, "decay-loops.py", ["--apply"])
+    record("a recorded `open` still clears — the whitelist did not close the gate "
+           "on everything", "status: expired" in p.read_text(encoding="utf-8"),
+           result.stdout)
+
+
+def test_expiry_boundary_day(root):
+    """`activity > cutoff` skips, so a loop exactly `loop_expiry_days` old IS
+    expired. The magnitude was sensed and the boundary day was not: both
+    `> -> >=` and `days=expiry_days -> expiry_days - 1` survived the suite, and
+    the run's own message said `stale > 45d` for a comparison that is `>=`."""
+    bundle = new_bundle(root, "boundary")
+    write_loop(bundle, "exactly-45.md", "Exactly at the window",
+               opened=days_ago(45), created=days_ago(45), updated=days_ago(45))
+    write_loop(bundle, "one-day-short.md", "One day inside the window",
+               opened=days_ago(44), created=days_ago(44), updated=days_ago(44))
+
+    result = run_script(bundle, "decay-loops.py")
+    record("a loop exactly 45 days old IS a candidate under the default window",
+           "exactly-45.md" in result.stdout, result.stdout)
+    record("…while one 44 days old is not, so the window is 45 and not 44",
+           "one-day-short.md" not in result.stdout
+           and "1 candidate(s)" in result.stdout, result.stdout)
+    record("…and the run says `stale >= 45d`, which is what the comparison does",
+           "stale >= 45d" in result.stdout and "stale > 45d" not in result.stdout,
+           result.stdout)
+
+    applied = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    record("--apply reports the same boundary it applied",
+           "stale >= 45d" in applied.stdout and "1 loop(s) expired" in applied.stdout,
+           applied.stdout)
+
+
+def test_resolution_states_only_what_decay_checked(root):
+    """The first sentence is the only one `resolved-loops.md` prints, and it used
+    to assert three absolutes decay never checks. Every claim is window-relative
+    now, `--skip-sweep` no longer blanks an examination that is on record, and
+    nothing promises a reopen no procedure performs."""
+    bundle = new_bundle(root, "resolution-honesty")
+    p = write_loop(bundle, "old.md", "Ship the quarterly export",
+                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100),
+                   signal="a source showing the export was delivered.")
+    write_sweep(bundle, {"/tracking/loops/old.md": days_ago(6)})
+
+    result = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    para = resolution_of(p)
+    record("--apply --skip-sweep exits 0 with a sweep record present",
+           result.returncode == 0, result.stdout + result.stderr)
+    record("--skip-sweep no longer blanks an examination that IS on record — the "
+           "flag decides whether the gate is consulted, not whether one happened",
+           days_ago(6) in para
+           and "no `close-loops` examination is on record" not in para, para)
+    record("…and it credits the flag rather than the examination it did not consult",
+           "--skip-sweep" in para and "cleared it for expiry is recorded" not in para,
+           para)
+    record("no sentence promises that a later source reopens the loop — nothing "
+           "reopens an expired loop, and this text is written permanently into "
+           "every expired file", "reopen" not in para, para)
+    record("the absolutes are gone: the claim is window-relative, tied to the "
+           "last activity date",
+           "no answer cited it" not in para
+           and "no later source re-raised it" not in para
+           and f"nothing re-raised or cited it after {days_ago(100)}" in para, para)
+    record("…and it says the examination did not close the loop, which is true "
+           "both when close-loops found no candidates and when it could not "
+           "decide — the sweep records `outcome: open` for both",
+           "did not close it" in para and "found no evidence" not in para, para)
+
+    parts = sentences(para)
+    record("…still two to four sentences with the first standing alone",
+           2 <= len(parts) <= 4 and parts[0].startswith("**Resolution:**")
+           and "100 days" in parts[0], f"{len(parts)}: {parts}")
+
+    index = run_script(bundle, "build-index.py")
+    valid = run_script(bundle, "validate-okf.py")
+    record("build-index.py and validate-okf.py still pass over the rewritten loop",
+           index.returncode == 0 and valid.returncode == 0,
+           f"index={index.returncode}\n{index.stderr}\nvalid={valid.returncode}\n{valid.stderr}")
 
 
 def guarded(fn, root):
@@ -359,6 +1046,22 @@ def main():
         test_custom_threshold,
         test_build_index_excludes_expired_after_apply,
         test_template_shaped_loop_decays,
+        test_status_spelling_agrees_with_build_index,
+        test_recall_citation_protects,
+        test_stale_citation_does_not_protect,
+        test_recall_never_ages_a_loop,
+        test_recall_degraded_shapes,
+        test_gate_refuses_the_unexamined,
+        test_gate_expires_the_examined,
+        test_skip_sweep_bypasses_the_gate,
+        test_lost_sweep_parks_decay,
+        test_expiry_writes_a_resolution,
+        test_gate_reads_the_file_dates_not_the_citation,
+        test_gate_clears_a_same_day_examination,
+        test_gate_refuses_an_unvalidated_examination,
+        test_gate_outcome_is_a_whitelist,
+        test_expiry_boundary_day,
+        test_resolution_states_only_what_decay_checked,
     ):
         guarded(fn, scratch_root)
 

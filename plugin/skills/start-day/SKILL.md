@@ -29,8 +29,8 @@ the bundle or `core.md` yourself.
    `${CLAUDE_PLUGIN_ROOT}` from the environment), then open and follow the
    procedure at `${CLAUDE_PLUGIN_ROOT}/skills/start-day/procedure.md` exactly.
    start-day takes no user arguments. Do every bundle read, the briefing
-   script run, and the update-check state write yourself, in your own
-   context. Return ONLY the final user-facing answer in the bundle's
-   conversation_language, exactly as the procedure's Final answer section
-   specifies."
+   script run, the update-check state write, and the closing
+   `scripts/recall.py log` call yourself, in your own context. Return ONLY
+   the final user-facing answer in the bundle's conversation_language,
+   exactly as the procedure's Final answer section specifies."
 2. Relay the subagent's final message to the user verbatim. Add nothing.

@@ -26,3 +26,19 @@ Because it's JSONL it degrades gracefully: pre-filter with `rg` (e.g.
 `rg '"strategy"' knowledge/manifest.jsonl`) to load only matching lines when an
 axis exists, or load the whole file when it doesn't. Regenerated every build, so
 always fresh — no bodies, no embeddings.
+
+**Consumption log.** The scan logs its own line, under its own mode name, once
+its distilled answer is settled and before it returns. The subagent that ran it
+makes the call, in the context that knows what was cited:
+
+```bash
+python3 scripts/recall.py log --mode whole-field --item <path>… --entity <slug>…
+```
+
+See `core.md`'s Consumption log section. One `--item` per path the scan
+deep-read and actually used, one `--entity` per entity the answer was about;
+the triaged-away manifest lines are not citations. This line is the scan's, not
+the caller's: `query` and `briefing` still log theirs for what their own final
+answer cited, and `expand` logs nothing, so a scan run for `expand` is still
+recorded here. The script swallows any failure and always exits 0, and nothing
+about it belongs in what the subagent returns.

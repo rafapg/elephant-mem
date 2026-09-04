@@ -273,6 +273,19 @@ after.**
    than filing a duplicate; **close** open-loops a new source shows done (set
    `status: done`, `closed`, `closed_by`).
 
+   **A source that re-raises an open loop without closing it bumps it.** Set
+   that loop's `updated:` to **the source's own date** — not today's, so a
+   window that arrives late cannot make an old mention look fresh — and change
+   nothing else on the file. If the source carries no date, leave `updated:`
+   alone. This is the whole of what keeps a live commitment alive: `decay`
+   reads `updated` as the loop's last activity and expires anything quiet past
+   `decay.loop_expiry_days`, and this rule is its only writer on the ingest
+   side (the other is `decay`'s own review-gate snooze). Re-raised means the
+   source actually speaks to the commitment — chasing it, re-scheduling it,
+   reporting it still blocked. A source that merely names the same people or
+   the same project is not a re-mention, and bumping on that would keep every
+   loop of an active project alive forever.
+
    **Entity resolution happens here, against the roster loaded at step 3 — and
    only here.** The subagents returned names, not slugs; this is where they
    become entities. The method is `ingest` step 3: `title` first, then
@@ -336,6 +349,26 @@ after.**
    post_ingest --trigger catch-up`. Best-effort — subscribers (e.g. the wiki
    generator) regenerate here; a hook failure never fails the run. Skip it on an
    empty "nothing new" window (nothing changed to react to).
+
+   Last, `python3 scripts/recall.py roll`. This one runs **every** run,
+   including an empty window: it folds the consumption log the read modes have
+   been appending to (see `../_shared/core.md` → Consumption log) into
+   `state/recall.json`, and reads are what fill that log, not this window. This
+   is the routine that keeps the fold on a daily cadence, so `decay` reads a
+   current record instead of one that lags its own three-day clock, and so the
+   read stays a fixed-size lookup however long the raw log gets. Both files are
+   git-ignored, so it changes nothing this run committed and is placed after
+   the commit for that reason. On a bundle that predates those ignore rules the
+   roll appends them to `<bundle>/.gitignore`, printing what it added; the rule
+   takes effect the moment it is written, and the line itself is committed by
+   the next run. Best-effort like the hook: a failure never fails the run, and
+   the next roll picks up whatever this one missed. One outcome is not
+   best-effort. When the roll cannot confirm the bundle's `.gitignore` covers
+   those rules it writes nothing and exits non-zero, on purpose: the record of
+   which people were looked up and when would otherwise be sitting unprotected
+   ahead of the next run's `git add -A`. This run is already committed and is
+   not at risk, so do not retry it; report the refusal and its reason in the
+   run's summary, so the `.gitignore` gets fixed before the next one.
 
 9. **Backfill step (forward-first).** Only if forward found nothing new (gap
    closed): walk **one older day across every source still above the floor** —

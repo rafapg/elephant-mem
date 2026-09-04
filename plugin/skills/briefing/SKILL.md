@@ -33,7 +33,8 @@ This skill runs in a subagent to keep the main context clean — do NOT read
    `${CLAUDE_PLUGIN_ROOT}/skills/briefing/procedure.md`. Filters from the
    user — time window / channel / tag / entity: <forward exactly what the
    user asked for, e.g. 'last 2 days, Slack only, decisions'>. Do every
-   bundle read and script run in your own context. Return ONLY the final
+   bundle read and script run in your own context, the procedure's closing
+   `scripts/recall.py log` call included. Return ONLY the final
    digest, in the bundle's conversation_language, grouped and cited exactly
    as the procedure requires."
 2. Relay the subagent's final message to the user verbatim. Add nothing.

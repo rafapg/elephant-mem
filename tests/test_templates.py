@@ -5,9 +5,9 @@ A template is a **contract with every script that reads a bundle**, not just
 with the validator. `init` copies the four into every new bundle and `update`
 re-syncs them, so every hand-written knowledge file starts as one of them —
 comments and all, since a bundle owner fills in the placeholders and leaves the
-`# open | done | dropped` documentation where it sits. Any script that reads a
-field a template ships is therefore bound by the way the template writes that
-field. "The fields the *code* reads" means every one of those scripts.
+`# open | done | dropped | expired` documentation where it sits. Any script that
+reads a field a template ships is therefore bound by the way the template writes
+that field. "The fields the *code* reads" means every one of those scripts.
 
 That is not a hypothetical contract. The branch that added this suite also
 shipped six frontmatter readers that glued a template's trailing `#` comment
@@ -33,9 +33,17 @@ What is checked, in the order the templates are used:
      motivated dropping the CI step that ran `validate-okf.py` straight from the
      checkout (0.1.0-beta.11): it walked an accidental `plugin/assets/knowledge/`
      of four empty files instead of the templates.
-  2. Every bundle reader has a driver below, so a new script under
+  2. The vocabulary a template documents in a trailing `#` comment covers what
+     the writers actually produce. That comment is the only place a bundle
+     owner learns which values a field takes, and nothing else asserts it:
+     reverting `open-loop.md`'s `status:` line to the old three-value form, so
+     that it no longer names `expired`, left every suite in this repo green.
+     Both sides are derived, the enum out of the code and the vocabulary out of
+     the comment, so a value added later is covered without anyone editing this
+     file.
+  3. Every bundle reader has a driver below, so a new script under
      `assets/scripts/` fails this suite until someone writes one or exempts it.
-  3. One check per reader, mounting the templates as a real bundle and asserting
+  4. One check per reader, mounting the templates as a real bundle and asserting
      something **substantive** about the output. Not `returncode == 0`: a script
      can exit 0 while saying nothing, and silence is precisely what all six of
      those defects looked like.
@@ -54,6 +62,9 @@ resolve `plugin/assets/` as its bundle.
 
 Exit code 0 only if every check below passes.
 """
+import ast
+import importlib.util
+import json
 import shutil
 import subprocess
 import sys
@@ -79,6 +90,11 @@ TEMPLATE_SPEC = {
 #   backlog.py     — BUNDLE/state only (`state/backlog.json` + its rendering);
 #                    its own docstring says state/ is not part of the OKF bundle.
 #   ingest-audio.py — BUNDLE/state/phone only (Taildrop inbox, WhisperX output).
+#   recall.py      — BUNDLE/state only (the consumption log and its roll-up). It
+#                    does define KNOWLEDGE, but only as a string prefix: it
+#                    rewrites a cited link to its bundle-absolute spelling and
+#                    opens no document, so it parses no frontmatter and no
+#                    template field is a contract of its.
 #   run-hooks.py   — reads `hooks` out of elephant.json and spawns subscribers;
 #                    resolves no knowledge/ path at all. (smoke.py exempts it
 #                    from the checkout guard for the neighbouring reason: it
@@ -89,6 +105,7 @@ TEMPLATE_SPEC = {
 READER_EXEMPT = {
     "backlog.py",
     "ingest-audio.py",
+    "recall.py",
     "run-hooks.py",
     "send-email.py",
     "state.py",
@@ -200,7 +217,83 @@ def test_templates_wellformed():
 
 
 # ---------------------------------------------------------------------------
-# 2. every bundle reader is driven
+# 2. the vocabulary a template documents covers what the writers produce
+# ---------------------------------------------------------------------------
+
+def _loop_statuses_produced():
+    """Every value a writer can leave in a loop's `status:`, derived from the
+    code rather than listed here, so a value added later is picked up on its
+    own. Three sources, because three vocabularies genuinely run in the field:
+
+      * `LOOP_STATUS` as build-index.py computes it when imported out of this
+        checkout, which is the shipped vocab.json fed through `vocab_set()`;
+      * the literal default that same call falls back to, which is what runs in
+        every bundle predating the release that copies vocab.json in (the
+        comment above LOOP_STATUS says so itself);
+      * `loop_status` in plugin/assets/vocab.json, read straight off disk
+        instead of through the module that consumes it.
+    """
+    build_index = ASSETS / "scripts" / "build-index.py"
+    source = build_index.read_text(encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location("build_index_py", build_index)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    produced = set(mod.LOOP_STATUS)
+
+    # The fallback list, taken from the call itself: `LOOP_STATUS =
+    # vocab_set("loop_status", [...])`. A bundle with no vocab.json runs this
+    # one, so a value present only here still reaches a loop file.
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(tgt, ast.Name) and tgt.id == "LOOP_STATUS"
+            for tgt in node.targets
+        ):
+            continue
+        call = node.value
+        if isinstance(call, ast.Call) and len(call.args) == 2:
+            produced |= set(ast.literal_eval(call.args[1]))
+
+    vocab = json.loads((ASSETS / "vocab.json").read_text(encoding="utf-8"))
+    produced |= set(vocab.get("loop_status", []))
+    return produced
+
+
+def _documented_enum(path, key):
+    """The vocabulary a template documents in the trailing comment of its
+    `<key>:` line, e.g. `status: open  # open | done | dropped | expired`, as a
+    set. Empty when the line carries no comment, which is itself a failure: a
+    field whose values went undocumented is the drift this check exists for."""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.lstrip()
+        if not stripped.startswith(f"{key}:"):
+            continue
+        _value, sep, comment = stripped.partition("#")
+        if not sep:
+            return set()
+        return {v.strip() for v in comment.split("|") if v.strip()}
+    raise AssertionError(f"{path.name} has no `{key}:` line")
+
+
+def test_documented_vocabularies():
+    template = TEMPLATES / "open-loop.md"
+    produced = _loop_statuses_produced()
+    documented = _documented_enum(template, "status")
+    missing = sorted(produced - documented)
+    record(
+        "open-loop.md documents every `status:` value the writers produce, in "
+        "the comment on its own `status:` line",
+        not missing,
+        f"produced but undocumented: {missing}\n"
+        f"produced: {sorted(produced)}\n"
+        f"documented: {sorted(documented)}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3. every bundle reader is driven
 # ---------------------------------------------------------------------------
 
 def test_reader_coverage():
@@ -215,7 +308,7 @@ def test_reader_coverage():
 
 
 # ---------------------------------------------------------------------------
-# 3. the templates as a real bundle, one reader at a time
+# 4. the templates as a real bundle, one reader at a time
 # ---------------------------------------------------------------------------
 
 def mount_bundle(root, name):
@@ -270,7 +363,7 @@ def drive_build_index(root):
     # parse and reporting success over an empty walk.
     record(
         "…and counts one document of each type, so no template was silently skipped",
-        "1 entities, 1 facts, 1 open loops, 1 sources" in idx.stdout,
+        "1 entities, 1 facts, 1 open loops, 0 resolved loops, 1 sources" in idx.stdout,
         idx.stdout + idx.stderr,
     )
 
@@ -344,7 +437,7 @@ def drive_decay_loops(root):
     dry = run_script(bundle, "decay-loops.py")
     record(
         "decay-loops.py sees the template loop as a decay candidate, so "
-        "`status: open  # open | done | dropped` was read as `open`",
+        "`status: open  # open | done | dropped | expired` was read as `open`",
         dry.returncode == 0 and "1 candidate(s)" in dry.stdout,
         f"exit={dry.returncode}\n{dry.stdout}\n{dry.stderr}",
     )
@@ -355,8 +448,11 @@ def drive_decay_loops(root):
     )
 
     # --apply writes, so it runs last in this driver's bundle and nothing else
-    # reads it afterwards.
-    applied = run_script(bundle, "decay-loops.py", ["--apply"])
+    # reads it afterwards. --skip-sweep because this check is about the template
+    # being read, not about the closure sweep: without it the gate would hold
+    # the loop back (no `close-loops` run ever examined it) and the check would
+    # fail for a reason that has nothing to do with the templates.
+    applied = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
     text = loop.read_text(encoding="utf-8")
     record(
         "decay-loops.py --apply flips the template loop to `status: expired`",
@@ -365,6 +461,61 @@ def drive_decay_loops(root):
         and "status: expired" in text
         and "status: open" not in text,
         f"exit={applied.returncode}\n{applied.stdout}\n{applied.stderr}\n---\n{text}",
+    )
+    # The template documents `expired:` in prose (it declares no field for it,
+    # since only the routine may write one) and the status flip above passes
+    # without it ever being stamped. So the field gets its own two checks: that
+    # it is there, and that it sits where the template says it does.
+    fm_lines = text.split("---")[1].splitlines() if text.startswith("---") else []
+    expired = [ln for ln in fm_lines if ln.startswith("expired:")]
+    record(
+        "…and stamps the `expired:` field the template documents, with a date",
+        len(expired) == 1 and expired[0][len("expired:"):].strip() != "",
+        f"frontmatter:\n" + "\n".join(fm_lines),
+    )
+    status_at = [i for i, ln in enumerate(fm_lines) if ln.startswith("status:")]
+    record(
+        "…on the line directly under `status:`, where the template says the "
+        "routine inserts it",
+        len(status_at) == 1
+        and len(expired) == 1
+        and fm_lines[status_at[0] + 1:status_at[0] + 2] == expired,
+        f"frontmatter:\n" + "\n".join(fm_lines),
+    )
+
+
+@drives("close-loops.py")
+def drive_close_loops(root):
+    bundle = mount_bundle(root, "close-loops")
+    loop = bundle / "knowledge" / "tracking" / "loops" / "t.md"
+
+    out = run_script(bundle, "close-loops.py")
+    text = out.stdout
+    record(
+        "close-loops.py queues the template loop, so `status: open  # open | "
+        "done | dropped | expired` was read as `open` — a reader that keeps the comment "
+        "queues nothing at all and says so at exit 0",
+        out.returncode == 0
+        and "1 loop(s) queued of 1 open" in text
+        and "/tracking/loops/t.md" in text,
+        f"exit={out.returncode}\n{text}\n{out.stderr}",
+    )
+    record(
+        "…and reads the criterion out of the template's `**Closure signal:**` "
+        "section, the field no code opened before this build",
+        "criterion (**Closure signal:**): <what a future source would have to "
+        "show" in text,
+        text,
+    )
+    # The fact template ships `entities: []  # bundle-absolute links, e.g.
+    # [/entities/person/foo.md]` — a reader that swallows that comment files the
+    # placeholder as an entity BOTH documents share, and the template fact then
+    # ranks as evidence for the template loop.
+    record(
+        "…and proposes no evidence: the template fact's `entities: []` is read "
+        "as empty, comment and its bracketed example both",
+        "evidence: none" in text,
+        text,
     )
 
 
@@ -447,6 +598,7 @@ def main():
 
     try:
         test_templates_wellformed()
+        test_documented_vocabularies()
         test_reader_coverage()
     except Exception:  # noqa: BLE001 - report as a failed check, not a traceback
         record("test_templates raised an unexpected exception", False,
