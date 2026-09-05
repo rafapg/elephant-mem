@@ -36,10 +36,26 @@ preflight depends on and the part that must not be able to lie:
       codes, says what it found on stderr for three of them and nothing at all
       for the fourth, and writes nothing anywhere.
 
+The last four sections are the ones no single part could reach from inside
+itself, because each crosses two of the others: the file's place in the tree
+against the path the launcher's resolver builds by hand; both resolution routes
+against one machine's `--check`; the restore commands a failed run prints
+against a git that has to accept them and really put the bundle back; the run's
+write footprint measured over the whole tree instead of against a list someone
+keeps current; and a launcher that will not run arriving after a commit and a
+stamp that already happened, which is the ordering's entire claim.
+
+One of those checks does its real work on a Windows runner only — `cmd.exe` is
+the only thing that can say whether the `.cmd` half of the pair runs. It is
+still RECORDED on every OS: `smoke.py` compares the total this file prints
+against the number the CHANGELOG declares, so a check that appears on one
+platform and not another would make that number true on one runner and false on
+the next two.
+
 Pure stdlib, Python 3.10+, mirroring `tests/test_backlog.py`'s conventions: a
 throwaway bundle in a tempdir, fake plugin directories in the cache layout
 Claude Code really uses, PASS/FAIL per check, exit code 0 only if every check
-passes.
+passes, and a closing `N/M checks passed` line, which is what `smoke.py` reads.
 """
 import base64
 import datetime
@@ -378,7 +394,7 @@ def init_git(bundle):
 
 
 def make_world(root, *, validator=STUB_VALIDATE_OK, declares="0.1.0-beta.14",
-               refresh_fails=False, install_fails=False):
+               refresh_fails=False, install_fails=False, ships_executable=True):
     """A machine with `elephant-mem` 0.1.0-beta.13 installed, a clone carrying
     the release that follows it, and a bundle in sync with what is installed.
 
@@ -407,8 +423,13 @@ def make_world(root, *, validator=STUB_VALIDATE_OK, declares="0.1.0-beta.14",
                            # first to carry the executable it hands off to; the
                            # beta.13 already installed does not, which is the
                            # state every machine is really in.
+                           # `ships_executable=False` is the release that moved
+                           # or dropped it: the copy, the commit and the stamp
+                           # all still happen and only the launcher has nothing
+                           # to hand off to, which is E33 on the full run.
                            bin_files={"elephant-update":
-                                      EXECUTABLE.read_text(encoding="utf-8")})
+                                      EXECUTABLE.read_text(encoding="utf-8")}
+                           if ships_executable else None)
     wiki4 = make_plugin(root, "elephant-wiki", version="0.1.0-beta.4",
                         scripts={"wiki.py": "print('wiki 4')\n",
                                  "wiki.js": "// spa 4\n", "graph.js": "// graph 4\n"})
@@ -502,6 +523,10 @@ def main():
         launcher_checks(eu, tmp)
         interpreter_checks(eu)
         real_tree_checks(eu, tmp)
+        placement_checks(eu)
+        both_routes_checks(eu, tmp)
+        windows_pair_checks(eu, tmp)
+        report_checks(eu, tmp)
 
     passed = sum(1 for _, ok in checks if ok)
     total = len(checks)
@@ -1851,6 +1876,11 @@ def launcher_checks(eu, tmp):
            "does not run here" in done.stdout
            and str(Path(bare["plugin"]) / "bin" / "elephant-update") in done.stdout,
            done.stdout)
+    record("E33 and it claims no update behind it: this route installs, copies "
+           "and commits nothing, so the failure text says nothing else depends "
+           "on the file rather than announcing a finished update",
+           "update itself is done" not in done.stdout
+           and "nothing else depends on this file" in done.stdout, done.stdout)
     record("E33 with the other route out beside it, as every blocking message "
            "in this design carries",
            "elephant-mem:update" in done.stdout, done.stdout)
@@ -1981,6 +2011,299 @@ def real_tree_checks(eu, tmp):
            EXECUTABLE.is_file()
            and not (REAL_MEM_PLUGIN / "assets" / "scripts" / "elephant-update").exists(),
            str(EXECUTABLE))
+
+
+# ── what a section on its own could not reach ────────────────────────────────
+# Every check below crosses two of the sections above, which is why none of them
+# could live inside one: where the file sits against the path the launcher's
+# resolver builds; both resolution routes against one machine's `--check`; the
+# restore commands a failed run prints against a git that has to accept them;
+# the run's whole write footprint against a list nobody has to maintain; and a
+# launcher that will not run against a commit and a stamp that already happened.
+
+
+def contents(root, skip=(".git",)):
+    """Every file under `root` with its bytes, `.git` left out.
+
+    `snapshot()` carries mtimes too, which is what proves a read-only pass wrote
+    nothing at all. Here the question is what the tree HOLDS once git has put it
+    back, and a checkout moves the mtime of every file it restores.
+    """
+    out = {}
+    for path in sorted(Path(root).rglob("*")):
+        rel = path.relative_to(root)
+        if path.is_file() and rel.parts[0] not in skip:
+            out[rel.as_posix()] = path.read_bytes()
+    return out
+
+
+def placement_checks(eu):
+    """Where the file sits is load-bearing in two directions at once, and
+    neither is visible from inside the section that owns it. The launcher's
+    resolver hands off to `<installPath>/bin/elephant-update` as a literal join,
+    so the file has to be exactly there; and `plugin/assets/scripts/` is the set
+    a re-sync copies into every bundle and three suites glob, so it has to be
+    exactly not there."""
+    rel = EXECUTABLE.relative_to(REPO_ROOT).as_posix()
+    record("the executable is at plugin/bin/elephant-update",
+           rel == "plugin/bin/elephant-update", rel)
+    record("which is the path the launcher's resolver builds, as a literal join "
+           "of the install directory, `bin` and the name — a file anywhere else "
+           "leaves every launcher on disk with nothing to hand off to",
+           'os.path.join(found, "bin", "elephant-update")' in eu.LAUNCHER_RESOLVER
+           and (REAL_MEM_PLUGIN / "bin" / eu.LAUNCHER_NAME) == EXECUTABLE,
+           str(REAL_MEM_PLUGIN / "bin" / eu.LAUNCHER_NAME))
+    record("and `bin/` is a directory of the plugin, so an install places it "
+           "where the resolver will look",
+           EXECUTABLE.parent.parent == REAL_MEM_PLUGIN
+           and EXECUTABLE.parent.name == "bin", str(EXECUTABLE.parent))
+    record("it carries no .py suffix and the tracked mode is 755: Claude Code "
+           "puts <plugin>/bin on the PATH of the processes it spawns and a mode "
+           "runs `elephant-update --check` by name",
+           EXECUTABLE.suffix == ""
+           and git_mode(EXECUTABLE) in ("100755", None), git_mode(EXECUTABLE))
+
+    swept = {path.name for path in (REAL_MEM_PLUGIN / "assets" / "scripts").iterdir()}
+    record("plugin/assets/scripts/ does not hold it, under the `*.py` glob two "
+           "of those suites use or the bare listing the third one copies",
+           eu.LAUNCHER_NAME not in swept
+           and not any(name.startswith(eu.LAUNCHER_NAME) for name in swept),
+           sorted(swept))
+    sources = set()
+    for spec in eu.PUBLISHED:
+        root = REAL_MEM_PLUGIN if spec.plugin == "elephant-mem" else REAL_WIKI_PLUGIN
+        sources |= set(eu.published_files(root, spec.patterns).values())
+    record("and no published pattern reaches it: it is not a bundle script, it "
+           "is copied into no bundle, and a bundle holding a copy of it would be "
+           "a file no plugin ships",
+           EXECUTABLE not in sources, sorted(str(s) for s in sources))
+
+
+def git_mode(path):
+    """The mode git has tracked for `path`, or None where git cannot say — a
+    source tarball, or a checkout this suite is not running inside."""
+    if not git_available():
+        return None
+    done = git(REPO_ROOT, "ls-files", "-s", "--",
+               str(path.relative_to(REPO_ROOT).as_posix()))
+    parts = done.stdout.split()
+    return parts[0] if done.returncode == 0 and parts else None
+
+
+def both_routes_checks(eu, tmp):
+    """E25 on one machine, through the executable rather than through a
+    resolver called directly. `beta.9` and `beta.13` sit in the cache together
+    and the registry names the second; the answer has to be `beta.13` with the
+    registry there and with it gone, and it has to be an answer — a machine
+    where both routes agree because neither looks at anything would pass this
+    silently, so the same machine is asked again with a bundle that matches
+    `beta.9` and has to call it drift both times."""
+    root = tmp / "either-route"
+    published = {"scripts": {"recall.py": "print('recall 13')\n"},
+                 "templates": {"open-loop.md": "# loop 13\n"}}
+    mem13 = make_plugin(root, "elephant-mem", version="0.1.0-beta.13", **published)
+    mem9 = make_plugin(root, "elephant-mem", version="0.1.0-beta.9",
+                       scripts={"recall.py": "print('recall 9')\n"},
+                       templates={"open-loop.md": "# loop 9\n"})
+    registry = make_registry(root, {
+        "elephant-mem@elephant-mem": {"installPath": str(mem13),
+                                      "version": "0.1.0-beta.13"}})
+    current = make_bundle(root, "current", **published)
+    behind = make_bundle(root, "behind",
+                         scripts={"recall.py": "print('recall 9')\n"},
+                         templates={"open-loop.md": "# loop 9\n"})
+    pointer = write_pointer(root / "pointer.json", current)
+
+    for route in ("registry", "cache"):
+        if route == "cache":
+            registry.unlink()
+        resolution = eu.resolve_plugins(plugins_dir=root)
+        record(f"E25 resolving by {route}, beta.13 wins over the beta.9 sitting "
+               f"beside it in the cache",
+               resolution.source == route
+               and resolution.path_of("elephant-mem") == mem13,
+               f"{resolution.source} {resolution.path_of('elephant-mem')}")
+        done = run_cli(["--check"], plugins_dir=root, pointer=pointer,
+                       home=root / "home")
+        record(f"E25 and `--check` by {route} reads the bundle against beta.13's "
+               f"files: in sync, silently",
+               done.returncode == eu.CHECK_IN_SYNC and not done.stderr,
+               f"{done.returncode}\n{done.stderr}")
+        done = run_cli(["--check", "--bundle", behind], plugins_dir=root,
+                       pointer=pointer, home=root / "home")
+        record(f"E25 by {route}, a bundle holding beta.9's files is required "
+               f"drift — which is what makes the two checks above an answer and "
+               f"not an empty comparison",
+               done.returncode == eu.CHECK_REQUIRED_DRIFT
+               and "scripts/recall.py" in done.stderr
+               and "templates/open-loop.md" in done.stderr,
+               f"{done.returncode}\n{done.stderr}")
+    record("E25 and the beta.9 that would have answered a text sort really is "
+           "complete: it carries the same published files, so nothing above "
+           "passed because the wrong directory was empty",
+           (mem9 / "assets" / "scripts" / "recall.py").is_file()
+           and (mem9 / "assets" / "templates" / "open-loop.md").is_file(),
+           str(mem9))
+
+
+def windows_pair_checks(eu, tmp):
+    """E35 — the half of the pair that only a Windows runner can execute.
+
+    The assertion is gated, the check is not: it is recorded on every OS so the
+    count `smoke.py` compares against the CHANGELOG is the same number on all
+    three, and it does its real work on the one runner where `cmd.exe` exists.
+    `ci.yml` running this suite across the 3-OS matrix is what gets it there.
+    """
+    record("E35 the .cmd is the half a Windows shell runs, so it is the half "
+           "the installer verifies — everywhere else that is the POSIX file",
+           eu.launcher_entry([Path("elephant-update"), Path("elephant-update.cmd")])
+           == Path("elephant-update.cmd" if os.name == "nt" else "elephant-update"))
+
+    root = tmp / "windows"
+    machine = launcher_machine(root)
+    written, error = eu.write_launcher(root / "bin", windows=True)
+    cmd = next((p for p in written if p.suffix == ".cmd"), None)
+    ran, detail = True, "not a Windows runner: cmd.exe is what runs this file"
+    if os.name == "nt" and cmd is not None:
+        done = run_launcher(cmd, ["--check"], plugins_dir=machine["root"],
+                            pointer=machine["pointer"], home=machine["home"])
+        ran = done.returncode == eu.CHECK_IN_SYNC
+        detail = f"{done.returncode}\n{done.stdout}\n{done.stderr}"
+    record("E35 on a Windows runner the .cmd itself resolves the installed "
+           "plugin and hands off — the pair is written because Git Bash's chmod "
+           "grants no NTFS execute permission, and only cmd.exe can say whether "
+           "what was written runs",
+           ran and not error and cmd is not None, detail)
+
+    bins = root / "install-bin"
+    done = run_cli(["--install-launcher"], plugins_dir=machine["root"],
+                   pointer=machine["pointer"], home=machine["home"], bin_dir=bins)
+    entry = eu.launcher_entry(list(eu.launcher_paths(bins)))
+    record("E35 and the installer's own run is the proof, on the file this OS "
+           "would run rather than on whichever one it happened to write first",
+           done.returncode == eu.RUN_OK and f"`{entry.name}` ran" in done.stdout,
+           f"{done.returncode}\n{done.stdout}")
+
+
+def report_checks(eu, tmp):
+    """E26, E29 and E33 where they cross the full run: the restore commands
+    handed to a real git, the write footprint measured over the whole tree, and
+    a launcher that will not run arriving after a commit and a stamp that
+    already happened."""
+    if not git_available():
+        record("git on PATH (every GitHub-hosted runner has it)", False,
+               "git not found — these checks run the full run, which commits")
+        return
+
+    # ── E26/E27: the printed undo is an undo ─────────────────────────────────
+    # Task 4 could assert the commands were printed and that they name the three
+    # paths. Whether git accepts them and whether they really put the bundle
+    # back is a question only a bundle that has actually been half-updated can
+    # answer, and answering it is the difference between advice and an undo.
+    world = make_world(tmp / "restore", validator=STUB_VALIDATE_FAIL)
+    bundle = world["bundle"]
+    before = contents(bundle)
+    done = in_world(world, "--yes")
+    record("E26 the run failed after the copy, so there is something to undo",
+           done.returncode == eu.RUN_FAILED_AFTER_COPY and contents(bundle) != before,
+           f"{done.returncode}\n{done.stderr}")
+    printed = [line.strip() for line in done.stderr.splitlines()
+               if line.strip().startswith("git -C ")]
+    record("E27 the two commands it printed are the two it builds, against this "
+           "bundle and no other",
+           printed == eu.restore_commands(bundle), f"{printed}\n{eu.restore_commands(bundle)}")
+    # The tail of each printed line, run as it was printed. Not `shlex.split`,
+    # which is posix-mode by default and would eat the backslashes out of a
+    # Windows path — the one platform this undo most has to survive.
+    prefix = f"git -C {eu._quote(bundle)} "
+    for command in printed:
+        tail = command[len(prefix):] if command.startswith(prefix) else ""
+        record(f"E27 `git … {tail.split(' ')[0] or command}` is addressed at the "
+               f"bundle, so what runs below is the line as printed rather than a "
+               f"reconstruction of it",
+               bool(tail), f"{command}\n{prefix}")
+        git(bundle, *tail.split())
+    record("E27 running them puts the bundle back exactly as it stood: the "
+           "copied files, the ones the copy added, and the index rewrite that "
+           "an undo naming only the copied files would have left behind",
+           contents(bundle) == before,
+           sorted(set(contents(bundle)) ^ set(before))
+           or [rel for rel, data in before.items() if contents(bundle).get(rel) != data])
+    record("E27 and git agrees the tree is clean, which is what the next run "
+           "starts from",
+           git(bundle, "status", "--porcelain").stdout.strip() == "",
+           git(bundle, "status", "--porcelain").stdout)
+    record("E29 the hand-written files were never in that failure's way either: "
+           "a run that stops after the copy still touches no fact, loop, source, "
+           "elephant.json, config.md or vocab.json",
+           all(before[rel] == content.encode("utf-8")
+               for rel, content in HAND_WRITTEN.items()), sorted(HAND_WRITTEN))
+
+    # ── E29: the footprint, over the whole tree ──────────────────────────────
+    # The named list is a list someone has to keep current. This is the same
+    # promise stated as a boundary: a run writes under the four paths it owns
+    # and nowhere else, so a file nobody thought to name is covered too.
+    world = make_world(tmp / "footprint")
+    bundle = world["bundle"]
+    before = contents(bundle)
+    done = in_world(world, "--yes")
+    after = contents(bundle)
+    touched = sorted({rel for rel in set(before) | set(after)
+                      if before.get(rel) != after.get(rel)})
+    owned = ("scripts/", "templates/", "knowledge/", "state/")
+    record("the run succeeded, so there is a footprint to measure",
+           done.returncode == eu.RUN_OK and touched,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("E29 every path a successful run wrote is one it owns — the copied "
+           "directories, the derived index and the gitignored stamp — measured "
+           "over the whole tree rather than against a list to keep current",
+           all(rel.startswith(owned) for rel in touched), touched)
+    record("E29 nothing under knowledge/facts, knowledge/sources or "
+           "knowledge/tracking moved: those are the bundle's own writing and no "
+           "update has business in them",
+           not any(rel.startswith(("knowledge/facts/", "knowledge/sources/",
+                                   "knowledge/tracking/")) for rel in touched),
+           touched)
+    record("E29 and the three files the mode's never-touched list names by hand "
+           "are among the ones the boundary already covers",
+           not any(rel in ("elephant.json", "config.md", "vocab.json")
+                   for rel in touched), touched)
+
+    # ── E33: the launcher fails after the update is really done ──────────────
+    # Task 5 reached this on `--install-launcher`, where there is no update
+    # behind it. The claim the ordering makes is about the OTHER route: the
+    # copy, the commit and the stamp are already on disk, so a launcher that
+    # will not run is a report.
+    world = make_world(tmp / "no-handoff", ships_executable=False)
+    bundle = world["bundle"]
+    bins = tmp / "no-handoff" / "bin"
+    done = run_cli(["--yes"], plugins_dir=world["root"], pointer=world["pointer"],
+                   home=world["home"], claude=world["claude"], bin_dir=bins)
+    record("E33 a full run whose launcher will not run still exits 0",
+           done.returncode == eu.RUN_OK, f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("E33 it says so and prints the interpreter-and-path line, naming the "
+           "installed plugin's own copy",
+           "does not run here" in done.stdout
+           and "bin/elephant-update" in done.stdout.replace(os.sep, "/"),
+           done.stdout)
+    record("E33 with the other route out beside it, as every message that stops "
+           "someone in this design carries",
+           "elephant-mem:update" in done.stdout, done.stdout)
+    record("E33 and the file is on disk anyway: it is the plugin that has "
+           "nothing to hand off to, not this that failed to write",
+           (bins / "elephant-update").is_file(), sorted(p.name for p in bins.iterdir()))
+    record("E33 the ordering is the whole reason this is a report: the copy "
+           "landed, the commit was made and the stamp was written before the "
+           "launcher was ever touched",
+           (bundle / "scripts" / "close-loops.py").is_file()
+           and "scripts/close-loops.py" in committed_paths(bundle)
+           and (bundle / "state" / "last-update-check.json").is_file(),
+           committed_paths(bundle))
+    record("E33 so the failure text claims nothing about an update on the route "
+           "where none ran — `--install-launcher` installs, copies and commits "
+           "nothing, and the same text serves both routes",
+           "update itself is done" not in done.stdout
+           and "nothing else depends on this file" in done.stdout, done.stdout)
 
 
 if __name__ == "__main__":

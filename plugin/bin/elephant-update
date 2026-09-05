@@ -1342,18 +1342,23 @@ def _launcher_fallback(interpreter, plugin_dir):
 def install_launcher(directory=None, interpreter=None, plugin_dir=None):
     """Write the launcher pair, verify it, and return the lines a run prints.
 
-    Never raises, and never fails a run. It is written last — after the copy,
-    the commit and the stamp — precisely so that a launcher which will not run
-    is a report and not a failure: the update itself is already done, and none
-    of it depends on this. So the whole report goes to stdout, where the rest of
+    Never raises, and never fails a run. On the full run it is written last —
+    after the copy, the commit and the stamp — precisely so that a launcher
+    which will not run is a report and not a failure: nothing that already ran
+    depends on this file. So the whole report goes to stdout, where the rest of
     the run's report goes; stderr here belongs to what actually failed.
+
+    Two routes reach this and the failure text has to be true on both, so it
+    says nothing depends on the file rather than announcing a finished update:
+    `--install-launcher` is `init`'s route and installs, copies and commits
+    nothing, so there is no update behind it to be done.
     """
     directory = Path(directory) if directory else default_launcher_dir()
     written, error = write_launcher(directory)
     if error:
         return "\n".join(
             [f"The launcher could not be written to {directory}: {error}",
-             "The update itself is done. Run it by interpreter and path instead:"]
+             "Nothing else depends on it. Run it by interpreter and path instead:"]
             + _launcher_fallback(interpreter, plugin_dir))
     names = ", ".join(path.name for path in written)
     lines = [f"Wrote the launcher to {directory} ({names}). Every run rewrites "
@@ -1363,8 +1368,7 @@ def install_launcher(directory=None, interpreter=None, plugin_dir=None):
     ok, detail = verify_launcher(target)
     if not ok:
         lines.append(f"It does not run here, so use the interpreter and the path "
-                     f"instead — the update itself is done and none of it "
-                     f"depends on this: {detail}")
+                     f"instead — nothing else depends on this file: {detail}")
         return "\n".join(lines + _launcher_fallback(interpreter, plugin_dir))
     lines.append(f"Verified it: `{target.name}` ran and reached the installed "
                  f"plugin, which is the only proof this file works here.")
