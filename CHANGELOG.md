@@ -4,6 +4,158 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.14] - 2026-09-05
+
+A bundle carries its own copy of the plugin's `scripts/` and `templates/` so it
+runs standalone, and keeping that copy current was a separate act from updating
+the plugin that the product only half said. The nudge every mode could show
+printed `claude plugin update elephant-mem@elephant-mem` and stopped there, which
+refreshes the plugin and never touches the bundle. Measured on the owner's
+bundle: the plugin had been on `0.1.0-beta.13` while `<bundle>/scripts/` still
+held `0.1.0-beta.9`. Two scripts the skills call did not exist there at all
+(`close-loops.py`, `recall.py`), nine more were four releases behind, and
+`templates/open-loop.md` still described `maintain` as the routine that closes a
+loop. `close-loops` could not start. `recall.py roll` failed on every hourly
+`catch-up`, so `state/recall.json` had never been written and `decay` had been
+reading a loop's activity without its fourth date.
+
+The failure was diagnosable and nothing diagnosed it. `catch-up` detected the
+missing scripts and filed `scripts-dir-missing-recall-and-close-loops`, then
+re-evidenced it five times in one day while proposing the wrong fix: "Add
+recall.py, or update the procedure to not call them". Both scripts shipped in the
+installed plugin. Only the bundle's copy was stale, and no signal available to
+that routine could say so. This release makes that class of failure unable to
+reach a run silently: one command performs the whole update, and any mode that
+would execute against stale scripts stops and names the way out.
+
+### Added
+
+- **`elephant-update`, one command for a path that took three.** It refreshes the
+  local marketplace clone, reads installed against published and prints the delta,
+  asks once, updates every installed plugin of the family, re-resolves the newly
+  installed directories, copies the published files into the bundle, runs
+  `build-index.py` and then `validate-okf.py`, commits locally, and stamps the
+  gitignored `state/last-update-check.json`. The confirmation sits after the
+  refresh and before anything is installed, because refreshing the clone first is
+  what makes the version delta true — read earlier it reports "current" off a
+  stale clone, which is the contradiction the old `update` mode carried a section
+  of prose to explain. It exits `0` success, `4` declined, `5` failed before
+  anything was copied, `6` failed after the copy. There is no rollback: a run that
+  copies and then fails validation commits nothing, stamps nothing, and prints the
+  git commands that restore the previous state, covering `knowledge` as well as
+  `scripts` and `templates`, since an undo naming only the copied files would
+  leave the index rewrite in place. Validating before and after would have
+  compared the bundle's old validator against the newly copied one, so a stricter
+  new release would read as damage the update caused.
+- **The preflight, `elephant-update --check`, which every mode runs before it does
+  any work.** It reads both sides off disk every time and writes nothing at all —
+  no stamp, no launcher, no comparison record in the bundle. A preflight stored in
+  the bundle would be absent from exactly the stale bundles it exists to catch, so
+  it ships with the plugin and reads the bundle, never the reverse. Four outcomes,
+  four codes: `0` in sync (silent), `1` required drift, `2` drift confined to the
+  wiki's optional files, `3` could not tell. **Only required-set drift stops a
+  mode**, and a caller matches `0`, `1` and `2` while reading everything else as
+  could-not-verify — an absent executable and a crash cannot report themselves,
+  which is why that rule belongs to the caller and is what keeps a broken check
+  from stopping everything at once. The published set is a pattern matched against
+  the plugin directory the run just resolved (`assets/scripts/*.py` plus
+  `assets/templates/*.md`, and `elephant-wiki`'s three files), not a directory
+  listing: `assets/scripts/__pycache__/` exists on a development machine and a
+  listing would compare it. Comparison normalises line endings, because Git for
+  Windows checks out CRLF and this repo carries no `.gitattributes`, so a byte
+  comparison would report every file as drifted on Windows and block every mode
+  there.
+- **A launcher at `~/.local/bin/elephant-update`**, plus a `.cmd` beside it on
+  Windows, which is what makes the command reachable from a login shell at all:
+  the PATH carrying it belongs to Claude Code's own processes. It cannot be a
+  symlink — plugins install under
+  `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`, so every update
+  would dangle the link — so it carries the resolver instead and runs it at
+  invocation. Resolution reads Claude Code's own registry,
+  `~/.claude/plugins/installed_plugins.json`, taking each plugin's declared
+  `installPath` and `version` and the family from the `@elephant-mem` key suffix;
+  a version sitting in the cache is not evidence it is installed, and this
+  machine's cache holds six of `elephant-mem` while one is. The fallback for a
+  missing registry or a moved schema is semver **in Python** over the cache, never
+  a text sort: sorted as text `0.1.0-beta.9` follows `0.1.0-beta.13`, which runs
+  the older plugin and reproduces the failure this release exists to fix. Neither
+  the launcher nor the executable assumes `python3` on PATH, which `init` already
+  records as frequently untrue on Windows. `ELEPHANT_BIN_DIR` says where the pair
+  goes, so no suite and no CI runner writes to a real `~/.local/bin`.
+- **`init` Stage 9 offers the launcher**, in the stage that already asks before
+  touching anything of the user's own, and a decline is an answer rather than an
+  error — what it gives up is reaching the command from a terminal, not any part
+  of the bundle.
+- **`tests/test_update.py` (296 checks)**, with its own `- run:` line in `ci.yml`
+  added in the same change, across the 3-OS × PyYAML matrix. The Windows runner is
+  what executes the `.cmd` assertion, and it is the only place that can. A glob
+  does not pick up a new suite: `test_backlog.py` went a full release unrun for
+  want of that line.
+- **`docs/updating.md`**, since `docs/` held architecture, configuration and
+  integrations and documented no command. Six sections: what the command does and
+  its flags, the preflight and what it compares, the launcher with the PATH line
+  and the fallback, what a run writes and what it never touches, the route from
+  inside Claude Code, and the weekly nudge.
+
+### Changed
+
+- **Every mode checks the bundle's copy before it works**, through the preflight
+  contract in `_shared/core.md`. The modes that delegate to `elephant-worker` —
+  `query`, `briefing`, `start-day`, `end-day` — run it **before** delegating, so
+  the stop lands where the user can read it rather than inside a subagent. The
+  modes with nobody watching route required drift into the environment-failure
+  path `catch-up` already had and file the record: `catch-up`, the scheduled
+  `decay`, and `close-loops`, which has no interactive branch to distinguish and
+  so takes that path at any cadence. `push-start-day` stops, sends nothing and
+  writes nothing at all, leaving the record to the hourly `catch-up`. The
+  consequence is accepted rather than softened: ingestion halts, the morning
+  briefing does not arrive, and the notice waits until someone reads it.
+  `elephant-mem:update` and `init` never run the check — one is a route out, and
+  the other is copying assets into a bundle that does not exist yet.
+- **`elephant-mem:update` became a thin caller** of the same executable: it shows
+  `--plan`, confirms in the conversation, invokes with `--yes --no-refresh` so the
+  delta the user approved is the delta that gets installed, and reports the
+  outcome and any restart needed. Its never-touched list was rewritten rather than
+  preserved, because it claimed never to write `state/` while its own step 1
+  stamped `state/last-update-check.json`.
+- **A run commits `knowledge` alongside `scripts` and `templates`.** Step 8 runs
+  `build-index.py`, which rewrites entity hub blocks and archive shards, and the
+  old `update` committed the other two and left that rewrite dirty for whatever
+  routine next ran `git add -A` — the thing `catch-up`'s own procedure names as
+  the one to avoid. When nothing was copied and the index rewrite changed nothing,
+  there is nothing staged and the run reports in sync rather than failing on an
+  empty commit; it still stamps.
+- **The nudge names the marketplace refresh, not just the command.** Pointing it
+  at `elephant-update` was not enough on its own: it printed `claude plugin
+  update` alone, which is the whole reason a user can be told `✓ already at the
+  latest version` while running an old one.
+
+### Fixed
+
+- **`${CLAUDE_PLUGIN_ROOT}` is described as substituted, not as an environment
+  variable.** Five skill files instructed resolving it from the environment, where
+  it is not: the harness substitutes it textually when a skill loads. The
+  workaround hanging off that misreading — "if it is unset, ask the user where the
+  plugin is installed" — went with it. Nine edits, `init/procedure.md` once and
+  `query`, `start-day`, `briefing` and `end-day` twice each, in a leading comment
+  and again in the worker prompt. `elephant-wiki`'s build skill uses the variable
+  three times, all as a path and none as a claim about the environment, and was
+  left alone.
+- **The README's per-release wiki note**, which still said a wiki bump is written
+  into the `elephant-mem` release that shipped it and that the wiki needs a plugin
+  update command of its own. Both stopped being true: `elephant-wiki` has carried
+  its own [changelog](elephant-wiki/CHANGELOG.md) and its own `wiki-v*` tag
+  namespace — its own sections since 0.1.0-beta.3 and `wiki-v*` tags since
+  0.1.0-beta.4 — and `elephant-update` updates every installed plugin of the
+  family.
+- **`docs/configuration.md`'s inventory entry for
+  `state/last-update-check.json`**, which pointed at the nudge as the thing that
+  writes it and attributed the re-sync of `scripts/` and `templates/` to the
+  `update` mode. The file has two writers now — the nudge, and every
+  `elephant-update` run that validated — and a run that failed after the copy
+  deliberately does not stamp, which is what keeps a bundle that has just failed
+  from being held quiet for a week.
+
 ## [0.1.0-beta.13] - 2026-09-03
 
 The open-loop lane had no exit. Measured on the owner's bundle: 2036 loop files,

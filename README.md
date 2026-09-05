@@ -5,7 +5,7 @@
 *an elephant never forgets*
 
 ![license](https://img.shields.io/badge/license-MIT-black?style=flat-square)
-![elephant-mem](https://img.shields.io/badge/elephant--mem-v0.1.0--beta.13-black?style=flat-square)
+![elephant-mem](https://img.shields.io/badge/elephant--mem-v0.1.0--beta.14-black?style=flat-square)
 ![elephant-wiki](https://img.shields.io/badge/elephant--wiki-v0.1.0--beta.4-black?style=flat-square)
 ![claude code](https://img.shields.io/badge/claude--code-plugin-black?style=flat-square)
 ![ci](https://img.shields.io/github/actions/workflow/status/rafapg/elephant-mem/ci.yml?branch=main&style=flat-square&label=ci)
@@ -206,10 +206,18 @@ They are installed separately and **versioned independently** — the wiki chang
 far less often, so the two numbers in the badges above drift apart on purpose. A
 lower `elephant-wiki` version does not mean it is out of date.
 
-Releases, git tags, and [changelog](CHANGELOG.md) sections track `elephant-mem`;
-a wiki bump is noted inside the `elephant-mem` release that shipped it. `update`
-only checks `elephant-mem` — update the wiki with
-`claude plugin update elephant-wiki@elephant-mem` when a release mentions it.
+Each plugin carries its own changelog and its own git-tag namespace:
+[`elephant-mem`](CHANGELOG.md) under `v0.1.0-beta.N`, and
+[`elephant-wiki`](elephant-wiki/CHANGELOG.md) under `wiki-v0.1.0-beta.N`. Up to
+wiki 0.1.0-beta.2 a wiki bump was written into the `elephant-mem` release that
+shipped it instead; that history stayed where it is, and the wiki's own file
+links back to it.
+
+`elephant-update` updates **every installed plugin of the family**, the wiki
+included, so neither one needs a command of its own. What is `elephant-mem`-only
+is the weekly nudge, which compares that one version, and the preflight's stop: a
+stale wiki file is named and the mode carries on, because the wiki renders your
+memory rather than running it.
 
 ## docs
 
@@ -219,6 +227,9 @@ only checks `elephant-mem` — update the wiki with
   operational state.
 - [integrations](docs/integrations.md) — Slack / Calendar / Drive setup,
   scheduling the routine, and bring-your-own MCP sources.
+- [updating](docs/updating.md) — the `elephant-update` command, the preflight
+  every mode runs before it works, and the launcher that makes the command
+  reachable from a terminal.
 - [changelog](CHANGELOG.md).
 
 ## license
