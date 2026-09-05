@@ -168,6 +168,38 @@ def write_pointer(path, bundle):
     return write(path, json.dumps({"bundle_path": str(bundle)}, indent=2) + "\n")
 
 
+SANDBOXED_ENV = ("ELEPHANT_PLUGINS_DIR", "ELEPHANT_POINTER", "ELEPHANT_BUNDLE",
+                 "ELEPHANT_BIN_DIR", "CLAUDE_CONFIG_DIR", "ELEPHANT_CLAUDE_CLI")
+
+
+def clean_env(plugins_dir, *, pointer=None, claude=None, bundle_env=None,
+              bin_dir=None, home=None):
+    """The environment both subprocess helpers run under, built in one place.
+
+    Every name in `SANDBOXED_ENV` is dropped before anything is set, so a value
+    the developer happens to export cannot reach a child and send it at a real
+    install, a real pointer, a real `~/.local/bin` or the real `claude`. One
+    helper rather than a copy per call site: a seventh name added to that tuple
+    has to reach both, and a call site that missed it would not fail loudly, it
+    would quietly read or write outside the throwaway tree.
+    """
+    env = dict(os.environ)
+    for key in SANDBOXED_ENV:
+        env.pop(key, None)
+    env["ELEPHANT_PLUGINS_DIR"] = str(plugins_dir)
+    env["ELEPHANT_CLAUDE_CLI"] = str(claude) if claude else "no-such-claude-cli"
+    if pointer is not None:
+        env["ELEPHANT_POINTER"] = str(pointer)
+    if bundle_env is not None:
+        env["ELEPHANT_BUNDLE"] = str(bundle_env)
+    if bin_dir is not None:
+        env["ELEPHANT_BIN_DIR"] = str(bin_dir)
+    if home is not None:
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+    return env
+
+
 def run_cli(args, *, plugins_dir, pointer, bundle_env=None, home=None,
             claude=None, stdin="", bin_dir=None):
     """The executable as a real subprocess, which is the only way to observe
@@ -186,20 +218,8 @@ def run_cli(args, *, plugins_dir, pointer, bundle_env=None, home=None,
     guarantee for the launcher: unset, HOME already points into the throwaway
     tree, and it is named outright where a check wants to look at what landed.
     """
-    env = dict(os.environ)
-    for key in ("ELEPHANT_PLUGINS_DIR", "ELEPHANT_POINTER", "ELEPHANT_BUNDLE",
-                "ELEPHANT_BIN_DIR", "CLAUDE_CONFIG_DIR", "ELEPHANT_CLAUDE_CLI"):
-        env.pop(key, None)
-    env["ELEPHANT_PLUGINS_DIR"] = str(plugins_dir)
-    env["ELEPHANT_POINTER"] = str(pointer)
-    env["ELEPHANT_CLAUDE_CLI"] = str(claude) if claude else "no-such-claude-cli"
-    if bundle_env is not None:
-        env["ELEPHANT_BUNDLE"] = str(bundle_env)
-    if bin_dir is not None:
-        env["ELEPHANT_BIN_DIR"] = str(bin_dir)
-    if home is not None:
-        env["HOME"] = str(home)
-        env["USERPROFILE"] = str(home)
+    env = clean_env(plugins_dir, pointer=pointer, claude=claude,
+                    bundle_env=bundle_env, bin_dir=bin_dir, home=home)
     return subprocess.run(
         [sys.executable, str(EXECUTABLE)] + [str(a) for a in args],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, input=stdin,
@@ -519,6 +539,7 @@ def main():
         bundle_checks(eu, tmp)
         check_cli_checks(eu, tmp)
         run_checks(eu, tmp)
+        dirty_knowledge_checks(eu, tmp)
         failure_checks(eu, tmp)
         launcher_checks(eu, tmp)
         interpreter_checks(eu)
@@ -1520,6 +1541,54 @@ def run_checks(eu, tmp):
                f"{done.returncode} {done.stderr!r}")
 
 
+def dirty_knowledge_checks(eu, tmp):
+    """E29, on the tree state the rest of the suite never produces.
+
+    Everywhere else the bundle is committed whole before a run starts, so the
+    commit step never meets a `knowledge/` that was already dirty and E29 is
+    only ever read as a content check. The guarantee is wider than that: an
+    `ingest` or `capture` interrupted before its own final commit, or a person
+    editing a fact by hand, leaves real hand-written content uncommitted, and a
+    run that stages the whole directory would carry it into a commit whose
+    message mentions only scripts and templates.
+    """
+    if not git_available():
+        record("git on PATH for the dirty-tree checks", False, "git not found")
+        return
+    world = make_world(tmp / "dirty")
+    bundle = world["bundle"]
+    edited = bundle / "knowledge" / "facts" / "2026-01-02-a-fact.md"
+    original = edited.read_text(encoding="utf-8")
+    mid_edit = original.replace("A fact.", "A fact, still being written.")
+    write(edited, mid_edit)
+    untracked = write(bundle / "knowledge" / "facts" / "2026-01-03-half-done.md",
+                      "---\nid: half-done\n---\n\nAn ingest that never finished.\n")
+
+    done = in_world(world, "--yes")
+    record("E29 a run over a bundle with uncommitted hand-written work still "
+           "succeeds", done.returncode == eu.RUN_OK,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    committed = committed_paths(bundle)
+    record("E29 the commit still carries the index rewrite the run itself caused",
+           "knowledge/entities/index.md" in committed, committed)
+    record("E29 and the scripts it copied",
+           "scripts/close-loops.py" in committed, committed)
+    record("E29 but not the fact somebody was midway through editing — a run "
+           "that swept it in would bury a person's work under a commit message "
+           "about scripts and templates",
+           "knowledge/facts/2026-01-02-a-fact.md" not in committed, committed)
+    record("E29 nor the untracked one an interrupted ingest left behind",
+           "knowledge/facts/2026-01-03-half-done.md" not in committed, committed)
+    record("E29 both are still on disk with the words their author left there",
+           edited.read_text(encoding="utf-8") == mid_edit
+           and "never finished" in untracked.read_text(encoding="utf-8"))
+    still_dirty = git(bundle, "status", "--porcelain", "--", "knowledge").stdout
+    record("E29 and both are still uncommitted, so the next ingest commits them "
+           "itself rather than finding its work already gone",
+           "2026-01-02-a-fact.md" in still_dirty
+           and "2026-01-03-half-done.md" in still_dirty, still_dirty)
+
+
 def failure_checks(eu, tmp):
     """E20, E21, E22, E26 and E27 — the three ways a run stops, and what it
     leaves behind when it stops after the copy."""
@@ -1643,19 +1712,9 @@ def load_resolver(eu):
 
 def run_launcher(target, args, *, plugins_dir, pointer=None, home=None):
     """The launcher as a real subprocess, which is the only way to observe what
-    a terminal observes. Same env discipline as `run_cli`: nothing here can
+    a terminal observes. Same `clean_env` as `run_cli`, so nothing here can
     reach a real install, a real pointer or the real `claude`."""
-    env = dict(os.environ)
-    for key in ("ELEPHANT_PLUGINS_DIR", "ELEPHANT_POINTER", "ELEPHANT_BUNDLE",
-                "ELEPHANT_BIN_DIR", "CLAUDE_CONFIG_DIR", "ELEPHANT_CLAUDE_CLI"):
-        env.pop(key, None)
-    env["ELEPHANT_PLUGINS_DIR"] = str(plugins_dir)
-    env["ELEPHANT_CLAUDE_CLI"] = "no-such-claude-cli"
-    if pointer is not None:
-        env["ELEPHANT_POINTER"] = str(pointer)
-    if home is not None:
-        env["HOME"] = str(home)
-        env["USERPROFILE"] = str(home)
+    env = clean_env(plugins_dir, pointer=pointer, home=home)
     return subprocess.run([str(target)] + [str(a) for a in args],
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           input="", text=True, encoding="utf-8",

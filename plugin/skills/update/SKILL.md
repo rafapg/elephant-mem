@@ -69,7 +69,16 @@ and the run that follows are about the same bundle.
 elephant-mem`), reads the installed and the published versions off it, and
 prints the version delta and the file-level plan. It installs nothing, copies
 nothing, commits nothing and stamps nothing, which is what makes it safe to show
-before asking. It exits `0`. Relay what it printed in `conversation_language`.
+before asking. Relay what it printed in `conversation_language`.
+
+**Read its exit code before going on.** `0` is the plan. Anything else is `5`,
+and there is no plan: the bundle could not be resolved, or the marketplace
+refresh failed — the user is offline, `claude` is not on PATH, or a `--bundle`
+names somewhere that is not a bundle. The refresh runs before the delta is read,
+so this failure lands here rather than at step 3. Stop, relay stderr, and say
+nothing was touched, which is true: a run that stops here has installed nothing
+and copied nothing. Do **not** go to step 2 and ask the user to approve an
+install off a plan that was never printed.
 
 **The refresh comes first, and that ordering is the point.** `claude plugin
 update` reads the version from the user's local clone of the marketplace

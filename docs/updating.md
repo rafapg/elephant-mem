@@ -87,9 +87,9 @@ are in §2):
 
 | code | meaning |
 |---|---|
-| `0` | success (also `--plan`, and a run whose launcher would not run) |
+| `0` | success (also a `--plan` that printed one, and a run whose launcher would not run) |
 | `4` | declined at the confirmation |
-| `5` | failed **before** the copy — the bundle is untouched |
+| `5` | failed **before** the copy — the bundle is untouched. `--plan` returns this too: it resolves the bundle and refreshes the clone before it can print anything |
 | `6` | failed **after** the copy — nothing committed, nothing stamped |
 
 ---

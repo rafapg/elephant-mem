@@ -86,7 +86,7 @@ would execute against stale scripts stops and names the way out.
   touching anything of the user's own, and a decline is an answer rather than an
   error — what it gives up is reaching the command from a terminal, not any part
   of the bundle.
-- **`tests/test_update.py` (296 checks)**, with its own `- run:` line in `ci.yml`
+- **`tests/test_update.py` (303 checks)**, with its own `- run:` line in `ci.yml`
   added in the same change, across the 3-OS × PyYAML matrix. The Windows runner is
   what executes the `.cmd` assertion, and it is the only place that can. A glob
   does not pick up a new suite: `test_backlog.py` went a full release unrun for
@@ -122,9 +122,13 @@ would execute against stale scripts stops and names the way out.
   `build-index.py`, which rewrites entity hub blocks and archive shards, and the
   old `update` committed the other two and left that rewrite dirty for whatever
   routine next ran `git add -A` — the thing `catch-up`'s own procedure names as
-  the one to avoid. When nothing was copied and the index rewrite changed nothing,
-  there is nothing staged and the run reports in sync rather than failing on an
-  empty commit; it still stamps.
+  the one to avoid. What it stages under `knowledge/` is only what the run itself
+  made dirty: the paths already dirty when it started are read first and left
+  alone, so an `ingest` or `capture` interrupted before its own final commit does
+  not have a half-written fact swept into a commit about scripts and templates.
+  When nothing was copied and the index rewrite changed nothing, there is nothing
+  staged and the run reports in sync rather than failing on an empty commit; it
+  still stamps.
 - **The nudge names the marketplace refresh, not just the command.** Pointing it
   at `elephant-update` was not enough on its own: it printed `claude plugin
   update` alone, which is the whole reason a user can be told `✓ already at the

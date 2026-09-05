@@ -647,6 +647,7 @@ CLI_NAME = "claude"
 # names as the thing to avoid. The stamp is outside it and needs no exclusion of
 # its own: `state/` is not in this tuple, and `seed/.gitignore:5` ignores the
 # file anyway.
+KNOWLEDGE_REL = "knowledge"
 COMMIT_PATHS = ("knowledge", "scripts", "templates")
 COMMIT_MESSAGE = "update: re-sync scripts + templates from the installed plugin"
 STAMP_REL = "state/last-update-check.json"
@@ -910,7 +911,44 @@ def restore_commands(bundle):
             f"git -C {root} clean -fd {paths}"]
 
 
-def commit_bundle(bundle, message=COMMIT_MESSAGE):
+def dirty_under(bundle, rel):
+    """The paths under `rel` git already sees as changed, before the run writes.
+
+    `commit_bundle` subtracts this from what it stages under `knowledge/`. The
+    run rewrites derived files there and has to commit them, but the same
+    directory holds the facts, loops and sources a person wrote, and an `ingest`
+    or `capture` interrupted before its own final commit leaves one of those
+    dirty. Staging the whole tree would sweep it into a commit whose message
+    mentions only scripts and templates, the outcome `catch-up/procedure.md`
+    already scopes its own commit to avoid. A file already dirty when the run
+    starts is the user's, not this run's.
+
+    Three plumbing reads rather than one `status --porcelain`: they emit bare
+    NUL-separated paths, so nothing here depends on the two-column status prefix
+    surviving `run_command`'s strip of the payload. `--exclude-standard` keeps a
+    gitignored file out, which is what a bundle's own `.gitignore` is for.
+    """
+    git = shutil.which("git")
+    if not git:
+        return set()
+    root = str(bundle)
+    reads = (["diff", "--name-only", "-z", "--", rel],
+             ["diff", "--name-only", "-z", "--cached", "--", rel],
+             ["ls-files", "--others", "--exclude-standard", "-z", "--", rel])
+    paths = set()
+    for argv in reads:
+        code, output = run_command([git, "-C", root, *argv], echo=False)
+        if code != 0:
+            # Unreadable on any one of the three and the honest answer is "all
+            # of it is the user's": staging nothing under knowledge/ loses the
+            # index rewrite from the commit, which the next run redoes, while
+            # guessing wrong here commits a file somebody was still writing.
+            return None
+        paths.update(f for f in output.split("\0") if f)
+    return paths
+
+
+def commit_bundle(bundle, message=COMMIT_MESSAGE, keep_dirty=()):
     """`(sha, detail)` — the sha of the commit, `""` when nothing was staged, or
     None when committing was not possible at all.
 
@@ -928,9 +966,23 @@ def commit_bundle(bundle, message=COMMIT_MESSAGE):
     paths = [p for p in COMMIT_PATHS if (Path(bundle) / p).exists()]
     if not paths:
         return "", ""
-    code, output = run_command([git, "-C", root, "add", "--", *paths], echo=False)
-    if code != 0:
-        return None, output
+    keep = None if keep_dirty is None else set(keep_dirty)
+    for rel in paths:
+        if rel == KNOWLEDGE_REL:
+            # Only what this run made dirty. Everything already dirty here was
+            # written by a person and stays unstaged, `keep_dirty` being the
+            # reading taken before the run touched the bundle.
+            now = dirty_under(bundle, rel)
+            if now is None or keep is None:
+                continue
+            add = sorted(now - keep)
+            if not add:
+                continue
+        else:
+            add = [rel]
+        code, output = run_command([git, "-C", root, "add", "--", *add], echo=False)
+        if code != 0:
+            return None, output
     staged, _ = run_command([git, "-C", root, "diff", "--cached", "--quiet"], echo=False)
     if staged == 0:
         return "", ""
@@ -1440,6 +1492,17 @@ def run_update(bundle_override="", plugins_dir=None, pointer=None,
         # it safe to show before asking.
         return RUN_OK
 
+    # Nothing installed is settled before the question, not after it: asking
+    # someone to approve a run already guaranteed to fail is a question with one
+    # wrong answer and no right one. It sits outside the numbered steps because
+    # it is a guard on them, and `--plan` returns above having printed the delta,
+    # where "not installed" is the useful thing to report.
+    if not before.installs:
+        return _fail_before(
+            f"no plugin of the {MARKETPLACE} family is installed, so there is "
+            f"nothing to update. Install it with "
+            f"`{CLI_NAME} plugin install {family_key(REQUIRED_PLUGIN)}`.")
+
     # 4. One confirmation, and declining leaves the refreshed clone alone —
     #    deliberate, and harmless.
     if not assume_yes and not confirmed():
@@ -1447,11 +1510,6 @@ def run_update(bundle_override="", plugins_dir=None, pointer=None,
         return RUN_DECLINED
 
     # 5. One `claude plugin update` per installed plugin of the family.
-    if not before.installs:
-        return _fail_before(
-            f"no plugin of the {MARKETPLACE} family is installed, so there is "
-            f"nothing to update. Install it with "
-            f"`{CLI_NAME} plugin install {family_key(REQUIRED_PLUGIN)}`.")
     ok, detail = install_plugins(sorted(before.installs))
     if not ok:
         return _fail_before(f"a plugin could not be updated — nothing was "
@@ -1474,7 +1532,9 @@ def run_update(bundle_override="", plugins_dir=None, pointer=None,
               f"(was {before.version_of(plugin) or 'nothing'}).")
 
     # 7. The copy: the required set in full, the optional set only where the
-    #    bundle already has the file.
+    #    bundle already has the file. Nothing above this line has written into
+    #    the bundle, so this is the honest reading of what a person left dirty.
+    keep_dirty = dirty_under(bundle, KNOWLEDGE_REL)
     copied, failures = apply_copy(comparison)
     if failures:
         return _fail_after(bundle, "the copy into the bundle did not finish:\n  "
@@ -1491,7 +1551,7 @@ def run_update(bundle_override="", plugins_dir=None, pointer=None,
         return _fail_after(bundle, detail)
 
     # 9. The commit and the stamp, both of which belong to a run that validated.
-    sha, trouble = commit_bundle(bundle)
+    sha, trouble = commit_bundle(bundle, keep_dirty=keep_dirty)
     stamp = write_stamp(bundle, published.get(REQUIRED_PLUGIN)
                         or after.version_of(REQUIRED_PLUGIN) or "")
 
