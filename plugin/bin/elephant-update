@@ -20,15 +20,17 @@ time: nothing is stored in the bundle (a record would be absent from exactly the
 stale bundles it exists to catch, and would say the right number about files
 someone has since edited), and nothing is published.
 
-Wired so far: `--check`, and the full run end to end except its last step — the
-marketplace refresh, the delta and the plan, one confirmation, the per-plugin
-install, re-resolution, the scoped copy, the index rebuild and validation, the
-commit and the stamp. The launcher it writes last lands with the task that
-follows; see `.bb/elephant-update/spec.md`.
+The full run is the whole path in one command: the marketplace refresh, the delta
+and the plan, one confirmation, the per-plugin install, re-resolution, the scoped
+copy, the index rebuild and validation, the commit, the stamp, and last of all
+the launcher at `~/.local/bin/elephant-update` that makes the command reachable
+from a login shell. The launcher is written last on purpose, so one that will not
+run is a report rather than a failure of an update already done.
 
 Pure stdlib, Python 3.10+. Cross-platform (explicit UTF-8 I/O).
 """
 import argparse
+import base64
 import json
 import os
 import re
@@ -979,6 +981,411 @@ def _fail_after(bundle, detail):
     return RUN_FAILED_AFTER_COPY
 
 
+# ── the launcher ─────────────────────────────────────────────────────────────
+# The PATH that carries `elephant-update` inside Claude Code belongs to Claude
+# Code's own processes; a login shell has no plugin directory on it. So a
+# terminal needs a launcher at `~/.local/bin/elephant-update`, the shell path
+# Git Bash shares with macOS and Linux.
+#
+# It cannot be a symlink to this file. Plugins install to
+# `<plugins>/cache/<marketplace>/<plugin>/<version>/`, so every update lands in
+# a new directory and the link would dangle at exactly the moment the user
+# updated. The launcher resolves the installed directory at run time instead,
+# which means it has to carry the resolver: nothing can call this executable
+# before knowing where it is. That copy is the one piece of the logic living
+# outside this file, and it is Python on both sides — a shell sorting version
+# names is the failure this command exists to close, and a batch file cannot
+# sort at all.
+#
+# Every full run rewrites the pair, missing or not. Repairing only what looks
+# broken is what would strand every launcher on disk at whatever the registry
+# looked like the day it was written.
+
+LAUNCHER_NAME = "elephant-update"
+LAUNCHER_DIR_ENV = "ELEPHANT_BIN_DIR"
+DEFAULT_LAUNCHER_DIR = "~/.local/bin"
+
+# The resolver the launcher carries: the registry first, semver over the cache
+# as the fallback, then hand off to `<installPath>/bin/elephant-update`. Kept
+# free of single quotes so it embeds in a POSIX `sh -c '...'` in the clear, and
+# small enough that its base64 form plus the batch line around it stays well
+# under cmd.exe's 8191-character limit.
+LAUNCHER_RESOLVER = r'''"""Resolve the installed elephant-mem plugin and run its executable.
+
+Written into the launcher by `elephant-update` itself and rewritten by every
+full run, so this copy can never become the stale one. Edit
+`plugin/bin/elephant-update` in the plugin repository, not this text.
+
+It exists because nothing can call that executable before knowing where it is:
+plugins install to `<plugins>/cache/<marketplace>/<plugin>/<version>/`, so every
+update lands in a new directory and a symlink would dangle. The registry Claude
+Code keeps says which version is installed; semver over the cache is the
+fallback, and a text sort is never used, since sorted as text 0.1.0-beta.9
+follows 0.1.0-beta.13 and that is the older plugin.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+MARKETPLACE = "elephant-mem"
+PLUGIN = "elephant-mem"
+SCHEMA = 2
+CANNOT_VERIFY = 3
+VERSION_RE = re.compile(
+    r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
+
+
+def plugins_dir():
+    override = os.environ.get("ELEPHANT_PLUGINS_DIR", "").strip()
+    if override:
+        return os.path.expanduser(override)
+    config = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    base = (os.path.expanduser(config) if config
+            else os.path.join(os.path.expanduser("~"), ".claude"))
+    return os.path.join(base, "plugins")
+
+
+def version_key(text):
+    match = VERSION_RE.match((text or "").strip())
+    if not match:
+        return (0, (0, 0, 0), 0, ())
+    core = tuple(int(part or 0) for part in match.group(1, 2, 3))
+    pre = match.group(4)
+    if not pre:
+        return (1, core, 1, ())
+    return (1, core, 0, tuple((0, int(p), "") if p.isdigit() else (1, 0, p)
+                              for p in pre.split(".")))
+
+
+def from_registry(root):
+    """The directory the registry names, "" when it names none that is on disk,
+    or None when the registry cannot be used and the cache has to answer."""
+    try:
+        with open(os.path.join(root, "installed_plugins.json"),
+                  encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or raw.get("version") != SCHEMA:
+        return None
+    plugins = raw.get("plugins")
+    if not isinstance(plugins, dict):
+        return None
+    records = plugins.get(PLUGIN + "@" + MARKETPLACE)
+    if isinstance(records, dict):
+        records = [records]
+    live = []
+    for record in records if isinstance(records, list) else []:
+        if not isinstance(record, dict):
+            continue
+        declared = os.path.expanduser(str(record.get("installPath") or "").strip())
+        if declared and os.path.isdir(declared):
+            live.append((version_key(str(record.get("version") or "")), declared))
+    return max(live)[1] if live else ""
+
+
+def from_cache(root):
+    base = os.path.join(root, "cache", MARKETPLACE, PLUGIN)
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return ""
+    best, rank = "", None
+    for name in names:
+        path = os.path.join(base, name)
+        if not os.path.isdir(path):
+            continue
+        complete = os.path.isfile(
+            os.path.join(path, ".claude-plugin", "plugin.json"))
+        key = (1 if complete else 0, version_key(name))
+        if rank is None or key > rank:
+            best, rank = path, key
+    return best
+
+
+def main():
+    root = plugins_dir()
+    found = from_registry(root)
+    if found is None:
+        found = from_cache(root)
+    if not found:
+        sys.stderr.write(
+            "elephant-update: no installed elephant-mem plugin under " + root
+            + ". Install it with `claude plugin install elephant-mem@elephant-mem`,"
+            + " or run `elephant-mem:update` from inside Claude Code.\n")
+        return CANNOT_VERIFY
+    target = os.path.join(found, "bin", "elephant-update")
+    if not os.path.isfile(target):
+        sys.stderr.write(
+            "elephant-update: " + found + " carries no bin/elephant-update, so"
+            + " this launcher has nothing to run. Update the plugin, or run"
+            + " `elephant-mem:update` from inside Claude Code.\n")
+        return CANNOT_VERIFY
+    return subprocess.run([sys.executable, target] + sys.argv[1:]).returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+# The interpreter walk, in both shells, is INTERPRETER_CANDIDATES rather than a
+# second list invented here: `python3` is frequently absent from a Windows PATH
+# (`init/procedure.md:25-28`) and the two sides must not disagree about what to
+# try next.
+_PROBE_SOURCE = ("import sys; sys.exit(0 if sys.version_info[:2] >= "
+                 "(%d, %d) else 1)" % MIN_PYTHON)
+
+
+def default_launcher_dir():
+    """Where the launcher goes: `~/.local/bin`, the shell path Git Bash shares
+    with macOS and Linux, unless `ELEPHANT_BIN_DIR` says otherwise — which is
+    what keeps a suite from ever writing into a developer's or a runner's own
+    `~/.local/bin`."""
+    override = os.environ.get(LAUNCHER_DIR_ENV, "").strip()
+    return Path(override).expanduser() if override else \
+        Path(DEFAULT_LAUNCHER_DIR).expanduser()
+
+
+def _sh_literal(text):
+    """A POSIX single-quoted shell literal. The resolver carries no single quote
+    of its own, so this normally only wraps it; the escape is here so that can
+    never silently stop being true."""
+    return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
+def launcher_text():
+    """The POSIX launcher: the interpreter walk in `sh`, then the resolver in
+    the clear. Not a heredoc, deliberately — a heredoc is the script's own
+    stdin, and the run this hands off to asks the user one question."""
+    walk = " ".join('"%s"' % " ".join(argv) for argv in INTERPRETER_CANDIDATES)
+    tried = ", ".join(" ".join(argv) for argv in INTERPRETER_CANDIDATES)
+    return f"""#!/bin/sh
+# {LAUNCHER_NAME}: the command, reachable from a login shell.
+#
+# GENERATED by `{PROG}`, and rewritten by every full run whether or not it is
+# missing: it carries its own copy of the resolver below, so repairing only what
+# looks broken would strand it at whatever the registry looked like the day it
+# was written. Edit `plugin/bin/{PROG}` in the plugin repository instead.
+#
+# It is not a symlink into the plugin because every update installs into a new
+# versioned directory and the link would dangle. It does not assume `python3`
+# is on PATH either, which is frequently untrue on Windows.
+
+for ELEPHANT_PY in {walk}; do
+    # Unquoted on purpose: the last candidate is two words.
+    if $ELEPHANT_PY -c "{_PROBE_SOURCE}" >/dev/null 2>&1; then
+        exec $ELEPHANT_PY -c {_sh_literal(LAUNCHER_RESOLVER)} "$@"
+    fi
+done
+
+echo "{PROG}: no Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer on PATH: tried {tried}." >&2
+exit {CHECK_CANNOT_VERIFY}
+"""
+
+
+def launcher_cmd_text():
+    """The Windows launcher. Git Bash's `chmod` grants no NTFS execute
+    permission, so Windows gets this beside the POSIX file rather than instead
+    of it.
+
+    The resolver arrives base64-encoded because a batch variable cannot hold a
+    newline, and because the base64 alphabet contains none of the characters
+    batch would otherwise make us escape. It is the same source the POSIX file
+    carries in the clear, from the same constant, so the two cannot drift.
+
+    No `rem` line here carries a shell metacharacter: `rem` is a command like
+    any other, and an unescaped ampersand in a comment ends it.
+    """
+    payload = base64.b64encode(LAUNCHER_RESOLVER.encode("utf-8")).decode("ascii")
+    run = ("import base64, sys; "
+           "exec(base64.b64decode(sys.argv.pop(1)).decode('utf-8'))")
+    tried = ", ".join(" ".join(argv) for argv in INTERPRETER_CANDIDATES)
+    lines = ["@echo off",
+             f"rem {LAUNCHER_NAME}, the command as cmd.exe and PowerShell reach it.",
+             f"rem GENERATED by {PROG} and rewritten by every full run.",
+             "rem The resolver is base64 below, the same source the POSIX file",
+             "rem beside this one carries in the clear.",
+             "setlocal",
+             f'set "ELEPHANT_PROBE={_PROBE_SOURCE}"',
+             f'set "ELEPHANT_RUN={run}"',
+             f'set "ELEPHANT_B64={payload}"',
+             ""]
+    for argv in INTERPRETER_CANDIDATES:
+        spelling = " ".join(argv)
+        lines += [f'{spelling} -c "%ELEPHANT_PROBE%" >NUL 2>&1',
+                  "if not errorlevel 1 (",
+                  f'    set "ELEPHANT_PY={spelling}"',
+                  "    goto :run",
+                  ")",
+                  ""]
+    lines += [f"echo {PROG}: no Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer "
+              f"on PATH: tried {tried}. 1>&2",
+              f"exit /b {CHECK_CANNOT_VERIFY}",
+              "",
+              ":run",
+              '%ELEPHANT_PY% -c "%ELEPHANT_RUN%" %ELEPHANT_B64% %*',
+              "exit /b %ERRORLEVEL%",
+              ""]
+    return "\r\n".join(lines)
+
+
+def launcher_paths(directory=None):
+    """`(posix, cmd)` — the pair, whether or not this machine writes both."""
+    directory = Path(directory) if directory else default_launcher_dir()
+    return directory / LAUNCHER_NAME, directory / (LAUNCHER_NAME + ".cmd")
+
+
+def write_launcher(directory=None, windows=None):
+    """Write the launcher, unconditionally. `(written, error)`.
+
+    The `.cmd` is written on Windows only: elsewhere it is a file nothing can
+    run, and a `~/.local/bin` with a dead batch file in it is worse than one
+    without.
+    """
+    windows = (os.name == "nt") if windows is None else windows
+    posix_path, cmd_path = launcher_paths(directory)
+    written = []
+    try:
+        posix_path.parent.mkdir(parents=True, exist_ok=True)
+        # `open` rather than `write_text`, whose `newline` argument arrived in
+        # 3.10: these two files carry the line endings their shells expect, and
+        # neither may be translated on the way out.
+        with posix_path.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(launcher_text())
+        try:
+            posix_path.chmod(0o755)
+        except OSError:
+            # A filesystem with no execute bit to grant. Git Bash is one of
+            # them, which is the whole reason the `.cmd` exists.
+            pass
+        written.append(posix_path)
+        if windows:
+            with cmd_path.open("w", encoding="utf-8", newline="") as handle:
+                handle.write(launcher_cmd_text())
+            written.append(cmd_path)
+    except OSError as exc:
+        return written, str(exc)
+    return written, ""
+
+
+def launcher_entry(written):
+    """The one of the pair a shell on this machine would actually run, and so
+    the one to verify: the `.cmd` on Windows, the POSIX file everywhere else."""
+    if not written:
+        return None
+    return written[-1] if os.name == "nt" else written[0]
+
+
+def verify_launcher(path, timeout=120):
+    """Invoke the launcher once and report. `(ok, detail)`.
+
+    Whether the pair is reachable from Git Bash — the shell every Windows
+    instruction in the README runs in — cannot be settled by reading this
+    repository, so this asserts nothing: it runs the file and says what
+    happened. `--help` is the argument because it exercises the whole chain,
+    shell to interpreter to resolver to registry to the installed executable,
+    and writes nothing anywhere.
+    """
+    code, output = run_command([str(path), "--help"], timeout=timeout, echo=False)
+    if code != 0:
+        return False, output or f"it exited {code}"
+    if PROG not in output or "--check" not in output:
+        return False, ("it ran, but what answered was not this executable:\n"
+                       + (output or "(it printed nothing)"))
+    return True, ""
+
+
+def on_path(directory):
+    """Whether a shell would find the launcher by name."""
+    target = os.path.normcase(os.path.abspath(str(directory)))
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry:
+            continue
+        try:
+            here = os.path.normcase(os.path.abspath(os.path.expanduser(entry)))
+        except (OSError, ValueError):
+            continue
+        if here == target:
+            return True
+    return False
+
+
+def path_advice(directory):
+    """The line to add, never an edit: a shell profile is the user's own file
+    and nothing here writes to it."""
+    if on_path(directory):
+        return []
+    lines = [f"{directory} is not on your PATH, so `{PROG}` will not be found by "
+             f"name yet. Add it — this never edits a profile for you:",
+             f'  export PATH="{directory}:$PATH"',
+             "  (in ~/.zshrc or ~/.bashrc, and on Windows in Git Bash's "
+             "~/.bash_profile)"]
+    if os.name == "nt":
+        lines.append(f'  for cmd.exe and PowerShell instead: '
+                     f'setx PATH "%PATH%;{directory}"')
+    return lines
+
+
+def _launcher_fallback(interpreter, plugin_dir):
+    """The interpreter-and-path line: what to run when the launcher will not,
+    and the other route out, which every blocking message names."""
+    argv = list(interpreter or []) or list(INTERPRETER_CANDIDATES[0])
+    target = (Path(plugin_dir) / "bin" / LAUNCHER_NAME if plugin_dir
+              else Path(__file__).resolve())
+    return ["  " + " ".join(_quote(part) for part in argv + [str(target)]),
+            "  or invoke `elephant-mem:update` from inside Claude Code."]
+
+
+def install_launcher(directory=None, interpreter=None, plugin_dir=None):
+    """Write the launcher pair, verify it, and return the lines a run prints.
+
+    Never raises, and never fails a run. It is written last — after the copy,
+    the commit and the stamp — precisely so that a launcher which will not run
+    is a report and not a failure: the update itself is already done, and none
+    of it depends on this. So the whole report goes to stdout, where the rest of
+    the run's report goes; stderr here belongs to what actually failed.
+    """
+    directory = Path(directory) if directory else default_launcher_dir()
+    written, error = write_launcher(directory)
+    if error:
+        return "\n".join(
+            [f"The launcher could not be written to {directory}: {error}",
+             "The update itself is done. Run it by interpreter and path instead:"]
+            + _launcher_fallback(interpreter, plugin_dir))
+    names = ", ".join(path.name for path in written)
+    lines = [f"Wrote the launcher to {directory} ({names}). Every run rewrites "
+             f"it, missing or not, because it carries its own copy of the "
+             f"resolver."]
+    target = launcher_entry(written)
+    ok, detail = verify_launcher(target)
+    if not ok:
+        lines.append(f"It does not run here, so use the interpreter and the path "
+                     f"instead — the update itself is done and none of it "
+                     f"depends on this: {detail}")
+        return "\n".join(lines + _launcher_fallback(interpreter, plugin_dir))
+    lines.append(f"Verified it: `{target.name}` ran and reached the installed "
+                 f"plugin, which is the only proof this file works here.")
+    return "\n".join(lines + path_advice(directory))
+
+
+def run_install_launcher(directory=""):
+    """`--install-launcher`: the launcher pair and nothing else.
+
+    The route `init` takes at the stage that already asks before touching
+    anything of the user's own. It installs no plugin, reads no bundle and
+    writes nothing else, and it exits 0 even when the launcher will not run, for
+    the same reason the full run does.
+    """
+    resolution = resolve_plugins()
+    print(install_launcher(directory=directory or None,
+                           interpreter=resolve_interpreter(),
+                           plugin_dir=resolution.path_of(REQUIRED_PLUGIN)))
+    return RUN_OK
+
+
 def run_update(bundle_override="", plugins_dir=None, pointer=None,
                plan_only=False, assume_yes=False, refresh=True):
     """The whole path in one command. Returns one of the four run codes.
@@ -1084,11 +1491,13 @@ def run_update(bundle_override="", plugins_dir=None, pointer=None,
     stamp = write_stamp(bundle, published.get(REQUIRED_PLUGIN)
                         or after.version_of(REQUIRED_PLUGIN) or "")
 
-    # 10. The launcher is written LAST, unconditionally, and verified rather than
-    #     asserted — task 5 in `.bb/elephant-update/spec.md`. Coming after the
-    #     copy, the commit and the stamp is what makes a launcher that will not
-    #     run a report rather than a failure: the update itself is already done,
-    #     so the run says so, prints the fallback line, and still exits 0.
+    # 10. The launcher, written LAST and unconditionally, and verified rather
+    #     than asserted. Coming after the copy, the commit and the stamp is what
+    #     makes a launcher that will not run a report rather than a failure: the
+    #     update itself is already done, so the run says so, prints the fallback
+    #     line, and still exits 0.
+    print(install_launcher(interpreter=interpreter,
+                           plugin_dir=after.path_of(REQUIRED_PLUGIN)))
 
     print(_closing_report(bundle, sha, trouble, stamp, after, moved))
     return RUN_OK
@@ -1149,6 +1558,13 @@ nothing, stamps nothing, and prints the git commands that put the bundle back.
 nothing else. `--yes --no-refresh` is the run that follows one: it skips the
 question and reuses that refresh, so the delta the user approved is the delta
 that gets installed.
+
+The run also rewrites `~/.local/bin/elephant-update` every time, which is what
+makes this command reachable from a login shell at all: Claude Code's own
+processes carry the plugin on their PATH and a terminal does not. That launcher
+carries its own copy of the resolver, so rewriting it unconditionally is the
+point rather than an accident, and `ELEPHANT_BIN_DIR` says where it goes.
+`--install-launcher` writes just that pair, verifies it, and does nothing else.
 """
 
 
@@ -1180,6 +1596,12 @@ def build_parser():
     mode.add_argument("--plan", action="store_true",
                       help="refresh the clone, print the delta and the plan, "
                            "and install or copy nothing")
+    # `init` writes the launcher at the stage that already asks, having just
+    # created a bundle against a plugin it did not install: the full run is the
+    # wrong thing there, and the launcher is the only part of it that applies.
+    mode.add_argument("--install-launcher", action="store_true",
+                      help="write and verify the launcher pair and nothing "
+                           "else (what init does at its own stage 9)")
     ap.add_argument("--yes", action="store_true",
                     help="skip the confirmation (what elephant-mem:update "
                          "passes, having asked in the conversation)")
@@ -1219,6 +1641,9 @@ def main(argv=None):
         # able to promise it wrote nothing.
         parser.error("--check writes nothing, so --yes and --no-refresh have "
                      "nothing to do with it")
+    if args.install_launcher:
+        return run_install_launcher()
+
     if args.check:
         comparison, notes = run_check(args.bundle)
         # In sync is silent, notes included. A mode runs this before every piece

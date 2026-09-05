@@ -41,6 +41,7 @@ throwaway bundle in a tempdir, fake plugin directories in the cache layout
 Claude Code really uses, PASS/FAIL per check, exit code 0 only if every check
 passes.
 """
+import base64
 import datetime
 import importlib.machinery
 import importlib.util
@@ -102,10 +103,12 @@ def make_bundle(root, name="bundle", scripts=None, templates=None, extra=None):
 
 
 def make_plugin(root, plugin, version="0.1.0-beta.1", scripts=None, templates=None,
-                other_assets=None, marketplace="elephant-mem"):
+                other_assets=None, marketplace="elephant-mem", bin_files=None):
     """A fake installed plugin directory in the layout Claude Code uses:
     `<root>/cache/<marketplace>/<plugin>/<version>/`, so the same helper serves
-    the resolution tests. `other_assets` are assets outside the published set."""
+    the resolution tests. `other_assets` are assets outside the published set;
+    `bin_files` are files under `bin/`, which is where the executable a launcher
+    hands off to lives and which is outside `assets/` entirely."""
     plugin_root = Path(root) / "cache" / marketplace / plugin / version
     (plugin_root / ".claude-plugin").mkdir(parents=True, exist_ok=True)
     write(plugin_root / ".claude-plugin" / "plugin.json",
@@ -116,6 +119,8 @@ def make_plugin(root, plugin, version="0.1.0-beta.1", scripts=None, templates=No
         write(plugin_root / "assets" / "templates" / filename, content)
     for rel, content in (other_assets or {}).items():
         write(plugin_root / "assets" / rel, content)
+    for filename, content in (bin_files or {}).items():
+        write(plugin_root / "bin" / filename, content).chmod(0o755)
     return plugin_root
 
 
@@ -148,7 +153,7 @@ def write_pointer(path, bundle):
 
 
 def run_cli(args, *, plugins_dir, pointer, bundle_env=None, home=None,
-            claude=None, stdin=""):
+            claude=None, stdin="", bin_dir=None):
     """The executable as a real subprocess, which is the only way to observe
     what a mode observes: an exit code and stderr.
 
@@ -161,17 +166,21 @@ def run_cli(args, *, plugins_dir, pointer, bundle_env=None, home=None,
     than by its shebang, because a Windows runner honours no shebang.
 
     `stdin` defaults to closed, so a run that would ask for confirmation reads
-    EOF and declines rather than hanging a suite forever.
+    EOF and declines rather than hanging a suite forever. `bin_dir` is the same
+    guarantee for the launcher: unset, HOME already points into the throwaway
+    tree, and it is named outright where a check wants to look at what landed.
     """
     env = dict(os.environ)
     for key in ("ELEPHANT_PLUGINS_DIR", "ELEPHANT_POINTER", "ELEPHANT_BUNDLE",
-                "CLAUDE_CONFIG_DIR", "ELEPHANT_CLAUDE_CLI"):
+                "ELEPHANT_BIN_DIR", "CLAUDE_CONFIG_DIR", "ELEPHANT_CLAUDE_CLI"):
         env.pop(key, None)
     env["ELEPHANT_PLUGINS_DIR"] = str(plugins_dir)
     env["ELEPHANT_POINTER"] = str(pointer)
     env["ELEPHANT_CLAUDE_CLI"] = str(claude) if claude else "no-such-claude-cli"
     if bundle_env is not None:
         env["ELEPHANT_BUNDLE"] = str(bundle_env)
+    if bin_dir is not None:
+        env["ELEPHANT_BIN_DIR"] = str(bin_dir)
     if home is not None:
         env["HOME"] = str(home)
         env["USERPROFILE"] = str(home)
@@ -333,12 +342,16 @@ def make_clone(root, sources, marketplace="elephant-mem"):
         "plugins": [{"name": "elephant-mem", "source": "./plugin"},
                     {"name": "elephant-wiki", "source": "./elephant-wiki"}],
     }, indent=2) + "\n")
-    for source, (name, version, assets_from) in sources.items():
+    for source, (name, version, ships_from) in sources.items():
         write(clone / source / ".claude-plugin" / "plugin.json",
               json.dumps({"name": name, "version": version}, indent=2) + "\n")
-        if assets_from:
-            shutil.copytree(Path(assets_from) / "assets", clone / source / "assets",
-                            dirs_exist_ok=True)
+        # `assets/` is what an install places in a bundle; `bin/` is what the
+        # launcher hands off to. The clone carries both because the stand-in CLI
+        # copies this directory whole, exactly as an install does.
+        for part in ("assets", "bin"):
+            if ships_from and (Path(ships_from) / part).is_dir():
+                shutil.copytree(Path(ships_from) / part, clone / source / part,
+                                dirs_exist_ok=True)
     return clone
 
 
@@ -389,7 +402,13 @@ def make_world(root, *, validator=STUB_VALIDATE_OK, declares="0.1.0-beta.14",
                                     "close-loops.py": "print('close 14')\n",
                                     "build-index.py": STUB_BUILD_INDEX,
                                     "validate-okf.py": validator},
-                           templates={"open-loop.md": "# loop 14\n"})
+                           templates={"open-loop.md": "# loop 14\n"},
+                           # The release that introduces the launcher is the
+                           # first to carry the executable it hands off to; the
+                           # beta.13 already installed does not, which is the
+                           # state every machine is really in.
+                           bin_files={"elephant-update":
+                                      EXECUTABLE.read_text(encoding="utf-8")})
     wiki4 = make_plugin(root, "elephant-wiki", version="0.1.0-beta.4",
                         scripts={"wiki.py": "print('wiki 4')\n",
                                  "wiki.js": "// spa 4\n", "graph.js": "// graph 4\n"})
@@ -480,6 +499,7 @@ def main():
         check_cli_checks(eu, tmp)
         run_checks(eu, tmp)
         failure_checks(eu, tmp)
+        launcher_checks(eu, tmp)
         interpreter_checks(eu)
         real_tree_checks(eu, tmp)
 
@@ -1330,6 +1350,10 @@ def run_checks(eu, tmp):
         return
     world = make_world(tmp / "run")
     bundle, registry = world["bundle"], world["registry"]
+    # A launcher already on disk, written the day the registry looked different.
+    # HOME is the throwaway one, so `~/.local/bin` is here and not the runner's.
+    launcher = write(world["home"] / ".local" / "bin" / "elephant-update",
+                     "#!/bin/sh\n# an older resolver, frozen\nexit 0\n")
 
     # ── `--plan` ─────────────────────────────────────────────────────────────
     before = snapshot(bundle)
@@ -1358,6 +1382,9 @@ def run_checks(eu, tmp):
            "no commit, no stamp",
            snapshot(bundle) == before,
            sorted(set(snapshot(bundle)) ^ set(before)))
+    record("E18 and it rewrote no launcher either: a plan is a plan",
+           launcher.read_text(encoding="utf-8").endswith("exit 0\n"),
+           launcher.read_text(encoding="utf-8")[:120])
 
     # ── the run that follows it ──────────────────────────────────────────────
     # A second refresh would find the marketplace further along. `--no-refresh`
@@ -1427,6 +1454,14 @@ def run_checks(eu, tmp):
                .total_seconds()) < 300, stamp)
     record("the run says a restart is needed to load the plugin just installed",
            "restart" in done.stdout and "0.1.0-beta.14" in done.stdout, done.stdout)
+    record("E31 the run rewrote the launcher that was already there, rather than "
+           "leaving a copy of the resolver frozen at the day it was written",
+           launcher.read_text(encoding="utf-8") == eu.launcher_text(),
+           launcher.read_text(encoding="utf-8")[:200])
+    record("E33 and it verified it by running it, which reached the plugin the "
+           "run had just installed — the launcher is written last, so this can "
+           "only ever be a report",
+           "Verified it" in done.stdout, done.stdout)
 
     # ── E30: the same run again, with nothing left to do ─────────────────────
     head = git(bundle, "rev-parse", "HEAD").stdout.strip()
@@ -1443,6 +1478,9 @@ def run_checks(eu, tmp):
     record("E30 and it stamps anyway, so the nudge is still throttled",
            (bundle / "state" / "last-update-check.json").read_text(encoding="utf-8")
            != stamped)
+    record("E31 a run with nothing to copy still rewrites the launcher: what "
+           "goes stale in it is the resolver, not the bundle",
+           launcher.read_text(encoding="utf-8") == eu.launcher_text())
     record("a run that moved no version says nothing about restarting",
            "restart" not in done.stdout, done.stdout)
 
@@ -1558,6 +1596,279 @@ def failure_checks(eu, tmp):
            "elephant-update" in done.stderr and "elephant-mem:update" in done.stderr,
            done.stderr)
 
+
+# ── the launcher ─────────────────────────────────────────────────────────────
+# The PATH that carries the command inside Claude Code belongs to Claude Code's
+# own processes, so a terminal needs a launcher, and it cannot be a symlink: a
+# plugin installs into a new versioned directory on every update and the link
+# would dangle exactly when the user updated. So the launcher carries the
+# resolver, which is a SECOND copy of logic that already exists in the
+# executable — and the whole risk of a second copy is that it drifts. These
+# checks execute that copy rather than reading it.
+
+def load_resolver(eu):
+    """The launcher's own copy of the resolver, executed the way the launcher
+    executes it. `__name__` is anything but `__main__`, so its `sys.exit(main())`
+    does not take the suite down with it."""
+    namespace = {"__name__": "launcher_resolver"}
+    exec(compile(eu.LAUNCHER_RESOLVER, "<the launcher's resolver>", "exec"),
+         namespace)
+    return namespace
+
+
+def run_launcher(target, args, *, plugins_dir, pointer=None, home=None):
+    """The launcher as a real subprocess, which is the only way to observe what
+    a terminal observes. Same env discipline as `run_cli`: nothing here can
+    reach a real install, a real pointer or the real `claude`."""
+    env = dict(os.environ)
+    for key in ("ELEPHANT_PLUGINS_DIR", "ELEPHANT_POINTER", "ELEPHANT_BUNDLE",
+                "ELEPHANT_BIN_DIR", "CLAUDE_CONFIG_DIR", "ELEPHANT_CLAUDE_CLI"):
+        env.pop(key, None)
+    env["ELEPHANT_PLUGINS_DIR"] = str(plugins_dir)
+    env["ELEPHANT_CLAUDE_CLI"] = "no-such-claude-cli"
+    if pointer is not None:
+        env["ELEPHANT_POINTER"] = str(pointer)
+    if home is not None:
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+    return subprocess.run([str(target)] + [str(a) for a in args],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          input="", text=True, encoding="utf-8",
+                          errors="replace", env=env)
+
+
+def launcher_machine(root, *, carries_bin=True):
+    """A machine with `elephant-mem` 0.1.0-beta.13 installed over an older
+    0.1.0-beta.9 still in the cache, and a bundle in sync with it.
+
+    `carries_bin=False` is the plugin that predates this executable: resolution
+    succeeds and there is nothing at the end of it to run, which is the state
+    every already-installed bundle is in on the release that adds the launcher.
+    """
+    executable = EXECUTABLE.read_text(encoding="utf-8")
+    published = {"scripts": {"recall.py": "print('recall 13')\n"},
+                 "templates": {"open-loop.md": "# loop 13\n"}}
+    mem13 = make_plugin(root, "elephant-mem", version="0.1.0-beta.13",
+                        bin_files={"elephant-update": executable} if carries_bin
+                        else None, **published)
+    # Older, complete, and carrying the executable too: if anything here ever
+    # sorted versions as text, `beta.9` would follow `beta.13` and this is the
+    # directory that would answer.
+    make_plugin(root, "elephant-mem", version="0.1.0-beta.9",
+                bin_files={"elephant-update": executable},
+                scripts={"recall.py": "print('recall 9')\n"},
+                templates={"open-loop.md": "# loop 9\n"})
+    registry = make_registry(root, {
+        "elephant-mem@elephant-mem": {"installPath": str(mem13),
+                                      "version": "0.1.0-beta.13"}})
+    bundle = make_bundle(root, "bundle", **published)
+    stale = make_bundle(root, "stale", scripts={"recall.py": "print('recall 9')\n"},
+                        templates={"open-loop.md": "# loop 13\n"})
+    home = Path(root) / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    return {"root": Path(root), "plugin": mem13, "registry": registry,
+            "bundle": bundle, "stale": stale, "home": home,
+            "pointer": write_pointer(Path(root) / "pointer.json", bundle)}
+
+
+def launcher_checks(eu, tmp):
+    """E31, E32, E33, E35 and E36 — what the two generated files say, that they
+    are rewritten rather than repaired, and that the pair really runs."""
+    resolver = load_resolver(eu)
+    posix = eu.launcher_text()
+    windows = eu.launcher_cmd_text()
+
+    # ── the resolver the launcher carries ────────────────────────────────────
+    record("E36 the launcher's resolver orders versions as semver: sorted as "
+           "text 0.1.0-beta.9 follows 0.1.0-beta.13, which is the older plugin "
+           "and the failure this command exists to close",
+           resolver["version_key"]("0.1.0-beta.13")
+           > resolver["version_key"]("0.1.0-beta.9"))
+    ladder = ["0.1.0-alpha.99", "0.1.0-beta", "0.1.0-beta.9", "0.1.0-beta.13",
+              "0.1.0", "0.2.0"]
+    record("and it agrees with the executable's own ordering all the way up the "
+           "ladder — the one copy of this logic outside that file must not drift",
+           [resolver["version_key"](v) < resolver["version_key"](w)
+            for v, w in zip(ladder, ladder[1:])]
+           == [eu.parse_version(v) < eu.parse_version(w)
+               for v, w in zip(ladder, ladder[1:])])
+    record("the resolver reads the registry first and the cache only as a "
+           "fallback, the way the executable does",
+           callable(resolver.get("from_registry"))
+           and callable(resolver.get("from_cache")))
+
+    # ── what the two files say ───────────────────────────────────────────────
+    record("the POSIX launcher is a shell script",
+           posix.startswith("#!/bin/sh\n"), posix[:40])
+    record("E36 it walks init's interpreter candidates, in init's order, and "
+           "assumes none of them",
+           all(" ".join(argv) in posix for argv in eu.INTERPRETER_CANDIDATES)
+           and posix.index("python3") < posix.index("py -3"), posix[:1200])
+    record("E36 it probes for the floor rather than trusting a name",
+           "sys.version_info[:2] >= (3, 10)" in posix)
+    record("it carries the resolver in the clear, not a path to one: a second "
+           "file beside it is a file a user can delete",
+           eu.LAUNCHER_RESOLVER in posix)
+    record("the resolver is embedded quoted, so the shell hands Python the "
+           "source rather than interpreting it",
+           "-c '" in posix and posix.count("exec $ELEPHANT_PY") == 1, posix[-400:])
+    record("not a heredoc, which would be the script's own stdin — and the run "
+           "it hands off to asks the user one question",
+           "<<" not in posix)
+    record("a machine with no interpreter at all exits could-not-verify rather "
+           "than pretending it checked",
+           f"exit {eu.CHECK_CANNOT_VERIFY}\n" in posix, posix[-200:])
+    record("both files are pure ASCII: a batch comment renders in whatever "
+           "codepage the console has",
+           all(ord(c) < 128 for c in posix) and all(ord(c) < 128 for c in windows))
+
+    # ── E35: the Windows half ────────────────────────────────────────────────
+    payload = [ln for ln in windows.split("\r\n") if ln.startswith("set \"ELEPHANT_B64=")]
+    decoded = ""
+    if payload:
+        decoded = base64.b64decode(payload[0].split("=", 1)[1].rstrip('"')).decode("utf-8")
+    record("E35 the .cmd carries the same resolver, from the same constant, so "
+           "the two halves of the pair cannot disagree",
+           decoded == eu.LAUNCHER_RESOLVER, f"{len(decoded)} vs {len(eu.LAUNCHER_RESOLVER)}")
+    record("E35 base64 because a batch variable cannot hold a newline, and the "
+           "alphabet needs no batch escaping",
+           payload and set(payload[0].split("=", 1)[1].rstrip('"'))
+           <= set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="))
+    record("E35 CRLF, which is what cmd.exe expects of a batch file",
+           windows.endswith("\r\n") and "\n" not in windows.replace("\r\n", ""))
+    record("E35 it walks the same candidates as the POSIX half",
+           all(f'set "ELEPHANT_PY={" ".join(argv)}"' in windows
+               for argv in eu.INTERPRETER_CANDIDATES), windows[:600])
+    record("E35 no rem line carries a shell metacharacter — rem is a command "
+           "like any other and an unescaped ampersand ends it",
+           not any(set(ln) & set("&|<>^%") for ln in windows.split("\r\n")
+                   if ln.startswith("rem ")),
+           [ln for ln in windows.split("\r\n") if ln.startswith("rem ")])
+    longest = max(len(ln) for ln in windows.split("\r\n"))
+    record("E35 every line stays clear of cmd.exe's 8191-character limit, which "
+           "the base64 payload is the only thing near",
+           longest < 7000, longest)
+
+    # ── E31: written, and rewritten ──────────────────────────────────────────
+    root = tmp / "launcher"
+    root.mkdir(parents=True, exist_ok=True)
+    empty = root / "bin-empty"
+    written, error = eu.write_launcher(empty)
+    record("E31 the launcher is written into a directory that did not exist",
+           not error and (empty / "elephant-update").is_file(), error)
+    record("E31 and it is executable, since a shell has to run it by name",
+           os.name == "nt" or os.access(empty / "elephant-update", os.X_OK))
+    record("E35 the .cmd is written on Windows and nowhere else: elsewhere it is "
+           "a file nothing can run",
+           (empty / "elephant-update.cmd").is_file() == (os.name == "nt"))
+    both = root / "bin-both"
+    forced, _ = eu.write_launcher(both, windows=True)
+    record("E35 the pair, when the machine is the one that needs it",
+           [p.name for p in forced] == ["elephant-update", "elephant-update.cmd"],
+           [p.name for p in forced])
+    stale = write(root / "bin-stale" / "elephant-update",
+                  "#!/bin/sh\n# a launcher written the day the registry looked "
+                  "different\nexit 0\n")
+    eu.write_launcher(stale.parent)
+    record("E31 a launcher already there, carrying an older resolver, is "
+           "rewritten rather than repaired — repairing only what looks broken "
+           "is what would strand every launcher on disk",
+           stale.read_text(encoding="utf-8") == posix)
+
+    # ── the pair really runs, and hands off ──────────────────────────────────
+    machine = launcher_machine(root / "machine")
+    written, _ = eu.write_launcher(root / "machine" / "bin", windows=(os.name == "nt"))
+    entry = eu.launcher_entry(written)
+    done = run_launcher(entry, ["--check"], plugins_dir=machine["root"],
+                        pointer=machine["pointer"], home=machine["home"])
+    record("the launcher resolves the installed plugin and hands off: a bundle "
+           "in sync exits 0, silently",
+           done.returncode == eu.CHECK_IN_SYNC and not done.stdout and not done.stderr,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    done = run_launcher(entry, ["--check", "--bundle", machine["stale"]],
+                        plugins_dir=machine["root"], pointer=machine["pointer"],
+                        home=machine["home"])
+    record("arguments are forwarded whole and the exit code comes back whole: a "
+           "stale bundle through the launcher is required drift",
+           done.returncode == eu.CHECK_REQUIRED_DRIFT
+           and "scripts/recall.py" in done.stderr,
+           f"{done.returncode}\n{done.stderr}")
+    (machine["registry"]).unlink()
+    done = run_launcher(entry, ["--check"], plugins_dir=machine["root"],
+                        pointer=machine["pointer"], home=machine["home"])
+    record("with the registry gone it falls back to semver over the cache and "
+           "still finds beta.13 — beta.9 is sitting right there, complete, and "
+           "would answer a text sort",
+           done.returncode == eu.CHECK_IN_SYNC, f"{done.returncode}\n{done.stderr}")
+
+    bare = launcher_machine(root / "bare", carries_bin=False)
+    done = run_launcher(entry, ["--check"], plugins_dir=bare["root"],
+                        pointer=bare["pointer"], home=bare["home"])
+    record("E33 a plugin that carries no executable — every bundle installed "
+           "before this release — leaves the launcher with nothing to run, and "
+           "it says so with both routes out rather than failing silently",
+           done.returncode == eu.CHECK_CANNOT_VERIFY
+           and "bin/elephant-update" in done.stderr
+           and "elephant-mem:update" in done.stderr,
+           f"{done.returncode}\n{done.stderr}")
+
+    # ── `--install-launcher`, the route `init` takes ─────────────────────────
+    machine = launcher_machine(root / "install")
+    bins = root / "install" / "bin"
+    done = run_cli(["--install-launcher"], plugins_dir=machine["root"],
+                   pointer=machine["pointer"], home=machine["home"],
+                   bin_dir=bins)
+    record("--install-launcher exits 0 and writes the pair, installing nothing "
+           "and reading no bundle: init has just built one against a plugin it "
+           "did not install",
+           done.returncode == eu.RUN_OK and (bins / "elephant-update").is_file(),
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("E33 it verifies the file instead of asserting it runs, by running it",
+           "Verified it" in done.stdout, done.stdout)
+    record("E32 the install directory is not on PATH, so the line to add is "
+           "printed — and no profile is edited",
+           "not on your PATH" in done.stdout
+           and f'export PATH="{bins}:$PATH"' in done.stdout, done.stdout)
+    saved = os.environ.get("PATH", "")
+    try:
+        os.environ["PATH"] = str(bins) + os.pathsep + saved
+        record("E32 and when it IS on PATH there is no line to add — the advice "
+               "is for the case that needs it, not a line on every run",
+               eu.path_advice(bins) == [], eu.path_advice(bins))
+    finally:
+        os.environ["PATH"] = saved
+
+    # E33 — the verification fails, and the run does not.
+    bare = launcher_machine(root / "bare-install", carries_bin=False)
+    bins = root / "bare-install" / "bin"
+    done = run_cli(["--install-launcher"], plugins_dir=bare["root"],
+                   pointer=bare["pointer"], home=bare["home"], bin_dir=bins)
+    record("E33 a launcher that will not run still exits 0: it is written after "
+           "everything else precisely so it cannot fail an update already done",
+           done.returncode == eu.RUN_OK, f"{done.returncode}\n{done.stdout}")
+    record("E33 the installer says so, and prints the interpreter and the path "
+           "to use instead",
+           "does not run here" in done.stdout
+           and str(Path(bare["plugin"]) / "bin" / "elephant-update") in done.stdout,
+           done.stdout)
+    record("E33 with the other route out beside it, as every blocking message "
+           "in this design carries",
+           "elephant-mem:update" in done.stdout, done.stdout)
+    record("E33 and the file is on disk either way — it is the plugin that has "
+           "nothing to run, not this that failed to write",
+           (bins / "elephant-update").is_file())
+
+    # E11 — `--check` writes nothing, the launcher included.
+    machine = launcher_machine(root / "checkonly")
+    untouched = root / "checkonly" / "bin"
+    untouched.mkdir(parents=True, exist_ok=True)
+    done = run_cli(["--check"], plugins_dir=machine["root"],
+                   pointer=machine["pointer"], home=machine["home"],
+                   bin_dir=untouched)
+    record("E11 --check repairs no launcher and writes none: it runs inside read "
+           "modes that must not write",
+           done.returncode == eu.CHECK_IN_SYNC and not list(untouched.iterdir()),
+           sorted(p.name for p in untouched.iterdir()))
 
 def interpreter_checks(eu):
     """E36 — `python3` is frequently absent from a Windows PATH, which
