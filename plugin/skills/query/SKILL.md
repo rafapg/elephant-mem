@@ -9,11 +9,10 @@ description: >
 
 <!-- Path resolution: pass the worker BOTH absolute paths, built from
      ${CLAUDE_PLUGIN_ROOT} (the plugin's own convention, see init/update
-     skills) — this resolves regardless of the main agent's or the
-     subagent's cwd: procedure.md at
+     skills). The harness substitutes this when the skill loads, resolving it
+     regardless of the main agent's or the subagent's cwd: procedure.md at
      ${CLAUDE_PLUGIN_ROOT}/skills/query/procedure.md and core.md at
-     ${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md. If CLAUDE_PLUGIN_ROOT is
-     unset, ask the user where the plugin is installed rather than guessing. -->
+     ${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md. -->
 
 # elephant-mem:query
 
@@ -49,7 +48,7 @@ before the subagent exists.
 2. Spawn a subagent with the Agent tool: `subagent_type: "elephant-worker"`,
    `model: "sonnet"`. Give it this prompt: "Run the elephant-mem query
    procedure. First load `${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md`
-   (resolve `${CLAUDE_PLUGIN_ROOT}` from the environment), then open and
+   (the harness substitutes this path), then open and
    follow the procedure at `${CLAUDE_PLUGIN_ROOT}/skills/query/procedure.md`.
    The user's question is: `<the user's verbatim question/topic>`. Do every
    bundle read, and the procedure's closing `scripts/recall.py log` call, in

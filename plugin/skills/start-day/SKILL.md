@@ -9,13 +9,12 @@ description: >
 
 <!-- Path resolution: pass the worker BOTH absolute paths, built from
      ${CLAUDE_PLUGIN_ROOT} (the plugin's own convention, see init/update
-     skills) — this resolves regardless of the main agent's or the
-     subagent's cwd: procedure.md at
+     skills). The harness substitutes this when the skill loads, resolving it
+     regardless of the main agent's or the subagent's cwd: procedure.md at
      ${CLAUDE_PLUGIN_ROOT}/skills/start-day/procedure.md and core.md at
-     ${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md. If CLAUDE_PLUGIN_ROOT is
-     unset, ask the user where the plugin is installed rather than guessing.
-     Effort: the Agent tool has no reasoning-effort/thinking param today, so
-     the worker inherits the session's effort — no override is set here. -->
+     ${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md. Effort: the Agent tool has
+     no reasoning-effort/thinking param today, so the worker inherits the
+     session's effort — no override is set here. -->
 
 # elephant-mem:start-day
 
@@ -52,8 +51,8 @@ before the subagent exists.
 2. Spawn a subagent with the Agent tool: `subagent_type: "elephant-worker"`,
    `model: "sonnet"`. Give it this prompt:
    "Run the elephant-mem start-day procedure. First load
-   `${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md` (resolve
-   `${CLAUDE_PLUGIN_ROOT}` from the environment), then open and follow the
+   `${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md` (the harness
+   substitutes this path), then open and follow the
    procedure at `${CLAUDE_PLUGIN_ROOT}/skills/start-day/procedure.md` exactly.
    start-day takes no user arguments. Do every bundle read, the briefing
    script run, the update-check state write, and the closing

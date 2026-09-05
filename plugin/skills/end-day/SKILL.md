@@ -9,15 +9,14 @@ description: >
 
 <!-- Path resolution: pass the worker BOTH absolute paths, built from
      ${CLAUDE_PLUGIN_ROOT} (the plugin's own convention, see init/update
-     skills) — this resolves regardless of the main agent's or the
-     subagent's cwd: procedure.md at
+     skills). The harness substitutes this when the skill loads, resolving it
+     regardless of the main agent's or the subagent's cwd: procedure.md at
      ${CLAUDE_PLUGIN_ROOT}/skills/end-day/procedure.md and core.md at
-     ${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md. If CLAUDE_PLUGIN_ROOT is
-     unset, ask the user where the plugin is installed rather than guessing.
-     Effort: neither the Agent tool nor the `elephant-worker` agent
-     definition exposes a reasoning-effort/thinking parameter, so "high
-     effort" is a target we can't force here — the worker inherits whatever
-     effort level the current session is already running at. -->
+     ${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md. Effort: neither the Agent
+     tool nor the `elephant-worker` agent definition exposes a
+     reasoning-effort/thinking parameter, so "high effort" is a target we
+     can't force here — the worker inherits whatever effort level the current
+     session is already running at. -->
 
 # elephant-mem:end-day
 
@@ -54,8 +53,8 @@ the exception: it runs here, before the subagent exists.
 
 2. Spawn a subagent: `subagent_type: "elephant-worker"`, `model: "sonnet"`,
    prompt: "Run the elephant-mem end-day procedure. First load
-   `${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md` (resolve
-   `${CLAUDE_PLUGIN_ROOT}` from the environment), then open and follow the
+   `${CLAUDE_PLUGIN_ROOT}/skills/_shared/core.md` (the harness
+   substitutes this path), then open and follow the
    procedure at `${CLAUDE_PLUGIN_ROOT}/skills/end-day/procedure.md`. Do
    every bundle read, the `scripts/briefing.py` run and the closing
    `scripts/recall.py log` call yourself, in your own context. Apart from that

@@ -13,8 +13,8 @@ fresh. Never silently overwrite user data.
 **Asset location.** The bundle is scaffolded from assets that ship *inside the
 installed plugin* at `${CLAUDE_PLUGIN_ROOT}/assets/`:
 `${CLAUDE_PLUGIN_ROOT}/assets/seed/`, `.../assets/scripts/`, `.../assets/templates/`.
-Resolve `${CLAUDE_PLUGIN_ROOT}` from the environment; if it is unset, ask the user
-where the plugin is installed rather than guessing.
+`${CLAUDE_PLUGIN_ROOT}` is substituted by the harness when the skill loads,
+resolving to the plugin's own directory regardless of the main agent's cwd.
 
 ---
 
