@@ -163,16 +163,27 @@ The exception is the optional `ingest-audio` mode: WhisperX is not supported
 ## updating
 
 ```
-/elephant-mem:update
+elephant-update
 ```
 
-Compares your installed plugin against the published `version` in
-[`plugin.json`](plugin/.claude-plugin/plugin.json), shows the update commands if
-newer, and — after you update — re-syncs the bundle's copied scripts and
-templates. Read modes also nudge you at most once a week when a release is
-available; they never update anything on their own.
+One command for a path that used to be three: it refreshes your local clone of
+the marketplace, updates the installed plugins of the family, re-syncs the
+bundle's copied `scripts/` and `templates/`, rebuilds the index, validates, and
+commits the result inside the bundle (locally, never pushed). From inside Claude
+Code, `/elephant-mem:update` is the other route.
 
-Updating the plugin is **two** commands, in this order:
+Read modes nudge you at most once a week when a release is available, and every
+mode checks the bundle's copy against the installed plugin before it does any
+work — a bundle running scripts four releases old is the failure this exists to
+catch. Neither ever updates anything on its own.
+
+The command ships inside the plugin, on the PATH Claude Code hands its own
+processes. To reach it from a terminal, a full run writes a launcher at
+`~/.local/bin/elephant-update` every time it runs; if that directory is not on
+your PATH, the run prints the line to add.
+
+Underneath, updating the plugin itself is still **two** commands, in this order,
+and `elephant-update` runs both for you:
 
 ```
 claude plugin marketplace update elephant-mem

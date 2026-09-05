@@ -471,7 +471,8 @@ file the backlog item.
 At the very end (after the commit), run the once-per-week update nudge described
 in `../_shared/core.md` (state file `state/last-update-check.json`; skip if
 checked within 7 days; fetch the published `plugin.json`, compare `version`,
-show `claude plugin update elephant-mem@elephant-mem` if newer; always stamp
+show `elephant-update` if newer — naming the marketplace refresh it runs first,
+and `elephant-mem:update` as the route from inside Claude Code; always stamp
 `last_checked`, skip silently if offline). This is the only interactive-ish
 touch in the routine and it never updates anything itself.
 

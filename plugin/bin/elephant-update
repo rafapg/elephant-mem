@@ -942,8 +942,8 @@ def commit_bundle(bundle, message=COMMIT_MESSAGE):
 
 
 def write_stamp(bundle, latest_seen):
-    """`state/last-update-check.json`, in the shape `_shared/core.md:243-251`
-    reads: the weekly nudge's throttle, and gitignored, so it is outside the
+    """`state/last-update-check.json`, in the shape `_shared/core.md`'s
+    **Update check** section reads: the weekly nudge's throttle, and gitignored, so it is outside the
     commit by construction.
 
     A run that failed after the copy never reaches this, deliberately: holding

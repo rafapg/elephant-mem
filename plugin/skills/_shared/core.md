@@ -317,10 +317,29 @@ the user — it never updates anything itself:
 2. Fetch
    `https://raw.githubusercontent.com/rafapg/elephant-mem/main/plugin/.claude-plugin/plugin.json`
    and compare its `version` (semver) to the installed plugin's `version`.
-3. If the remote is newer, show the user the update command once
-   (`claude plugin update elephant-mem@elephant-mem`) — do **not** auto-update.
+3. If the remote is newer, show the command once — do **not** auto-update:
+
+   ```bash
+   elephant-update
+   ```
+
+   Name what it covers alongside it, because the command on its own is not the
+   whole message: it **refreshes the marketplace clone** (`claude plugin
+   marketplace update elephant-mem`) first, then updates the installed plugins
+   of the family, then re-syncs the bundle's `scripts/` and `templates/`. The
+   refresh is the part this nudge used to leave out, and leaving it out is how a
+   user gets told `✓ already at the latest version` while running an old one —
+   `claude plugin update` reads the local marketplace clone, not the published
+   repo. The route from inside Claude Code, which is also the route for a shell
+   that has no launcher for the command yet, is `elephant-mem:update`.
 4. Write back `last_checked` = now and `latest_seen` = the remote version
-   (regardless of outcome, so the 7-day gate holds).
+   (regardless of outcome, so the 7-day gate holds). A full `elephant-update`
+   run stamps the same file, so a nudge that was acted on goes quiet for a week.
+
+This nudge and the **Preflight** above ask different questions and point at the
+same command: the nudge is about a newer *release* existing, the preflight about
+the bundle's copy not matching the plugin **already installed**. Either fires
+without the other, and only the preflight ever stops a mode.
 
 Do this only in interactive modes (e.g. `start-day`) or at the tail of
 `catch-up`; if the fetch fails (offline), skip silently and still stamp
