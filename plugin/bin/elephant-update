@@ -860,6 +860,13 @@ def apply_copy(comparison):
     identical is left alone rather than rewritten: after normalisation a CRLF
     checkout compares equal, so rewriting it would replace every line ending on
     a Windows bundle and stage a whitespace-only change on every single run.
+
+    `copy`, not `copy2`: the mode carries over but the timestamp does not. A
+    bundle's copy is new as of now, and stamping it with the plugin file's own
+    mtime hands git a file whose stat can still match what its index recorded,
+    which is a cache it is entitled to trust. The commit then leaves the file
+    out while adding the untracked ones beside it — the shape both Windows
+    failures took, on alternating matrix cells.
     """
     copied, failures = [], []
     for entry in comparison.copy_plan:
@@ -867,7 +874,7 @@ def apply_copy(comparison):
             continue
         try:
             entry.dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(entry.src, entry.dest)
+            shutil.copy(entry.src, entry.dest)
         except OSError as exc:
             failures.append(f"{entry.rel}: {exc}")
             continue

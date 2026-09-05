@@ -67,6 +67,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1437,6 +1438,16 @@ def run_checks(eu, tmp):
     # is what keeps the delta the user approved from moving under them.
     repoint(world, declare={"plugin": "0.1.0-beta.15"})
     calls(world, clear=True)
+    # Age the clone the install copies from, so "the copy is new" is a claim the
+    # check can fail. Left fresh, every source is younger than the run anyway and
+    # the assertion below holds whether or not the copy preserves a timestamp.
+    aged = time.time() - 90 * 24 * 3600
+    for path in Path(world["clone"]).rglob("*"):
+        if path.is_file():
+            os.utime(path, (aged, aged))
+    # A second of slack: a filesystem whose timestamps are coarser than the test
+    # is not the thing under test here.
+    copy_started = time.time() - 1
     done = in_world(world, "--yes", "--no-refresh")
     record("the run exits 0", done.returncode == eu.RUN_OK,
            f"{done.returncode}\n{done.stdout}\n{done.stderr}")
@@ -1463,6 +1474,15 @@ def run_checks(eu, tmp):
     record("templates move with the scripts",
            (bundle / "templates" / "open-loop.md").read_text(encoding="utf-8")
            == "# loop 14\n")
+    record("a copied file is new as of the copy, not as of whenever the plugin's "
+           "own file was written: carrying the source mtime over leaves git free "
+           "to trust an index entry the copy has just invalidated, and the commit "
+           "then skips that file while adding the untracked ones beside it",
+           all((bundle / rel).stat().st_mtime >= copy_started
+               for rel in ("scripts/recall.py", "templates/open-loop.md")),
+           {rel: (bundle / rel).stat().st_mtime
+            for rel in ("scripts/recall.py", "templates/open-loop.md")}
+           | {"copy_started": copy_started})
     record("the outdated wiki file the bundle had is refreshed",
            (bundle / "scripts" / "wiki.py").read_text(encoding="utf-8")
            == "print('wiki 4')\n")
