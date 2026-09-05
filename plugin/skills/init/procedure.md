@@ -321,11 +321,17 @@ git -C <bundle> commit -m "init: create elephant-mem bundle"
 
 **Local commit only — never push.** The bundle is private.
 
-## Stage 9 — Global awareness (optional)
+## Stage 9 — Outside the bundle (optional)
+
+Two offers, both writing to the user's own machine rather than to the bundle, so
+**ask before each** (AskUserQuestion) and take a decline as an answer rather than
+a failure: the bundle Stage 8 committed is complete without either, and `init` is
+re-runnable, so a "no" here can become a "yes" later.
+
+### Global awareness
 
 Offer to make Claude aware of the bundle in every session by installing the
-global snippet. **Ask first** (AskUserQuestion) — this touches the user's own
-config.
+global snippet.
 
 - Copy `${CLAUDE_PLUGIN_ROOT}/assets/elephant-plugin.md` (bundled with the
   plugin) to `~/.claude/elephant-plugin.md`.
@@ -336,6 +342,41 @@ config.
   ```
 - If the user declines, skip silently — the plugin's modes still work when invoked
   explicitly.
+
+### The `elephant-update` launcher
+
+`elephant-update` is the one command that updates the installed plugins and
+re-syncs this bundle's copied `scripts/` and `templates/`. It ships **inside the
+plugin**, on the PATH Claude Code hands the processes it spawns — a login shell
+carries no plugin directory at all. So reaching it from a terminal takes a
+launcher, and this is the stage that offers to write one.
+
+- **Ask first** — it writes `~/.local/bin/elephant-update` (plus a `.cmd` beside
+  it on Windows), which is the user's own directory and outside the bundle.
+- On accept, run the command **by name**, since this process has the plugin's
+  `bin/` on its PATH:
+
+  ```bash
+  elephant-update --install-launcher
+  ```
+
+  It writes that pair and nothing else: no plugin is installed, no bundle is
+  read, and nothing it does touches what Stage 8 just committed. It then **runs
+  the launcher once** instead of asserting it works, and prints the outcome —
+  the confirmation, and the `export PATH=...` line to add when the directory is
+  not on the user's PATH (it prints that line, it never edits a shell profile).
+  Relay what it printed in `conversation_language`.
+  - If the name is not found, run the file itself with the interpreter Stage 0
+    settled on: `<python> ${CLAUDE_PLUGIN_ROOT}/bin/elephant-update
+    --install-launcher`.
+  - It exits `0` even when the launcher it just wrote will not run on this
+    machine; in that case its output carries the interpreter-and-path line to
+    use instead. Pass that on and continue to Stage 10 — nothing in this stage
+    can fail `init`.
+- **If the user declines, write nothing and continue. That is not an error.**
+  What they give up is reaching the command from a terminal, not any part of the
+  bundle: `elephant-mem:update` runs the same update from inside Claude Code,
+  and re-running `init` offers this again.
 
 ## Stage 10 — Wrap
 

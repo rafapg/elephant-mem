@@ -14,7 +14,8 @@ description: >
 A guided walkthrough that stands up a working elephant-mem bundle from nothing.
 Run it conversationally: explain each stage briefly, use the **AskUserQuestion**
 tool for every choice, and confirm before any write outside the new bundle
-directory (the pointer file and — optionally — the user's `~/.claude/CLAUDE.md`).
+directory (the pointer file and — optionally — the user's `~/.claude/CLAUDE.md`
+and a launcher in `~/.local/bin`).
 
 **Load `../_shared/core.md` first** (the shared contract). Note the twist: core's
 "find the bundle" protocol assumes a bundle already exists — `init` is the mode
@@ -32,8 +33,10 @@ starting state, not an error to send the user back with.
   so every other mode can find the bundle.
 - The **owner entity** plus a few clearly-marked example items, an initial
   `build-index` + `validate` pass, and the first local commit.
-- Optionally: a `sources` block for automatic ingestion, and a global-awareness
-  line in `~/.claude/CLAUDE.md`.
+- Optionally: a `sources` block for automatic ingestion, a global-awareness
+  line in `~/.claude/CLAUDE.md`, and the `elephant-update` launcher at
+  `~/.local/bin/elephant-update`, which is what makes that command reachable
+  from a terminal. Stage 9 asks before each, and a decline is not an error.
 
 ## Run it
 
