@@ -20,11 +20,17 @@ time: nothing is stored in the bundle (a record would be absent from exactly the
 stale bundles it exists to catch, and would say the right number about files
 someone has since edited), and nothing is published.
 
-Wired so far: the comparison layer below. Bundle/plugin resolution and the CLI
-land with the tasks that follow; see `.bb/elephant-update/spec.md`.
+Wired so far: the comparison layer, and the resolution that feeds it both sides
+(the registry Claude Code keeps, semver over the plugin cache as the fallback,
+and an interpreter located rather than assumed). The CLI lands with the tasks
+that follow; see `.bb/elephant-update/spec.md`.
 
 Pure stdlib, Python 3.10+. Cross-platform (explicit UTF-8 I/O).
 """
+import json
+import os
+import re
+import subprocess
 import sys
 from collections import namedtuple
 from pathlib import Path
@@ -236,6 +242,302 @@ def check_notice(comparison):
 def _phrase(state):
     return {"missing": "missing from the bundle",
             "differs": "differs from the installed plugin"}.get(state, state)
+
+
+# ── resolution ───────────────────────────────────────────────────────────────
+# Where the two sides of the comparison come from, and the one place a version
+# is ever compared.
+#
+# **The registry first.** `~/.claude/plugins/installed_plugins.json` names every
+# installed plugin, keyed `<plugin>@<marketplace>`, with an explicit
+# `installPath` and `version`. A version sitting in the cache is not evidence it
+# is installed: the owner's cache holds six of `elephant-mem` (`beta.7` through
+# `beta.13`) and only `beta.13` is installed. Taking the cache's highest happens
+# to agree today, and disagrees after a downgrade, a declined install, or an
+# update that downloaded and then failed.
+#
+# **Semver over the cache as the fallback**, for a missing registry or a schema
+# that moved. Never a text sort: sorted as text `0.1.0-beta.9` follows
+# `0.1.0-beta.13`, which would run the older plugin and reproduce the failure
+# this command exists to fix. A shell `sort` does exactly that, and a Windows
+# batch file cannot sort at all — which is why this is Python and lives here.
+
+REGISTRY_NAME = "installed_plugins.json"
+REGISTRY_SCHEMA = 2  # the version the registry declares today
+
+
+def default_plugins_dir():
+    """The directory holding the registry and the plugin cache.
+
+    `~/.claude/plugins` unless the environment says otherwise:
+    `ELEPHANT_PLUGINS_DIR` points the resolver at a throwaway tree, so no suite
+    reads a developer's or a runner's real install, and `CLAUDE_CONFIG_DIR` is
+    honoured because a user who relocated their config dir took the registry
+    with it. With neither set the path is exactly the verified one.
+    """
+    override = os.environ.get("ELEPHANT_PLUGINS_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    config = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    base = Path(config).expanduser() if config else Path.home() / ".claude"
+    return base / "plugins"
+
+
+# Optional leading `v`, one to three numeric parts, an optional prerelease and
+# build metadata we ignore. Anything else is not a version.
+_VERSION_RE = re.compile(
+    r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.\-]+))?(?:\+[0-9A-Za-z.\-]+)?$")
+
+
+def parse_version(text):
+    """A sortable key for a version string, ordered as semver and never as text.
+
+    Semver precedence, with build metadata ignored: the numeric core first, then
+    a release outranking any prerelease of the same core, then the prerelease
+    identifiers dot by dot — numerically where they are numeric, a numeric
+    identifier below an alphanumeric one, and more identifiers outranking a
+    prefix of themselves. So `0.1.0` > `0.1.0-beta.13` > `0.1.0-beta.9` >
+    `0.1.0-beta` > `0.1.0-alpha.99`.
+
+    A string that is not a version sorts below every string that is, rather than
+    raising: the cache is a directory listing and can hold anything, and one
+    stray entry must not take the resolver down.
+    """
+    match = _VERSION_RE.match((text or "").strip())
+    if not match:
+        return (0, (0, 0, 0), 0, (), text or "")
+    core = tuple(int(part or 0) for part in match.group(1, 2, 3))
+    prerelease = match.group(4)
+    if not prerelease:
+        return (1, core, 1, (), "")
+    identifiers = tuple((0, int(part), "") if part.isdigit() else (1, 0, part)
+                        for part in prerelease.split("."))
+    return (1, core, 0, identifiers, "")
+
+
+def family_key(plugin, marketplace=MARKETPLACE):
+    """The registry key, and the argument `claude plugin update` takes."""
+    return f"{plugin}@{marketplace}"
+
+
+def plugin_of_key(key, marketplace=MARKETPLACE):
+    """The plugin name in a registry key `<plugin>@<marketplace>`, or None when
+    the key belongs to another marketplace.
+
+    The suffix *is* the family test. A prefix heuristic over plugin or directory
+    names would claim someone else's `elephant-notes` from another marketplace,
+    and would miss a plugin of ours that is not named `elephant-*`.
+    """
+    suffix = "@" + marketplace
+    if not isinstance(key, str) or not key.endswith(suffix):
+        return None
+    return key[:-len(suffix)] or None
+
+
+# One installed plugin. `path` is None when a plugin is declared but its
+# directory is not on disk; `source` is "registry" or "cache".
+PluginInstall = namedtuple("PluginInstall", "plugin version path source")
+
+
+class Resolution:
+    """Which plugins of the family are installed, where, and how we found out.
+
+    `notes` carries what a caller should say out loud: why the fallback was
+    taken, or which declared directory turned out not to exist. `compare()`
+    reports could-not-verify from the absence alone and cannot know the reason,
+    so the reason has to travel separately.
+    """
+
+    def __init__(self, installs=(), source="registry", notes=()):
+        self.installs = {install.plugin: install for install in installs}
+        self.source = source
+        self.notes = list(notes)
+
+    @property
+    def plugin_dirs(self):
+        """Exactly what `compare()` takes: each plugin mapped to the directory
+        resolved for it, or None when nothing resolved."""
+        return {name: install.path for name, install in self.installs.items()}
+
+    def version_of(self, plugin):
+        install = self.installs.get(plugin)
+        return install.version if install else ""
+
+    def path_of(self, plugin):
+        install = self.installs.get(plugin)
+        return install.path if install else None
+
+    def __contains__(self, plugin):
+        install = self.installs.get(plugin)
+        return bool(install and install.path)
+
+
+def read_registry(plugins_dir=None, marketplace=MARKETPLACE):
+    """`({plugin: [record, ...]}, "")` for a registry we can use, or
+    `(None, why)` when the caller must fall back to the cache.
+
+    A readable registry that simply names no plugin of the family returns an
+    empty mapping, not None: "not installed" is an answer, and the cache must
+    not overrule it.
+    """
+    path = Path(plugins_dir or default_plugins_dir()) / REGISTRY_NAME
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None, f"no plugin registry at {path}"
+    except ValueError as exc:
+        return None, f"the plugin registry at {path} is not readable JSON ({exc})"
+    if not isinstance(raw, dict):
+        return None, f"the plugin registry at {path} is not an object"
+    schema = raw.get("version")
+    if schema != REGISTRY_SCHEMA:
+        return None, (f"the plugin registry at {path} declares schema version "
+                      f"{schema!r}, not {REGISTRY_SCHEMA} — its shape has moved")
+    plugins = raw.get("plugins")
+    if not isinstance(plugins, dict):
+        return None, f"the plugin registry at {path} carries no plugins object"
+    found = {}
+    for key, value in plugins.items():
+        name = plugin_of_key(key, marketplace)
+        if not name:
+            continue
+        records = value if isinstance(value, list) else [value]
+        found[name] = [r for r in records if isinstance(r, dict)]
+    return found, ""
+
+
+def resolve_from_registry(plugins_dir=None, marketplace=MARKETPLACE):
+    """`(Resolution, "")` from the registry, or `(None, why)` when it could not
+    be used at all.
+
+    A key may carry several records (one per install scope). The highest-version
+    record whose directory is actually on disk wins. When no record's directory
+    exists the plugin resolves to no path and says so, rather than letting the
+    cache stand in: resolving a version the registry does not declare is the
+    silent wrong-version run this whole command exists to close.
+    """
+    found, why = read_registry(plugins_dir, marketplace)
+    if found is None:
+        return None, why
+    installs, notes = [], []
+    for plugin, records in sorted(found.items()):
+        candidates = []
+        for record in records:
+            declared = str(record.get("installPath") or "").strip()
+            version = str(record.get("version") or "").strip()
+            path = Path(declared).expanduser() if declared else None
+            candidates.append(PluginInstall(plugin, version, path, "registry"))
+        if not candidates:
+            continue
+        live = [c for c in candidates if c.path and c.path.is_dir()]
+        if live:
+            installs.append(max(live, key=lambda c: parse_version(c.version)))
+            continue
+        best = max(candidates, key=lambda c: parse_version(c.version))
+        notes.append(
+            f"the registry names {plugin} {best.version or '(no version)'} at "
+            f"{best.path or '(no installPath)'}, which is not on disk")
+        installs.append(best._replace(path=None))
+    return Resolution(installs, "registry", notes), ""
+
+
+def _looks_installed(version_dir):
+    """1 for a directory carrying a plugin manifest, 0 otherwise. Leading the
+    cache sort key, so a half-downloaded or half-removed `beta.13` never
+    outranks a complete `beta.9` — the fallback exists to find a plugin, not the
+    largest number."""
+    return 1 if (version_dir / ".claude-plugin" / "plugin.json").is_file() else 0
+
+
+def resolve_from_cache(plugins_dir=None, marketplace=MARKETPLACE):
+    """The fallback: the cache's highest version per plugin, compared as semver.
+
+    Plugins install to `<plugins>/cache/<marketplace>/<plugin>/<version>/`, so
+    the family still comes from the marketplace directory rather than from a
+    guess at what a plugin of ours is called.
+    """
+    root = Path(plugins_dir or default_plugins_dir()) / "cache" / marketplace
+    try:
+        plugin_dirs = sorted(p for p in root.iterdir() if p.is_dir())
+    except OSError:
+        return Resolution((), "cache", [f"no plugin cache at {root}"])
+    installs = []
+    for plugin_dir in plugin_dirs:
+        try:
+            versions = [v for v in plugin_dir.iterdir() if v.is_dir()]
+        except OSError:
+            continue
+        if not versions:
+            continue
+        best = max(versions,
+                   key=lambda v: (_looks_installed(v), parse_version(v.name)))
+        installs.append(PluginInstall(plugin_dir.name, best.name, best, "cache"))
+    return Resolution(installs, "cache", [])
+
+
+def resolve_plugins(plugins_dir=None, marketplace=MARKETPLACE):
+    """The family's installed plugins: the registry first, semver over the cache
+    as the fallback. `.plugin_dirs` is what `compare()` takes."""
+    resolution, why = resolve_from_registry(plugins_dir, marketplace)
+    if resolution is not None:
+        return resolution
+    fallback = resolve_from_cache(plugins_dir, marketplace)
+    fallback.notes.insert(
+        0, f"{why} — falling back to the highest version in the plugin cache")
+    return fallback
+
+
+# ── the interpreter ──────────────────────────────────────────────────────────
+# Neither this file nor the launcher assumes `python3` on PATH. `init` already
+# records why (`init/procedure.md:25-28`): on Windows `python3` frequently is
+# not there, so it tries `python3`, then `python`, then `py -3`, and remembers
+# whichever answered. Same order here, so the two agree, and the launcher's own
+# shell-side walk mirrors this list rather than inventing a second one.
+
+MIN_PYTHON = (3, 10)
+INTERPRETER_CANDIDATES = (("python3",), ("python",), ("py", "-3"))
+_VERSION_PROBE = "import sys; print('%d.%d' % sys.version_info[:2])"
+
+
+def _probe_interpreter(argv, timeout=15):
+    """`(major, minor)` for a candidate that runs, or None. A candidate that is
+    absent, is not executable, hangs, or answers nothing is not an interpreter:
+    `py` in particular exists on Windows as a launcher that may have no 3.x
+    behind it, and on some machines as a stub that prompts a store install."""
+    try:
+        done = subprocess.run(
+            list(argv) + ["-c", _VERSION_PROBE],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=timeout, text=True, encoding="utf-8", errors="replace")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    parts = (done.stdout or "").strip().split(".")
+    try:
+        return tuple(int(p) for p in parts[:2])
+    except ValueError:
+        return None
+
+
+def resolve_interpreter(minimum=MIN_PYTHON, candidates=INTERPRETER_CANDIDATES,
+                        running=None, probe=None):
+    """The argv prefix that runs a Python new enough for this family's scripts,
+    or None when the machine has none.
+
+    The interpreter already running this file comes first: it is the one
+    candidate whose version needs no probe to be known. Pass `running=""` to
+    skip it and exercise the PATH walk.
+    """
+    probe = probe or _probe_interpreter
+    running = sys.executable if running is None else running
+    if running and tuple(sys.version_info[:2]) >= tuple(minimum):
+        return [running]
+    for argv in candidates:
+        version = probe(tuple(argv))
+        if version and tuple(version) >= tuple(minimum):
+            return list(argv)
+    return None
 
 
 if __name__ == "__main__":

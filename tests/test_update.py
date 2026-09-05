@@ -23,7 +23,14 @@ preflight depends on and the part that must not be able to lie:
       is drift only where the bundle already has the file, and never blocks;
   (e) an uninstalled `elephant-wiki` is not could-not-verify — with no plugin
       publishing them, wiki files in a bundle are files no plugin ships;
-  (f) `--check` writes nothing at all.
+  (f) `--check` writes nothing at all;
+  (g) resolution reads Claude Code's registry FIRST and only falls back to
+      semver over the plugin cache, because a version sitting in the cache is
+      not evidence it is installed — and because sorted as text `0.1.0-beta.9`
+      follows `0.1.0-beta.13`, which is the older plugin and the original bug;
+  (h) the family comes from the `@elephant-mem` key suffix, never a prefix
+      heuristic over names;
+  (i) nothing assumes `python3` is on PATH.
 
 Pure stdlib, Python 3.10+, mirroring `tests/test_backlog.py`'s conventions: a
 throwaway bundle in a tempdir, fake plugin directories in the cache layout
@@ -33,7 +40,9 @@ passes.
 import importlib.machinery
 import importlib.util
 import json
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -105,6 +114,18 @@ def make_plugin(root, plugin, version="0.1.0-beta.1", scripts=None, templates=No
     return plugin_root
 
 
+def make_registry(root, entries, schema=2):
+    """`<root>/installed_plugins.json` in the shape Claude Code really writes:
+    schema version 2, `plugins` keyed `<plugin>@<marketplace>`, each key holding
+    a LIST of install records carrying `installPath` and `version`. `entries`
+    maps a key to one record or to a list of them, so a suite can exercise the
+    several-scopes case as well as the ordinary one."""
+    plugins = {key: (value if isinstance(value, list) else [value])
+               for key, value in entries.items()}
+    return write(Path(root) / "installed_plugins.json",
+                 json.dumps({"version": schema, "plugins": plugins}, indent=2) + "\n")
+
+
 def write(path, content):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,6 +156,13 @@ def main():
         tmp = Path(tmp)
         comparison_checks(eu, tmp)
         wiki_checks(eu, tmp)
+        version_checks(eu)
+        registry_checks(eu, tmp)
+        family_checks(eu, tmp)
+        registry_gap_checks(eu, tmp)
+        fallback_checks(eu, tmp)
+        plugins_dir_checks(eu, tmp)
+        interpreter_checks(eu)
         real_tree_checks(eu, tmp)
 
     passed = sum(1 for _, ok in checks if ok)
@@ -389,6 +417,389 @@ def wiki_checks(eu, tmp):
            result.code == eu.CHECK_CANNOT_VERIFY, f"code={result.code}")
     record("the notice says the install looks incomplete",
            "publishes no files" in eu.check_notice(result), eu.check_notice(result))
+
+
+# ── resolution: the registry first, semver over the cache as the fallback ────
+
+def version_checks(eu):
+    """E25 — and the reason resolution is Python at all. Sorted as text
+    `0.1.0-beta.9` follows `0.1.0-beta.13`, so a shell `sort` picks the older
+    plugin and reproduces the failure this command exists to fix. A Windows
+    batch file cannot sort at all."""
+    key = eu.parse_version
+    record("E25 beta.13 outranks beta.9 as semver",
+           key("0.1.0-beta.13") > key("0.1.0-beta.9"))
+    record("E25 and a text sort of that pair picks the wrong one, so the check "
+           "above is not passing vacuously",
+           sorted(["0.1.0-beta.13", "0.1.0-beta.9"])[-1] == "0.1.0-beta.9")
+    real_cache = ["0.1.0-beta.10", "0.1.0-beta.11", "0.1.0-beta.12",
+                  "0.1.0-beta.13", "0.1.0-beta.7", "0.1.0-beta.9"]
+    record("E25 the six versions really in the owner's cache order correctly",
+           sorted(real_cache, key=key) ==
+           ["0.1.0-beta.7", "0.1.0-beta.9", "0.1.0-beta.10", "0.1.0-beta.11",
+            "0.1.0-beta.12", "0.1.0-beta.13"],
+           sorted(real_cache, key=key))
+    record("a release outranks any prerelease of the same core",
+           key("0.1.0") > key("0.1.0-beta.13"))
+    record("the numeric core is compared before anything else",
+           key("0.2.0") > key("0.1.9") and key("1.0.0") > key("0.99.99"))
+    record("more prerelease identifiers outrank a prefix of themselves",
+           key("0.1.0-beta.1") > key("0.1.0-beta"))
+    record("alphanumeric prerelease identifiers compare as text",
+           key("0.1.0-beta.1") > key("0.1.0-alpha.99"))
+    record("a numeric prerelease identifier sits below an alphanumeric one",
+           key("0.1.0-1") < key("0.1.0-beta"))
+    record("build metadata is ignored and a leading v is tolerated",
+           key("0.1.0+build.5") == key("0.1.0") == key("v0.1.0"))
+    record("a string that is not a version sorts below one that is, and does "
+           "not raise — the cache is a directory listing and can hold anything",
+           key("main") < key("0.0.1") and key("") < key("0.0.1"))
+
+
+def registry_checks(eu, tmp):
+    """E23 — the registry names an installed version, and that directory is the
+    one used. A version sitting in the cache is not evidence it is installed."""
+    root = tmp / "registry"
+    mem9 = make_plugin(root, "elephant-mem", version="0.1.0-beta.9",
+                       scripts={"recall.py": "print('recall 9')\n"},
+                       templates={"open-loop.md": "# loop 9\n"})
+    mem13 = make_plugin(root, "elephant-mem", version="0.1.0-beta.13",
+                        scripts={"recall.py": "print('recall 13')\n",
+                                 "close-loops.py": "print('close 13')\n"},
+                        templates={"open-loop.md": "# loop 13\n"})
+    wiki4 = make_plugin(root, "elephant-wiki", version="0.1.0-beta.4",
+                        scripts={"wiki.py": "print('wiki 4')\n",
+                                 "wiki.js": "// spa 4\n", "graph.js": "// graph 4\n"})
+
+    # The registry names beta.9 — deliberately NOT the cache's highest, so
+    # "the registry wins" is something these checks can actually observe.
+    make_registry(root, {
+        "elephant-mem@elephant-mem": {"installPath": str(mem9),
+                                      "version": "0.1.0-beta.9"},
+        "elephant-wiki@elephant-mem": {"installPath": str(wiki4),
+                                       "version": "0.1.0-beta.4"},
+    })
+    before = snapshot(root)
+    resolution = eu.resolve_plugins(plugins_dir=root)
+    record("E23 the registry is the source, not the cache",
+           resolution.source == "registry", resolution.source)
+    record("E23 the declared directory is used, not the cache's highest",
+           resolution.path_of("elephant-mem") == mem9,
+           f"{resolution.path_of('elephant-mem')} (cache high: {mem13})")
+    record("E23 the version reported is the one the registry declares",
+           resolution.version_of("elephant-mem") == "0.1.0-beta.9",
+           resolution.version_of("elephant-mem"))
+    record("E23 the optional plugin resolves from the registry too",
+           resolution.path_of("elephant-wiki") == wiki4,
+           str(resolution.path_of("elephant-wiki")))
+    record("E23 a clean resolution has nothing to say out loud",
+           resolution.notes == [], resolution.notes)
+    record("E23 resolution reads and never writes",
+           snapshot(root) == before)
+    record("E23 plugin_dirs is exactly what compare() takes",
+           resolution.plugin_dirs ==
+           {"elephant-mem": mem9, "elephant-wiki": wiki4},
+           resolution.plugin_dirs)
+
+    # The integration that gives E23 its teeth: one bundle, one cache, two
+    # registries. Resolving the wrong version is precisely what would let a
+    # stale bundle read as fine — or a current one read as broken.
+    bundle = make_bundle(root, "at-beta-9",
+                         scripts={"recall.py": "print('recall 9')\n"},
+                         templates={"open-loop.md": "# loop 9\n"})
+    record("E23 a bundle at the version the registry declares reads as in sync",
+           eu.compare(resolution.plugin_dirs, bundle).code == eu.CHECK_IN_SYNC)
+    make_registry(root, {
+        "elephant-mem@elephant-mem": {"installPath": str(mem13),
+                                      "version": "0.1.0-beta.13"},
+    })
+    upgraded = eu.resolve_plugins(plugins_dir=root)
+    result = eu.compare(upgraded.plugin_dirs, bundle)
+    record("E23 the same bundle against the newly declared version is required "
+           "drift — the motivating failure, reproduced through resolution",
+           result.code == eu.CHECK_REQUIRED_DRIFT
+           and rels(result.required_drift) ==
+           ["scripts/close-loops.py", "scripts/recall.py",
+            "templates/open-loop.md"],
+           f"code={result.code} {rels(result.required_drift)}")
+    record("E23 an uninstalled elephant-wiki drops out of the mapping entirely",
+           "elephant-wiki" not in upgraded.plugin_dirs, upgraded.plugin_dirs)
+
+
+def family_checks(eu, tmp):
+    """The family comes from the `@elephant-mem` key suffix. A prefix heuristic
+    over plugin or directory names would claim a stranger's `elephant-notes`
+    from another marketplace, and would miss a plugin of ours not named
+    `elephant-*`."""
+    record("the plugin name comes out of the key",
+           eu.plugin_of_key("elephant-mem@elephant-mem") == "elephant-mem")
+    record("the optional plugin's key resolves the same way",
+           eu.plugin_of_key("elephant-wiki@elephant-mem") == "elephant-wiki")
+    record("a key from another marketplace is not ours — the real registry on "
+           "the owner's machine carries exactly this one",
+           eu.plugin_of_key("bb@inspira-legal") is None)
+    record("a same-named plugin published by another marketplace is not ours",
+           eu.plugin_of_key("elephant-mem@someone-elses-market") is None)
+    record("an elephant-ish name from another marketplace is not ours either",
+           eu.plugin_of_key("elephant-notes@other-market") is None)
+    record("a malformed key is not ours, and does not raise",
+           eu.plugin_of_key("@elephant-mem") is None
+           and eu.plugin_of_key("elephant-mem") is None
+           and eu.plugin_of_key(None) is None)
+    record("family_key builds what `claude plugin update` takes",
+           eu.family_key("elephant-wiki") == "elephant-wiki@elephant-mem")
+
+    root = tmp / "family"
+    mine = make_plugin(root, "elephant-mem", version="0.1.0-beta.13",
+                       scripts={"recall.py": "print('mine')\n"})
+    theirs = make_plugin(root, "elephant-mem", version="9.9.9",
+                         scripts={"recall.py": "print('theirs')\n"},
+                         marketplace="someone-elses-market")
+    make_registry(root, {
+        "elephant-mem@elephant-mem": {"installPath": str(mine),
+                                      "version": "0.1.0-beta.13"},
+        "elephant-mem@someone-elses-market": {"installPath": str(theirs),
+                                              "version": "9.9.9"},
+        "bb@inspira-legal": {"installPath": str(root), "version": "3.6.0"},
+    })
+    resolution = eu.resolve_plugins(plugins_dir=root)
+    record("a foreign plugin sharing our name never wins on its higher version",
+           resolution.path_of("elephant-mem") == mine,
+           str(resolution.path_of("elephant-mem")))
+    record("a foreign plugin is not in the resolution at all",
+           sorted(resolution.installs) == ["elephant-mem"],
+           sorted(resolution.installs))
+    record("the cache fallback takes the family from the marketplace directory, "
+           "not from what a plugin is called",
+           eu.resolve_from_cache(plugins_dir=root).path_of("elephant-mem") == mine,
+           str(eu.resolve_from_cache(plugins_dir=root).path_of("elephant-mem")))
+
+
+def registry_gap_checks(eu, tmp):
+    """A readable registry that names no plugin of the family, and one naming a
+    directory that is gone. Neither may be answered by resolving the cache: a
+    version in the cache is not evidence it is installed, and running a version
+    the registry does not declare is the silent wrong-version run this command
+    exists to close."""
+    root = tmp / "gaps"
+    mem13 = make_plugin(root, "elephant-mem", version="0.1.0-beta.13",
+                        scripts={"recall.py": "print('recall 13')\n"})
+    bundle = make_bundle(root, "bundle", scripts={"recall.py": "print('recall 13')\n"})
+
+    make_registry(root, {"bb@inspira-legal": {"installPath": str(root),
+                                              "version": "3.6.0"}})
+    resolution = eu.resolve_plugins(plugins_dir=root)
+    record("a registry naming no plugin of the family resolves nothing",
+           resolution.installs == {}, resolution.installs)
+    record("and it does NOT fall back to the cache, which holds beta.13",
+           resolution.source == "registry", resolution.source)
+    record("compare() then reports could-not-verify rather than reading the "
+           "bundle against a version nobody installed",
+           eu.compare(resolution.plugin_dirs, bundle).code
+           == eu.CHECK_CANNOT_VERIFY)
+
+    gone = root / "cache" / "elephant-mem" / "elephant-mem" / "0.1.0-beta.12"
+    make_registry(root, {
+        "elephant-mem@elephant-mem": {"installPath": str(gone),
+                                      "version": "0.1.0-beta.12"}})
+    resolution = eu.resolve_plugins(plugins_dir=root)
+    record("a declared directory that is not on disk resolves to no path",
+           resolution.path_of("elephant-mem") is None,
+           str(resolution.path_of("elephant-mem")))
+    record("the version it declared is still reported, so a caller can say what "
+           "the registry claimed",
+           resolution.version_of("elephant-mem") == "0.1.0-beta.12",
+           resolution.version_of("elephant-mem"))
+    record("a note names the directory that is missing, since compare() sees "
+           "only the absence and cannot know the reason",
+           len(resolution.notes) == 1 and "0.1.0-beta.12" in resolution.notes[0]
+           and "not on disk" in resolution.notes[0], resolution.notes)
+    record("the cache's beta.13 does not stand in for it",
+           mem13 not in resolution.plugin_dirs.values(), resolution.plugin_dirs)
+    record("that is could-not-verify, which lets the mode proceed",
+           eu.compare(resolution.plugin_dirs, bundle).code
+           == eu.CHECK_CANNOT_VERIFY)
+
+    # One key can hold several records, one per install scope.
+    make_registry(root, {"elephant-mem@elephant-mem": [
+        {"scope": "project", "installPath": str(gone), "version": "0.1.0-beta.12"},
+        {"scope": "user", "installPath": str(mem13), "version": "0.1.0-beta.13"},
+    ]})
+    record("among several scope records the highest live one wins",
+           eu.resolve_plugins(plugins_dir=root).path_of("elephant-mem") == mem13)
+    mem7 = make_plugin(root, "elephant-mem", version="0.1.0-beta.7",
+                       scripts={"recall.py": "print('recall 7')\n"})
+    make_registry(root, {"elephant-mem@elephant-mem": [
+        {"scope": "user", "installPath": str(gone), "version": "0.1.0-beta.13"},
+        {"scope": "project", "installPath": str(mem7), "version": "0.1.0-beta.7"},
+    ]})
+    record("a higher record whose directory is gone yields to the live lower one",
+           eu.resolve_plugins(plugins_dir=root).path_of("elephant-mem") == mem7,
+           str(eu.resolve_plugins(plugins_dir=root).path_of("elephant-mem")))
+    make_registry(root, {"elephant-mem@elephant-mem":
+                         {"installPath": str(mem13), "version": "0.1.0-beta.13"}})
+    record("a key holding one record rather than a list still resolves",
+           eu.resolve_plugins(plugins_dir=root).path_of("elephant-mem") == mem13)
+
+
+def fallback_checks(eu, tmp):
+    """E24 — a missing registry, or one whose schema has moved, falls back to
+    semver over the cache. E25 again, on that route."""
+    root = tmp / "fallback"
+    make_plugin(root, "elephant-mem", version="0.1.0-beta.9",
+                scripts={"recall.py": "print('recall 9')\n"})
+    mem13 = make_plugin(root, "elephant-mem", version="0.1.0-beta.13",
+                        scripts={"recall.py": "print('recall 13')\n"})
+    wiki4 = make_plugin(root, "elephant-wiki", version="0.1.0-beta.4",
+                        scripts={"wiki.py": "print('wiki 4')\n"})
+    registry = root / "installed_plugins.json"
+
+    record("E24 no registry at all falls back to the cache",
+           eu.resolve_plugins(plugins_dir=root).source == "cache")
+    resolution = eu.resolve_plugins(plugins_dir=root)
+    record("E25 the fallback picks beta.13 over beta.9, under semver",
+           resolution.path_of("elephant-mem") == mem13,
+           str(resolution.path_of("elephant-mem")))
+    record("E24 a note says the registry could not be read and what happened next",
+           any("no plugin registry" in n and "falling back" in n
+               for n in resolution.notes), resolution.notes)
+    record("E24 the optional plugin resolves from the cache too",
+           resolution.path_of("elephant-wiki") == wiki4,
+           str(resolution.path_of("elephant-wiki")))
+
+    for label, content in (
+        ("its schema version moved", json.dumps({"version": 3, "plugins": {}})),
+        ("it is not readable JSON", "{not json at all"),
+        ("it is not an object", json.dumps(["elephant-mem"])),
+        ("it carries no plugins object", json.dumps({"version": 2})),
+        ("its plugins key is the wrong type",
+         json.dumps({"version": 2, "plugins": ["elephant-mem@elephant-mem"]})),
+    ):
+        write(registry, content)
+        resolution = eu.resolve_plugins(plugins_dir=root)
+        record(f"E24 the registry is unusable because {label} — cache fallback",
+               resolution.source == "cache", resolution.source)
+        record(f"E24 and beta.13 still wins when {label}",
+               resolution.path_of("elephant-mem") == mem13,
+               str(resolution.path_of("elephant-mem")))
+    registry.unlink()
+
+    # A cache is a directory listing: it holds half-removed installs, git-style
+    # checkout names, and empty shells. None of them may take the resolver down
+    # or beat a complete install.
+    hollow = root / "cache" / "elephant-mem" / "elephant-mem" / "0.1.0-beta.20"
+    hollow.mkdir(parents=True, exist_ok=True)
+    record("a version directory with no plugin manifest never outranks a "
+           "complete lower one, however much higher its number",
+           eu.resolve_from_cache(plugins_dir=root).path_of("elephant-mem") == mem13,
+           str(eu.resolve_from_cache(plugins_dir=root).path_of("elephant-mem")))
+    (root / "cache" / "elephant-mem" / "elephant-mem" / "main").mkdir(exist_ok=True)
+    record("a directory whose name is not a version does not win either",
+           eu.resolve_from_cache(plugins_dir=root).path_of("elephant-mem") == mem13)
+
+    lone = tmp / "lone"
+    (lone / "cache" / "elephant-mem" / "elephant-mem" / "main").mkdir(parents=True)
+    record("a cache holding only a non-version directory still resolves it "
+           "rather than crashing",
+           eu.resolve_from_cache(plugins_dir=lone).version_of("elephant-mem")
+           == "main",
+           eu.resolve_from_cache(plugins_dir=lone).version_of("elephant-mem"))
+
+    empty = tmp / "empty-cache"
+    empty.mkdir()
+    resolution = eu.resolve_plugins(plugins_dir=empty)
+    record("no cache and no registry resolves nothing and says so",
+           resolution.installs == {} and any("cache" in n for n in resolution.notes),
+           resolution.notes)
+    record("which compare() turns into could-not-verify",
+           eu.compare(resolution.plugin_dirs, make_bundle(empty, "b")).code
+           == eu.CHECK_CANNOT_VERIFY)
+    (empty / "cache" / "elephant-mem" / "elephant-mem").mkdir(parents=True)
+    record("a plugin directory holding no version directories is skipped",
+           eu.resolve_from_cache(plugins_dir=empty).installs == {},
+           eu.resolve_from_cache(plugins_dir=empty).installs)
+
+
+def plugins_dir_checks(eu, tmp):
+    """The resolver's own default, and the override that keeps every suite off
+    the developer's real install."""
+    saved = {k: os.environ.get(k) for k in ("ELEPHANT_PLUGINS_DIR", "CLAUDE_CONFIG_DIR")}
+    try:
+        for k in saved:
+            os.environ.pop(k, None)
+        record("with nothing set the registry and cache live under "
+               "~/.claude/plugins, the path this design was verified against",
+               eu.default_plugins_dir() == Path.home() / ".claude" / "plugins",
+               str(eu.default_plugins_dir()))
+        os.environ["CLAUDE_CONFIG_DIR"] = str(tmp / "elsewhere")
+        record("a relocated config dir takes the registry with it",
+               eu.default_plugins_dir() == tmp / "elsewhere" / "plugins",
+               str(eu.default_plugins_dir()))
+        os.environ["ELEPHANT_PLUGINS_DIR"] = str(tmp / "throwaway")
+        record("ELEPHANT_PLUGINS_DIR wins, which is how a suite resolves against "
+               "a throwaway tree instead of a real install",
+               eu.default_plugins_dir() == tmp / "throwaway",
+               str(eu.default_plugins_dir()))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def interpreter_checks(eu):
+    """E36 — `python3` is frequently absent from a Windows PATH, which
+    `init/procedure.md:25-28` records and answers by trying `python3`, then
+    `python`, then `py -3`. Nothing here assumes the name."""
+    record("E36 the candidates and their order are init's, so the two agree",
+           eu.INTERPRETER_CANDIDATES == (("python3",), ("python",), ("py", "-3")),
+           eu.INTERPRETER_CANDIDATES)
+    record("E36 the floor is the 3.10 the scripts and CI require",
+           eu.MIN_PYTHON == (3, 10), eu.MIN_PYTHON)
+
+    def probe_for(available):
+        return lambda argv: available.get(tuple(argv))
+
+    absent = probe_for({("python",): (3, 12), ("py", "-3"): (3, 11)})
+    record("E36 python3 missing from PATH resolves python instead of assuming",
+           eu.resolve_interpreter(running="", probe=absent) == ["python"],
+           eu.resolve_interpreter(running="", probe=absent))
+    only_py = probe_for({("py", "-3"): (3, 11)})
+    record("E36 with only the Windows launcher answering, it is used whole",
+           eu.resolve_interpreter(running="", probe=only_py) == ["py", "-3"],
+           eu.resolve_interpreter(running="", probe=only_py))
+    record("E36 a machine with no usable interpreter resolves None rather than "
+           "handing back a name that will not run",
+           eu.resolve_interpreter(running="", probe=probe_for({})) is None)
+    too_old = probe_for({("python3",): (2, 7), ("python",): (3, 9),
+                         ("py", "-3"): (3, 10)})
+    record("E36 an interpreter below the floor is skipped, not accepted",
+           eu.resolve_interpreter(running="", probe=too_old) == ["py", "-3"],
+           eu.resolve_interpreter(running="", probe=too_old))
+    record("E36 python3 is preferred when it does answer",
+           eu.resolve_interpreter(
+               running="", probe=probe_for({("python3",): (3, 10),
+                                            ("python",): (3, 13)})) == ["python3"])
+    record("the interpreter already running this file is preferred, being the "
+           "one candidate whose version needs no probe",
+           eu.resolve_interpreter(probe=probe_for({})) == [sys.executable],
+           eu.resolve_interpreter(probe=probe_for({})))
+
+    # Not a mock: whatever this machine resolves has to actually run.
+    resolved = eu.resolve_interpreter()
+    ok = False
+    if resolved:
+        done = subprocess.run(
+            resolved + ["-c", "import sys; print(sys.version_info[:2] >= (3, 10))"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace")
+        ok = done.returncode == 0 and (done.stdout or "").strip() == "True"
+    record("E36 the interpreter this machine resolves really runs and really "
+           "reports 3.10 or newer",
+           ok, f"{resolved}")
+    record("a candidate that is not there probes as None instead of raising",
+           eu._probe_interpreter(("definitely-not-an-interpreter-42",)) is None)
 
 
 # ── against the real published assets ────────────────────────────────────────
