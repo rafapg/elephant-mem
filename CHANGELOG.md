@@ -139,40 +139,42 @@ closes loops by evidence in front of the one that expires them by silence.
   when the source has no date. That plus `decay`'s review-gate snooze are the two
   documented writers of the field, and `capture` is named as not being one — it
   opens loops and never revisits one.
-- **Every bundle already on disk was about to commit the record of what its
-  owner reads.** Two files, not one, and the second is the worse of them. The
-  seed `.gitignore` carries the rule, but `init` copies that file exactly once
-  and `update` re-syncs **only** `scripts/` and `templates/`, so no existing
-  bundle would ever have received it — while `decay`, `catch-up` and
-  `close-loops` all end in `git add -A && git commit`. Measured on a bundle
-  seeded from the previous release, one `log` and one `roll` was enough:
-  `git add -A` staged `state/recall.json`, and `git show :state/recall.json`
-  read back the names of the people who had been looked up. `roll` now appends
-  the three missing rules (`state/consumption-log.jsonl`, `state/recall.json`,
-  `state/last-update-check.json`) to the bundle's `.gitignore` before it writes
-  anything, printing one line when it does; it appends only, skips a rule
-  already covered in any form (`state/` as a blanket included), and never
-  raises. What it does do is stop: a roll that cannot confirm the rules, an
-  unreadable `.gitignore` or an append that failed, writes no record and exits
-  non-zero, because the alternative is creating that file unprotected in front
-  of the next `git add -A`. **`log` protects its own file the same way**, and
-  putting the guarantee only in `roll` was not enough: `log` writes
-  `state/consumption-log.jsonl` at the end of a read, `catch-up` runs its
-  `git add -A` before the roll, and `close-loops` and `ingest` never roll at
-  all, so the rules arrived one step late and a rule does not untrack what an
-  earlier commit already took. Measured on a bundle seeded from the previous
-  release, the committed blob carried `entities` and `facts_cited` per query,
-  which is a per-question record of which people were looked up. `log` now
-  confirms the rules before it appends and, when it cannot, skips the line,
-  says why on stderr and still exits 0: a read is never failed by its own
-  bookkeeping, and one missing citation is a cost the pyramid absorbs. **The
-  migration check above applies to `state/consumption-log.jsonl` too**, and it
-  is the one more likely to have been committed already. `roll` owns this rather than `update` because it is the writer of the
-  file that leaks. **If you ran a routine between installing this release and
-  the first `roll`**, check `git -C <bundle> log --oneline -- state/recall.json`
-  — if it was committed, `git rm --cached state/recall.json` and commit; the
-  file is derived and rebuilds forward on the next roll. On a bundle with a
-  remote, rewrite the history that carries it.
+- **No bundle already on disk had the ignore rules for the files a read
+  writes.** `state/` is a versioned directory, and most of what it holds is
+  meant to be committed: `cursors.json`, `processed-events.json`,
+  `backlog.json` and `needs-review.md` are control state that has to travel
+  with the bundle. Four paths are the exception, and the rule that picks them
+  is not sensitivity: they are written by a **read**, derived, or specific to
+  one machine. `state/consumption-log.jsonl` gains a line every time a read
+  mode answers; `state/recall.json` is the roll-up of that log, rebuildable
+  forward from it; `state/last-update-check.json` is a per-machine throttle;
+  `state/phone/` is per-device. The seed `.gitignore` carries all four, but
+  `init` copies that file exactly once and `update` re-syncs **only**
+  `scripts/` and `templates/`, so a bundle created before a rule existed never
+  received it, while `catch-up`, `decay`, `close-loops` and `ingest` all end in
+  `git add -A && git commit`. Measured on a bundle seeded from the previous
+  release, one `log` and one `roll` was enough for `git add -A` to stage both
+  files. What that costs, in the order it costs it: every answered question
+  dirties the tree, and the next write routine sweeps the result into a commit
+  about something else; the roll-up is derived, so committing it buys a merge
+  conflict on a two-machine bundle over a file that rebuilds itself; and the
+  log is a per-question record of which entities were consulted and when, which
+  is the one thing in the bundle its owner never chose to write down.
+  **Both writers now confirm the rules before they write.** `roll` appends
+  whatever is missing and prints one line saying what it added; it appends
+  only, and skips a rule already covered in any form, `state/` as a blanket
+  included. When it cannot confirm them, an unreadable `.gitignore` or an
+  append that failed, `roll` writes nothing and exits non-zero, and `log` skips
+  the line, says why on stderr and still exits 0, because a read is never
+  failed by its own bookkeeping and one missing citation is a cost the pyramid
+  absorbs. Putting the guarantee in `roll` alone was not enough: `log` writes
+  at the end of a read, `catch-up` runs its `git add -A` before the roll, and
+  `close-loops` and `ingest` never roll at all, so the rules arrived one step
+  late and a rule does not untrack what an earlier commit already took.
+  **If a routine ran before your first `roll` on this release**, check
+  `git -C <bundle> log --oneline -- state/recall.json state/consumption-log.jsonl`;
+  `git rm --cached` and commit is the whole migration, since both files are
+  derived from reads and rebuild forward.
 - **A loop whose `status` was written `Open` changed sides silently.**
   `build-index.py` compared the field exactly, so a value with a capital, a
   trailing space or surrounding quotes fell on the resolved side of a partition
