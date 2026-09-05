@@ -30,7 +30,11 @@ preflight depends on and the part that must not be able to lie:
       follows `0.1.0-beta.13`, which is the older plugin and the original bug;
   (h) the family comes from the `@elephant-mem` key suffix, never a prefix
       heuristic over names;
-  (i) nothing assumes `python3` is on PATH.
+  (i) nothing assumes `python3` is on PATH;
+  (j) `--check` resolves the bundle the way `wiki.py` does (`--bundle`, then
+      `ELEPHANT_BUNDLE`, then the machine pointer), emits one of exactly four
+      codes, says what it found on stderr for three of them and nothing at all
+      for the fourth, and writes nothing anywhere.
 
 Pure stdlib, Python 3.10+, mirroring `tests/test_backlog.py`'s conventions: a
 throwaway bundle in a tempdir, fake plugin directories in the cache layout
@@ -136,6 +140,38 @@ def write(path, content):
     return path
 
 
+def write_pointer(path, bundle):
+    """The machine pointer, in the shape every script in this family reads:
+    one JSON object carrying `bundle_path`."""
+    return write(path, json.dumps({"bundle_path": str(bundle)}, indent=2) + "\n")
+
+
+def run_cli(args, *, plugins_dir, pointer, bundle_env=None, home=None):
+    """The executable as a real subprocess, which is the only way to observe
+    what a mode observes: an exit code and stderr.
+
+    `plugins_dir` and `pointer` are required rather than defaulted, so no call
+    here can quietly read the developer's real install or their real
+    `~/.config/elephant-mem/config.json`. Invoked through `sys.executable`
+    rather than by its shebang, because a Windows runner honours no shebang.
+    """
+    env = dict(os.environ)
+    for key in ("ELEPHANT_PLUGINS_DIR", "ELEPHANT_POINTER", "ELEPHANT_BUNDLE",
+                "CLAUDE_CONFIG_DIR"):
+        env.pop(key, None)
+    env["ELEPHANT_PLUGINS_DIR"] = str(plugins_dir)
+    env["ELEPHANT_POINTER"] = str(pointer)
+    if bundle_env is not None:
+        env["ELEPHANT_BUNDLE"] = str(bundle_env)
+    if home is not None:
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+    return subprocess.run(
+        [sys.executable, str(EXECUTABLE)] + [str(a) for a in args],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", env=env)
+
+
 def snapshot(root):
     """Every file under `root` with its bytes and mtime — enough to prove a
     read-only pass wrote nothing, including a rewrite of identical content."""
@@ -162,6 +198,8 @@ def main():
         registry_gap_checks(eu, tmp)
         fallback_checks(eu, tmp)
         plugins_dir_checks(eu, tmp)
+        bundle_checks(eu, tmp)
+        check_cli_checks(eu, tmp)
         interpreter_checks(eu)
         real_tree_checks(eu, tmp)
 
@@ -746,6 +784,259 @@ def plugins_dir_checks(eu, tmp):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+# ── the bundle side of the check ─────────────────────────────────────────────
+
+def bundle_checks(eu, tmp):
+    """E9 and E12 at the function level: which bundle a run checks, and what it
+    says when there is none. The order is `wiki.py:85-97`'s, so the two scripts
+    in this family cannot disagree about which bundle they are looking at."""
+    root = tmp / "bundleres"
+    pointed = make_bundle(root, "pointed")
+    other = make_bundle(root, "other")
+    pointer = write_pointer(root / "pointer.json", pointed)
+
+    resolved, why = eu.resolve_bundle(pointer=pointer)
+    record("the machine pointer's bundle_path is what a bare run checks",
+           resolved == pointed and why == "", f"{resolved} {why!r}")
+    record("the path comes back absolute but not symlink-resolved, so the "
+           "messages name the path the caller gave",
+           resolved == Path(os.path.abspath(str(pointed))), str(resolved))
+    record("E12 --bundle overrides the pointer, which is how a mode checks the "
+           "bundle it actually resolved",
+           eu.resolve_bundle(str(other), pointer=pointer)[0] == other,
+           str(eu.resolve_bundle(str(other), pointer=pointer)[0]))
+    record("a --bundle path is normalised rather than passed through",
+           eu.resolve_bundle(str(other / ".." / "other"), pointer=pointer)[0] == other,
+           str(eu.resolve_bundle(str(other / ".." / "other"), pointer=pointer)[0]))
+
+    saved = os.environ.get(eu.BUNDLE_ENV)
+    try:
+        os.environ[eu.BUNDLE_ENV] = str(other)
+        record("ELEPHANT_BUNDLE is honoured, since run-hooks.py sets it for "
+               "every hook subprocess and a routine driving another bundle is "
+               "already carrying the answer",
+               eu.resolve_bundle(pointer=pointer)[0] == other,
+               str(eu.resolve_bundle(pointer=pointer)[0]))
+        record("--bundle still wins over the environment",
+               eu.resolve_bundle(str(pointed), pointer=pointer)[0] == pointed,
+               str(eu.resolve_bundle(str(pointed), pointer=pointer)[0]))
+    finally:
+        if saved is None:
+            os.environ.pop(eu.BUNDLE_ENV, None)
+        else:
+            os.environ[eu.BUNDLE_ENV] = saved
+
+    # A directory that is not a bundle must not be compared at all. Compared, it
+    # would answer with a confident required-drift about the wrong directory:
+    # every published file reads as missing.
+    notabundle = root / "notabundle"
+    (notabundle / "scripts").mkdir(parents=True)
+    resolved, why = eu.resolve_bundle(str(notabundle), pointer=pointer)
+    record("a directory with no knowledge/ is refused rather than compared",
+           resolved is None and "knowledge/" in why, f"{resolved} {why!r}")
+    resolved, why = eu.resolve_bundle(str(root / "nothing-here"), pointer=pointer)
+    record("a --bundle path that does not exist is refused, and the note says "
+           "it came from --bundle",
+           resolved is None and "--bundle" in why, f"{resolved} {why!r}")
+
+    # E9 — no pointer and no override, and the three ways a pointer can be there
+    # and still name nothing.
+    for n, (label, content, wanted) in enumerate((
+        ("there is no pointer file", None, "no bundle pointer"),
+        ("the pointer is not JSON", "{not json", "no usable bundle_path"),
+        ("the pointer carries no bundle_path", '{"smtp": {}}', "no usable bundle_path"),
+        ("bundle_path is empty", '{"bundle_path": "  "}', "empty bundle_path"),
+        ("bundle_path is not a string", '{"bundle_path": 7}', "bundle_path"),
+    )):
+        spot = root / "pointers" / ("absent.json" if content is None else f"p{n}.json")
+        if content is not None:
+            write(spot, content)
+        resolved, why = eu.resolve_bundle(pointer=spot)
+        record(f"E9 {label} — could not verify, and the note says so",
+               resolved is None and wanted in why, f"{resolved} {why!r}")
+    record("E9 the note names the pointer it looked at and the flag that would "
+           "have answered, since a mode's user has to act on one line",
+           all(part in eu.resolve_bundle(pointer=root / "pointers" / "absent.json")[1]
+               for part in ("absent.json", "--bundle")),
+           eu.resolve_bundle(pointer=root / "pointers" / "absent.json")[1])
+
+    before = snapshot(root)
+    for override in ("", str(other), str(root / "nothing-here")):
+        eu.resolve_bundle(override, pointer=pointer)
+    record("resolving a bundle reads and never writes",
+           snapshot(root) == before)
+
+
+# ── `--check` as a mode really runs it ───────────────────────────────────────
+
+def check_cli_checks(eu, tmp):
+    """The four codes, their stderr notes, and writing nothing — observed
+    through a real subprocess, because an exit code and stderr are the whole of
+    what a mode gets. Every call routes the registry, the pointer and HOME into
+    the throwaway tree, so nothing here can read or repair a real install."""
+    root = tmp / "cli"
+    mem = make_plugin(root, "elephant-mem", version="0.1.0-beta.13",
+                      scripts={"recall.py": "print('recall 13')\n",
+                               "close-loops.py": "print('close 13')\n"},
+                      templates={"open-loop.md": "# loop 13\n"})
+    wiki = make_plugin(root, "elephant-wiki", version="0.1.0-beta.4",
+                       scripts={"wiki.py": "print('wiki 4')\n",
+                                "wiki.js": "// spa 4\n", "graph.js": "// graph 4\n"})
+    make_registry(root, {
+        "elephant-mem@elephant-mem": {"installPath": str(mem),
+                                      "version": "0.1.0-beta.13"},
+        "elephant-wiki@elephant-mem": {"installPath": str(wiki),
+                                       "version": "0.1.0-beta.4"},
+    })
+    current = make_bundle(root, "current",
+                          scripts={"recall.py": "print('recall 13')\n",
+                                   "close-loops.py": "print('close 13')\n"},
+                          templates={"open-loop.md": "# loop 13\n"})
+    stale = make_bundle(root, "stale",
+                        scripts={"recall.py": "print('recall 9')\n"},
+                        templates={"open-loop.md": "# loop 13\n"})
+    wikistale = make_bundle(root, "wikistale",
+                            scripts={"recall.py": "print('recall 13')\n",
+                                     "close-loops.py": "print('close 13')\n",
+                                     "wiki.py": "print('wiki 3')\n",
+                                     "wiki.js": "// spa 4\n",
+                                     "graph.js": "// graph 4\n"},
+                            templates={"open-loop.md": "# loop 13\n"})
+    pointer = write_pointer(root / "pointer.json", current)
+    # Written up here with the rest of the fixtures: the E11 snapshot below
+    # brackets every run, so anything the SUITE writes after it would read as
+    # something the executable wrote.
+    other_pointer = write_pointer(root / "stale-pointer.json", stale)
+    home = root / "home"
+    home.mkdir()
+
+    def check(*args, **kwargs):
+        kwargs.setdefault("plugins_dir", root)
+        kwargs.setdefault("pointer", pointer)
+        kwargs.setdefault("home", home)
+        return run_cli(["--check", *args], **kwargs)
+
+    before = snapshot(root)
+
+    # code 0 — in sync, and silent. A mode runs this before every piece of work
+    # it does, so a line printed on the quiet path is printed on every run.
+    done = check()
+    record("in sync exits 0 through the CLI",
+           done.returncode == eu.CHECK_IN_SYNC,
+           f"{done.returncode} {done.stderr!r}")
+    record("in sync says nothing at all, on either stream",
+           done.stdout == "" and done.stderr == "",
+           f"out={done.stdout!r} err={done.stderr!r}")
+
+    # code 1 — required drift, the one outcome that stops a mode
+    done = check("--bundle", stale)
+    record("required drift exits 1",
+           done.returncode == eu.CHECK_REQUIRED_DRIFT,
+           f"{done.returncode} {done.stderr!r}")
+    record("required drift names the file that differs and the one that is "
+           "missing, which is the whole of the motivating failure",
+           "scripts/recall.py" in done.stderr
+           and "scripts/close-loops.py" in done.stderr, done.stderr)
+    record("the blocking message names both routes out, because a blocked user "
+           "may be one whose shell has no launcher yet",
+           "elephant-update" in done.stderr
+           and "elephant-mem:update" in done.stderr, done.stderr)
+    record("the notice goes to stderr and stdout stays clean",
+           done.stdout == "", done.stdout)
+
+    # code 2 — drift confined to the wiki's optional files
+    done = check("--bundle", wikistale)
+    record("optional drift exits 2",
+           done.returncode == eu.CHECK_OPTIONAL_DRIFT,
+           f"{done.returncode} {done.stderr!r}")
+    record("optional drift names the outdated wiki file and says it is not a stop",
+           "scripts/wiki.py" in done.stderr and "Not a stop." in done.stderr,
+           done.stderr)
+    record("an up-to-date wiki file is not reported as drift",
+           "graph.js" not in done.stderr, done.stderr)
+
+    # code 3 — E9, no pointer and no override
+    done = check(pointer=root / "no-such-pointer.json")
+    record("E9 no pointer and no --bundle exits 3",
+           done.returncode == eu.CHECK_CANNOT_VERIFY,
+           f"{done.returncode} {done.stderr!r}")
+    record("E9 and the note on stderr names the pointer and --bundle",
+           "no-such-pointer.json" in done.stderr and "--bundle" in done.stderr,
+           done.stderr)
+
+    done = check("--bundle", root / "cache")
+    record("a path that is not a bundle is could-not-verify, not a confident "
+           "required-drift about the wrong directory",
+           done.returncode == eu.CHECK_CANNOT_VERIFY
+           and "knowledge/" in done.stderr,
+           f"{done.returncode} {done.stderr!r}")
+
+    # E12 — the bundle a mode passes is the bundle that gets checked, whichever
+    # one this machine happens to point at.
+    record("E12 a mode on a non-pointer bundle checks the one it passed, even "
+           "when the pointer's own bundle is in sync",
+           check("--bundle", stale).returncode == eu.CHECK_REQUIRED_DRIFT
+           and check("--bundle", current,
+                     pointer=other_pointer).returncode == eu.CHECK_IN_SYNC)
+    record("E12 ELEPHANT_BUNDLE reaches the same place, which is what a hook "
+           "subprocess carries",
+           check(pointer=other_pointer,
+                 bundle_env=current).returncode == eu.CHECK_IN_SYNC)
+    record("E12 --bundle still wins over the environment",
+           check("--bundle", stale, bundle_env=current).returncode
+           == eu.CHECK_REQUIRED_DRIFT)
+
+    # E11 — `--check` writes nothing, launcher repair included. Four outcomes
+    # have now run against this tree; repair belongs to the full run, which the
+    # user invoked on purpose.
+    record("E11 nothing under the bundles, the plugins or the pointer changed "
+           "across every outcome",
+           snapshot(root) == before,
+           sorted(set(snapshot(root)) ^ set(before)))
+    record("E11 no launcher was written, and the home directory the run saw is "
+           "still empty",
+           not (home / ".local" / "bin" / "elephant-update").exists()
+           and snapshot(home) == {}, sorted(snapshot(home)))
+
+    # The codes are a contract a caller matches on, so the ones this executable
+    # can emit have to stay inside the four.
+    done = run_cli(["--check", "--nonsense"], plugins_dir=root, pointer=pointer)
+    record("a usage error exits could-not-verify and not 2, which is taken and "
+           "would arrive as the reassuring 'proceed, mention the wiki'",
+           done.returncode == eu.CHECK_CANNOT_VERIFY,
+           f"{done.returncode} {done.stderr!r}")
+    done = run_cli([], plugins_dir=root, pointer=pointer)
+    record("a run without --check never answers with one of the check's codes",
+           done.returncode not in (eu.CHECK_IN_SYNC, eu.CHECK_REQUIRED_DRIFT,
+                                   eu.CHECK_OPTIONAL_DRIFT, eu.CHECK_CANNOT_VERIFY),
+           f"{done.returncode} {done.stderr!r}")
+
+    # A resolution note has to reach the reader: compare() sees only that a
+    # plugin did not resolve and cannot say why.
+    gaps = tmp / "cli-gaps"
+    gone = gaps / "cache" / "elephant-mem" / "elephant-mem" / "0.1.0-beta.12"
+    make_bundle(gaps, "bundle")
+    make_registry(gaps, {"elephant-mem@elephant-mem":
+                         {"installPath": str(gone), "version": "0.1.0-beta.12"}})
+    done = run_cli(["--check", "--bundle", gaps / "bundle"],
+                   plugins_dir=gaps, pointer=gaps / "no-pointer.json")
+    record("a registry naming a directory that is gone exits 3",
+           done.returncode == eu.CHECK_CANNOT_VERIFY,
+           f"{done.returncode} {done.stderr!r}")
+    record("and the resolution's note reaches stderr, since could-not-verify "
+           "otherwise says nothing about which side failed to read",
+           "not on disk" in done.stderr and "0.1.0-beta.12" in done.stderr,
+           done.stderr)
+
+    # The usage text carries the rule a caller implements, since the caller is
+    # what turns three codes into two decisions.
+    done = run_cli(["--help"], plugins_dir=root, pointer=pointer)
+    record("the usage text states all four outcomes and the everything-else rule",
+           all(part in done.stdout for part in
+               ("in sync", "required drift", "could-not-verify", "EVERYTHING else")),
+           done.stdout)
 
 
 def interpreter_checks(eu):

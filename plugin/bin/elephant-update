@@ -20,13 +20,14 @@ time: nothing is stored in the bundle (a record would be absent from exactly the
 stale bundles it exists to catch, and would say the right number about files
 someone has since edited), and nothing is published.
 
-Wired so far: the comparison layer, and the resolution that feeds it both sides
-(the registry Claude Code keeps, semver over the plugin cache as the fallback,
-and an interpreter located rather than assumed). The CLI lands with the tasks
-that follow; see `.bb/elephant-update/spec.md`.
+Wired so far: `--check` end to end, over the comparison layer and the resolution
+that feeds it both sides (the registry Claude Code keeps, semver over the plugin
+cache as the fallback, and an interpreter located rather than assumed). The full
+run lands with the task that follows; see `.bb/elephant-update/spec.md`.
 
 Pure stdlib, Python 3.10+. Cross-platform (explicit UTF-8 I/O).
 """
+import argparse
 import json
 import os
 import re
@@ -242,6 +243,77 @@ def check_notice(comparison):
 def _phrase(state):
     return {"missing": "missing from the bundle",
             "differs": "differs from the installed plugin"}.get(state, state)
+
+
+# ── the bundle side ──────────────────────────────────────────────────────────
+# Pointer-or-override resolution, in the order `wiki.py:85-97` already uses so
+# the two agree: `--bundle` first, then `ELEPHANT_BUNDLE` (which `run-hooks.py`
+# sets for every hook subprocess, so a routine driving a bundle other than the
+# pointer's is already carrying the answer), then the machine pointer.
+#
+# A mode passes `--bundle` when it resolved a bundle of its own, which is what
+# keeps the check honest about the bundle actually being operated on rather than
+# about whichever one this machine points at.
+#
+# `ELEPHANT_POINTER` relocates the pointer itself. It is the seam a suite uses:
+# the alternative is a test that rewrites a developer's real
+# `~/.config/elephant-mem/config.json`, and there is no case where "no pointer
+# at all" can be exercised without one.
+
+POINTER_ENV = "ELEPHANT_POINTER"
+BUNDLE_ENV = "ELEPHANT_BUNDLE"
+DEFAULT_POINTER = "~/.config/elephant-mem/config.json"
+
+
+def default_pointer():
+    """The machine pointer naming this machine's bundle."""
+    override = os.environ.get(POINTER_ENV, "").strip()
+    return Path(override or DEFAULT_POINTER).expanduser()
+
+
+def _absolute(text):
+    """Absolute, `~` expanded, symlinks left alone. `abspath` and not `resolve`,
+    matching `wiki.py:88`: a bundle reached through a symlinked path is the
+    bundle the caller named, and rewriting it would report a path the caller
+    cannot find in its own messages."""
+    return Path(os.path.abspath(os.path.expanduser(text)))
+
+
+def resolve_bundle(override="", pointer=None):
+    """`(Path, "")` for the bundle to check, or `(None, why)`.
+
+    The `knowledge/` test is what tells a bundle from any other directory, and
+    it is here rather than in `compare()` because a path that is not a bundle
+    must not be compared at all: every published file would read as missing and
+    the answer would be a confident required-drift about the wrong directory.
+    """
+    pointer = Path(pointer).expanduser() if pointer else default_pointer()
+    named = (override or "").strip()
+    source = "passed as --bundle"
+    if not named:
+        named = os.environ.get(BUNDLE_ENV, "").strip()
+        source = f"named by {BUNDLE_ENV}"
+    if named:
+        root = _absolute(named)
+    else:
+        try:
+            declared = json.loads(pointer.read_text(encoding="utf-8"))["bundle_path"]
+        except OSError:
+            return None, (f"there is no bundle pointer at {pointer}, and no "
+                          "--bundle was passed")
+        except (ValueError, KeyError, TypeError) as exc:
+            return None, (f"the bundle pointer at {pointer} names no usable "
+                          f"bundle_path ({exc})")
+        if not isinstance(declared, str) or not declared.strip():
+            return None, f"the bundle pointer at {pointer} names an empty bundle_path"
+        root = _absolute(declared)
+        source = f"named by {pointer}"
+    if not root.is_dir():
+        return None, f"the bundle {source} is not a directory: {root}"
+    if not (root / "knowledge").is_dir():
+        return None, (f"the path {source} does not look like a bundle "
+                      f"(no knowledge/): {root}")
+    return root, ""
 
 
 # ── resolution ───────────────────────────────────────────────────────────────
@@ -540,10 +612,88 @@ def resolve_interpreter(minimum=MIN_PYTHON, candidates=INTERPRETER_CANDIDATES,
     return None
 
 
+# ── the CLI ──────────────────────────────────────────────────────────────────
+
+USAGE_EPILOG = """\
+`--check` is the preflight a mode runs before it does any work. It reads the
+bundle and the installed plugins off disk, writes nothing at all, and reports
+through its exit code: 0 in sync (silent), 1 required drift (the mode stops),
+2 drift confined to the wiki's optional files (the mode proceeds), 3 could not
+tell. A caller matches 0, 1 and 2 and reads EVERYTHING else as could-not-verify,
+this executable being absent or crashing included, so a broken check lets the
+mode proceed instead of stopping everything at once.
+"""
+
+
+class _Parser(argparse.ArgumentParser):
+    """Argparse exits 2 on a usage error, and 2 is taken: it means drift
+    confined to the optional set, which a caller reads as "proceed, and mention
+    the wiki". A mistyped flag would arrive as that reassuring answer. So a
+    usage error exits could-not-verify instead, which is the honest one and the
+    one every caller already handles."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        print(f"{PROG}: {message}", file=sys.stderr)
+        raise SystemExit(CHECK_CANNOT_VERIFY)
+
+
+def build_parser():
+    ap = _Parser(
+        prog=PROG,
+        description="Update a bundle's copy of the plugin's scripts and "
+                    "templates, or check whether it needs updating.",
+        epilog=USAGE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--check", action="store_true",
+                    help="report drift and write nothing (see below)")
+    ap.add_argument("--bundle", default="",
+                    help="bundle root (default: ELEPHANT_BUNDLE, then the "
+                         "machine pointer)")
+    return ap
+
+
+def run_check(bundle_override="", plugins_dir=None, pointer=None):
+    """`(Comparison, notes)` for `--check`. Reads both sides and writes nothing:
+    no stamp, no launcher, no comparison record. A record would be absent from
+    exactly the stale bundles this exists to catch, and repair belongs to the
+    full run, which the user invoked on purpose.
+
+    The notes travel beside the comparison because `compare()` sees only that a
+    plugin did not resolve and cannot say why: a registry naming a directory
+    that is gone and a registry naming no plugin of the family are the same
+    absence to it, and a reader needs the difference.
+    """
+    bundle, why = resolve_bundle(bundle_override, pointer)
+    if bundle is None:
+        return Comparison(cannot_verify=why), []
+    resolution = resolve_plugins(plugins_dir)
+    return compare(resolution.plugin_dirs, bundle), resolution.notes
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    if args.check:
+        comparison, notes = run_check(args.bundle)
+        # In sync is silent, notes included. A mode runs this before every piece
+        # of work it does, so anything printed on the quiet path is printed on
+        # every run, and a stderr line nobody needs teaches its readers to skip
+        # the ones they do.
+        if comparison.code != CHECK_IN_SYNC:
+            notice = check_notice(comparison)
+            if notice:
+                print(notice, file=sys.stderr)
+            for note in notes:
+                print(f"  {note}", file=sys.stderr)
+        return comparison.code
+
+    # The full run lands with the task that follows. Failed-before-copy is the
+    # truthful code for it in the meantime: nothing was refreshed, installed or
+    # copied, and it is not one of the four `--check` reports.
+    print(f"{PROG}: the full run is not wired yet — run with --check, or see "
+          ".bb/elephant-update/spec.md", file=sys.stderr)
+    return RUN_FAILED_BEFORE_COPY
+
+
 if __name__ == "__main__":
-    # The CLI (bundle resolution, `--bundle`, `--check`, the full run) lands with
-    # the tasks that follow. Until then this exits could-not-verify rather than
-    # zero: zero is "in sync", and an executable that cannot check must never
-    # report that.
-    print(f"{PROG}: not wired yet — see .bb/elephant-update/spec.md", file=sys.stderr)
-    sys.exit(CHECK_CANNOT_VERIFY)
+    sys.exit(main())
