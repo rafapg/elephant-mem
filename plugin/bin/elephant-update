@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""One command for the update path a bundle needs: refresh the marketplace clone,
+update the installed plugins of the `elephant-mem` family, and re-sync the copies
+of `scripts/` and `templates/` the bundle runs from.
+
+A bundle carries its own copy of the plugin's scripts so it runs standalone, and
+keeping that copy current is a separate act from updating the plugin. A user who
+runs `claude plugin update` alone ends up with a new plugin driving old scripts,
+and until this executable existed no mode noticed: `close-loops.py` and
+`recall.py` were simply absent from a bundle whose plugin had shipped them four
+releases earlier.
+
+This file lives in `plugin/bin/` and deliberately not in `plugin/assets/scripts/`.
+That directory is the set a re-sync copies into every bundle and the set three
+suites glob, so a file added there is picked up by checks that have no business
+reading this one. It is neither a bundle script nor copied anywhere.
+
+`--check` is the preflight every mode runs. It reads both sides off disk, every
+time: nothing is stored in the bundle (a record would be absent from exactly the
+stale bundles it exists to catch, and would say the right number about files
+someone has since edited), and nothing is published.
+
+Wired so far: the comparison layer below. Bundle/plugin resolution and the CLI
+land with the tasks that follow; see `.bb/elephant-update/spec.md`.
+
+Pure stdlib, Python 3.10+. Cross-platform (explicit UTF-8 I/O).
+"""
+import sys
+from collections import namedtuple
+from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
+PROG = "elephant-update"
+
+# ── exit codes ───────────────────────────────────────────────────────────────
+# `--check` and the full run share one code space and stay disjoint above zero,
+# so a caller reading a code always knows which of the two produced it. A caller
+# of `--check` matches IN_SYNC, REQUIRED_DRIFT and OPTIONAL_DRIFT and reads
+# EVERYTHING else — CANNOT_VERIFY included, and equally an executable that is
+# absent or crashed and so cannot report itself — as could-not-verify, which
+# lets the mode proceed.
+CHECK_IN_SYNC = 0
+CHECK_REQUIRED_DRIFT = 1
+CHECK_OPTIONAL_DRIFT = 2
+CHECK_CANNOT_VERIFY = 3
+RUN_OK = 0
+RUN_DECLINED = 4
+RUN_FAILED_BEFORE_COPY = 5
+RUN_FAILED_AFTER_COPY = 6
+
+# ── the published set ────────────────────────────────────────────────────────
+# Named, not swept. Each pattern is relative to `<plugin>/assets/` and matched
+# against the plugin directory the run resolved, never compiled in here — so
+# `assets/scripts/__pycache__/` (present on a development machine, gitignored)
+# is outside the set rather than something a listing would compare, and so are
+# the `init`-only assets `vocab.json`, `elephant-plugin.md` and `seed/`.
+#
+# A matched file's path inside the bundle is the same relative path, which is
+# where both plugins already install: `assets/scripts/x.py` → `<bundle>/scripts/x.py`.
+#
+# The two plugins contribute differently, and collapsing them would leave the
+# motivating failure unfixed. `elephant-mem` publishes the REQUIRED set: a file
+# it ships and the bundle lacks is drift, and a copy installs it. `elephant-wiki`
+# publishes an OPTIONAL set: a bundle that never built a wiki has none of those
+# files, which is not drift and installs nothing, and one holding an older copy
+# is drift the update fixes but never a stop — the wiki renders the memory, it
+# does not run it.
+MARKETPLACE = "elephant-mem"
+REQUIRED_PLUGIN = "elephant-mem"
+OPTIONAL_PLUGIN = "elephant-wiki"
+
+PublishedSet = namedtuple("PublishedSet", "plugin required patterns")
+
+PUBLISHED = (
+    PublishedSet(REQUIRED_PLUGIN, True, ("scripts/*.py", "templates/*.md")),
+    PublishedSet(OPTIONAL_PLUGIN, False,
+                 ("scripts/wiki.py", "scripts/wiki.js", "scripts/graph.js")),
+)
+
+# One compared file. `state` is "same", "differs" or "missing" (from the bundle);
+# `src` is the plugin's copy, `dest` where it belongs in the bundle.
+Delta = namedtuple("Delta", "rel plugin required state src dest")
+
+
+def normalise_newlines(data):
+    """Comparison is over normalised line endings, not raw bytes. Git for
+    Windows checks out CRLF and this repo carries no `.gitattributes`, so a byte
+    comparison would report every file as drifted on Windows and block every
+    mode there. Lone CR goes the same way: it is the same class of checkout
+    artifact, never a real difference in a `.py`, `.md` or `.js` asset."""
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def published_files(plugin_root, patterns):
+    """The published files a plugin directory actually holds, as
+    {relative path under assets/: absolute path}. Matched, never listed."""
+    assets = Path(plugin_root) / "assets"
+    found = {}
+    for pattern in patterns:
+        for entry in sorted(assets.glob(pattern)):
+            if entry.is_file():
+                found[entry.relative_to(assets).as_posix()] = entry
+    return found
+
+
+class Comparison:
+    """What `--check` found, and what a copy would do about it.
+
+    `entries` holds every file in the published set of every plugin that
+    resolved — including the ones that match, so a report can say so. Files the
+    bundle holds that no resolved plugin publishes are never in it: the scan runs
+    from the plugin side, so they are neither drift nor touched. An uninstalled
+    `elephant-wiki` puts its three files in exactly that position.
+    """
+
+    def __init__(self, bundle=None, entries=(), cannot_verify=None):
+        self.bundle = bundle
+        self.entries = list(entries)
+        self.cannot_verify = cannot_verify
+
+    @property
+    def required_drift(self):
+        """A required file that differs, or that the bundle lacks entirely."""
+        return [e for e in self.entries if e.required and e.state != "same"]
+
+    @property
+    def optional_drift(self):
+        """An optional file the bundle HAS and holds an older copy of. One the
+        bundle lacks is not drift — nothing built a wiki there."""
+        return [e for e in self.entries if not e.required and e.state == "differs"]
+
+    @property
+    def copy_plan(self):
+        """The required set in full, and the optional set only where the bundle
+        already has the file."""
+        return [e for e in self.entries
+                if e.required or e.state != "missing"]
+
+    @property
+    def code(self):
+        if self.cannot_verify:
+            return CHECK_CANNOT_VERIFY
+        if self.required_drift:
+            return CHECK_REQUIRED_DRIFT
+        if self.optional_drift:
+            return CHECK_OPTIONAL_DRIFT
+        return CHECK_IN_SYNC
+
+
+def compare(plugin_dirs, bundle):
+    """Read both sides off disk and classify every published file.
+
+    `plugin_dirs` maps a plugin name to the directory the run resolved for it;
+    a name that is absent, None, or not a directory is a plugin that is not
+    installed. Only `elephant-mem` failing to resolve is could-not-verify —
+    without it there is no required set and the check has nothing to say.
+    """
+    bundle_root = Path(bundle).expanduser() if bundle else None
+    if bundle_root is None or not bundle_root.is_dir():
+        return Comparison(cannot_verify=f"no bundle at {bundle or '<unset>'}")
+
+    resolved = {}
+    for name, path in (plugin_dirs or {}).items():
+        if path and Path(path).expanduser().is_dir():
+            resolved[name] = Path(path).expanduser()
+
+    if REQUIRED_PLUGIN not in resolved:
+        return Comparison(bundle=bundle_root,
+                          cannot_verify=f"could not resolve the {REQUIRED_PLUGIN} plugin")
+
+    # Required first: if the two plugins ever published the same relative path,
+    # the required classification is the one that must win.
+    sets = [(spec, published_files(resolved[spec.plugin], spec.patterns))
+            for spec in PUBLISHED if spec.plugin in resolved]
+
+    # A directory that resolved but publishes nothing is a half-installed plugin,
+    # not an agreement. Reading it as in-sync would be the one outcome worse than
+    # a false stop: the silent pass this whole command exists to make impossible.
+    if not next(files for spec, files in sets if spec.required):
+        return Comparison(
+            bundle=bundle_root,
+            cannot_verify=f"the {REQUIRED_PLUGIN} plugin at "
+                          f"{resolved[REQUIRED_PLUGIN]} publishes no files — "
+                          f"the install looks incomplete")
+
+    entries = []
+    seen = set()
+    for spec, files in sets:
+        for rel, src in sorted(files.items()):
+            if rel in seen:
+                continue
+            seen.add(rel)
+            dest = bundle_root / rel
+            if not dest.is_file():
+                state = "missing"
+            else:
+                state = "same" if _same(src, dest) else "differs"
+            entries.append(Delta(rel, spec.plugin, spec.required, state, src, dest))
+    return Comparison(bundle=bundle_root, entries=entries)
+
+
+def _same(src, dest):
+    try:
+        return normalise_newlines(src.read_bytes()) == normalise_newlines(dest.read_bytes())
+    except OSError:
+        return False
+
+
+def check_notice(comparison):
+    """The stderr text for a comparison. In sync is silent; every other outcome
+    says what it found. A blocking message names BOTH ways out, because a
+    blocked user may be one whose shell has no launcher yet."""
+    code = comparison.code
+    if code == CHECK_IN_SYNC:
+        return ""
+    if code == CHECK_CANNOT_VERIFY:
+        return f"{PROG}: cannot verify the bundle's scripts — {comparison.cannot_verify}"
+    if code == CHECK_REQUIRED_DRIFT:
+        lines = [f"{PROG}: the bundle's copy of {len(comparison.required_drift)} "
+                 f"file(s) is not the installed plugin's:"]
+        lines += [f"  {e.rel} — {_phrase(e.state)}" for e in comparison.required_drift]
+        lines.append(f"Two ways out: run `{PROG}` in a terminal, or invoke "
+                     f"`elephant-mem:update` from inside Claude Code.")
+        return "\n".join(lines)
+    lines = [f"{PROG}: {len(comparison.optional_drift)} wiki file(s) in the bundle "
+             f"are outdated (the wiki renders the memory, it does not run it):"]
+    lines += [f"  {e.rel} — {_phrase(e.state)}" for e in comparison.optional_drift]
+    lines.append(f"Not a stop. `{PROG}` refreshes them.")
+    return "\n".join(lines)
+
+
+def _phrase(state):
+    return {"missing": "missing from the bundle",
+            "differs": "differs from the installed plugin"}.get(state, state)
+
+
+if __name__ == "__main__":
+    # The CLI (bundle resolution, `--bundle`, `--check`, the full run) lands with
+    # the tasks that follow. Until then this exits could-not-verify rather than
+    # zero: zero is "in sync", and an executable that cannot check must never
+    # report that.
+    print(f"{PROG}: not wired yet — see .bb/elephant-update/spec.md", file=sys.stderr)
+    sys.exit(CHECK_CANNOT_VERIFY)
