@@ -41,6 +41,7 @@ throwaway bundle in a tempdir, fake plugin directories in the cache layout
 Claude Code really uses, PASS/FAIL per check, exit code 0 only if every check
 passes.
 """
+import datetime
 import importlib.machinery
 import importlib.util
 import json
@@ -146,21 +147,29 @@ def write_pointer(path, bundle):
     return write(path, json.dumps({"bundle_path": str(bundle)}, indent=2) + "\n")
 
 
-def run_cli(args, *, plugins_dir, pointer, bundle_env=None, home=None):
+def run_cli(args, *, plugins_dir, pointer, bundle_env=None, home=None,
+            claude=None, stdin=""):
     """The executable as a real subprocess, which is the only way to observe
     what a mode observes: an exit code and stderr.
 
     `plugins_dir` and `pointer` are required rather than defaulted, so no call
     here can quietly read the developer's real install or their real
-    `~/.config/elephant-mem/config.json`. Invoked through `sys.executable`
-    rather than by its shebang, because a Windows runner honours no shebang.
+    `~/.config/elephant-mem/config.json`. `claude` is the same guarantee for the
+    other side: unset, it names a program that does not exist, because the
+    fallback is the real `claude` on PATH and a full run refreshes a marketplace
+    clone and installs plugins with it. Invoked through `sys.executable` rather
+    than by its shebang, because a Windows runner honours no shebang.
+
+    `stdin` defaults to closed, so a run that would ask for confirmation reads
+    EOF and declines rather than hanging a suite forever.
     """
     env = dict(os.environ)
     for key in ("ELEPHANT_PLUGINS_DIR", "ELEPHANT_POINTER", "ELEPHANT_BUNDLE",
-                "CLAUDE_CONFIG_DIR"):
+                "CLAUDE_CONFIG_DIR", "ELEPHANT_CLAUDE_CLI"):
         env.pop(key, None)
     env["ELEPHANT_PLUGINS_DIR"] = str(plugins_dir)
     env["ELEPHANT_POINTER"] = str(pointer)
+    env["ELEPHANT_CLAUDE_CLI"] = str(claude) if claude else "no-such-claude-cli"
     if bundle_env is not None:
         env["ELEPHANT_BUNDLE"] = str(bundle_env)
     if home is not None:
@@ -168,7 +177,7 @@ def run_cli(args, *, plugins_dir, pointer, bundle_env=None, home=None):
         env["USERPROFILE"] = str(home)
     return subprocess.run(
         [sys.executable, str(EXECUTABLE)] + [str(a) for a in args],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, input=stdin,
         text=True, encoding="utf-8", errors="replace", env=env)
 
 
@@ -186,6 +195,275 @@ def rels(entries):
     return sorted(e.rel for e in entries)
 
 
+# ── a throwaway machine for the full run ─────────────────────────────────────
+# The run refreshes a marketplace clone, installs plugins through Claude Code's
+# CLI, copies into a bundle, runs the bundle's own pipeline and commits. Every
+# one of those has to happen somewhere that is not the developer's machine, so
+# the whole world is built under a tempdir: a plugin cache, a registry, a
+# marketplace clone, a git bundle, and a stand-in for the CLI.
+
+FAKE_CLAUDE = '''\
+"""A stand-in for Claude Code's CLI, so no check in this suite can invoke the
+real one — a full run refreshes a marketplace clone and installs plugins, and
+neither belongs in a test.
+
+It does to the two files the executable reads what the real CLI does. A
+marketplace update rewrites the version the clone declares. A plugin update
+copies the clone's source directory into the plugin cache under that version and
+repoints the registry at it — which is why the directory the run copies from
+does not exist when the run starts, and re-resolution is the only way to find it.
+"""
+import json
+import pathlib
+import shutil
+import sys
+
+PLAN = json.loads(pathlib.Path(__file__).with_name("plan.json").read_text(encoding="utf-8"))
+ARGV = sys.argv[1:]
+CLONE = pathlib.Path(PLAN["clone"])
+
+with open(PLAN["log"], "a", encoding="utf-8") as handle:
+    handle.write(" ".join(ARGV) + "\\n")
+
+
+def manifest_of(source):
+    return CLONE / source / ".claude-plugin" / "plugin.json"
+
+
+if ARGV[:3] == ["plugin", "marketplace", "update"]:
+    if PLAN.get("refresh_fails"):
+        print("fatal: could not reach the marketplace remote", file=sys.stderr)
+        sys.exit(1)
+    for source, version in PLAN.get("declare", {}).items():
+        path = manifest_of(source)
+        declared = json.loads(path.read_text(encoding="utf-8"))
+        declared["version"] = version
+        path.write_text(json.dumps(declared, indent=2) + "\\n", encoding="utf-8")
+    print("marketplace " + ARGV[3] + " updated")
+    sys.exit(0)
+
+if ARGV[:2] == ["plugin", "update"]:
+    if PLAN.get("install_fails"):
+        print("error: the download for " + ARGV[2] + " did not complete", file=sys.stderr)
+        sys.exit(1)
+    key = ARGV[2]
+    plugin = key.split("@")[0]
+    catalogue = json.loads((CLONE / ".claude-plugin" / "marketplace.json")
+                           .read_text(encoding="utf-8"))
+    source = {entry["name"]: entry["source"] for entry in catalogue["plugins"]}[plugin]
+    version = json.loads(manifest_of(source).read_text(encoding="utf-8"))["version"]
+    target = pathlib.Path(PLAN["cache"]) / PLAN["marketplace"] / plugin / version
+    shutil.copytree(CLONE / source, target, dirs_exist_ok=True)
+    registry = pathlib.Path(PLAN["registry"])
+    installed = json.loads(registry.read_text(encoding="utf-8"))
+    installed["plugins"][key] = [{"installPath": str(target), "version": version}]
+    registry.write_text(json.dumps(installed, indent=2) + "\\n", encoding="utf-8")
+    print("updated " + key + " to " + version)
+    sys.exit(0)
+
+print("unrecognised command: " + " ".join(ARGV), file=sys.stderr)
+sys.exit(2)
+'''
+
+# Stand-ins for the two scripts the run executes out of the bundle AFTER the
+# copy. build-index.py rewrites a derived file under `knowledge/`, which is what
+# makes the commit cover `knowledge` and not only the two copied directories;
+# validate-okf.py is the gate that decides whether there is a commit at all.
+STUB_BUILD_INDEX = """\
+#!/usr/bin/env python3
+import pathlib
+bundle = pathlib.Path(__file__).resolve().parent.parent
+out = bundle / "knowledge" / "entities" / "index.md"
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text("# Entity index\\n\\n- rebuilt by build-index\\n", encoding="utf-8")
+print("index rebuilt")
+"""
+
+STUB_VALIDATE_OK = """\
+#!/usr/bin/env python3
+print("bundle validates: 0 problems")
+"""
+
+STUB_VALIDATE_FAIL = """\
+#!/usr/bin/env python3
+import sys
+print("knowledge/facts/2026-01-02-a-fact.md: frontmatter is missing `entities`")
+sys.exit(1)
+"""
+
+# What the bundle holds that no update may ever touch: E29's list.
+HAND_WRITTEN = {
+    "knowledge/facts/2026-01-02-a-fact.md": "---\nid: a-fact\n---\n\nA fact.\n",
+    "knowledge/sources/2026-01-02-a-source.md": "---\nid: a-source\n---\n\nA source.\n",
+    "knowledge/tracking/loops/a-loop.md": "---\nid: a-loop\n---\n\nAn open loop.\n",
+    "elephant.json": '{"owner": "someone"}\n',
+    "config.md": "# config\n\nThe owner's file.\n",
+    "vocab.json": '{"terms": ["the owner extended this"]}\n',
+}
+
+
+def make_fake_claude(root, plan):
+    """The stand-in CLI on disk, plus the plan that drives it.
+
+    Two files on Windows because Git Bash's `chmod` grants no NTFS execute
+    permission and CreateProcess resolves a `.cmd` where it would not resolve a
+    bare script; one executable file everywhere else.
+    """
+    home = Path(root) / "cli"
+    home.mkdir(parents=True, exist_ok=True)
+    write(home / "plan.json", json.dumps(plan, indent=2) + "\n")
+    if os.name == "nt":
+        script = write(home / "claude-fake.py", FAKE_CLAUDE)
+        return write(home / "claude.cmd",
+                     f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n')
+    launcher = write(home / "claude", f"#!{sys.executable}\n" + FAKE_CLAUDE)
+    launcher.chmod(0o755)
+    return launcher
+
+
+def make_clone(root, sources, marketplace="elephant-mem"):
+    """The local marketplace checkout: `marketplace.json` naming each plugin and
+    the directory it ships from, and each of those directories carrying the
+    `plugin.json` whose `version` the CLI reads and the `assets/` an install
+    places. `marketplace.json` declares no version of its own, which is why a
+    clone that stopped at an older commit can report a user current."""
+    clone = Path(root) / "marketplaces" / marketplace
+    write(clone / ".claude-plugin" / "marketplace.json", json.dumps({
+        "name": marketplace,
+        "plugins": [{"name": "elephant-mem", "source": "./plugin"},
+                    {"name": "elephant-wiki", "source": "./elephant-wiki"}],
+    }, indent=2) + "\n")
+    for source, (name, version, assets_from) in sources.items():
+        write(clone / source / ".claude-plugin" / "plugin.json",
+              json.dumps({"name": name, "version": version}, indent=2) + "\n")
+        if assets_from:
+            shutil.copytree(Path(assets_from) / "assets", clone / source / "assets",
+                            dirs_exist_ok=True)
+    return clone
+
+
+def git_available():
+    return shutil.which("git") is not None
+
+
+def git(bundle, *args):
+    return subprocess.run([shutil.which("git"), "-C", str(bundle), *args],
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, encoding="utf-8", errors="replace")
+
+
+def init_git(bundle):
+    """A bundle is a git repository, and the run commits into it. Local identity
+    and no signing, so a runner's global config cannot decide the outcome."""
+    git(bundle, "init", "-q")
+    git(bundle, "config", "user.email", "ci@example.com")
+    git(bundle, "config", "user.name", "Elephant CI")
+    git(bundle, "config", "commit.gpgsign", "false")
+    git(bundle, "add", "-A")
+    git(bundle, "commit", "-q", "-m", "the bundle as it stood")
+    return git(bundle, "rev-parse", "HEAD").stdout.strip()
+
+
+def make_world(root, *, validator=STUB_VALIDATE_OK, declares="0.1.0-beta.14",
+               refresh_fails=False, install_fails=False):
+    """A machine with `elephant-mem` 0.1.0-beta.13 installed, a clone carrying
+    the release that follows it, and a bundle in sync with what is installed.
+
+    The clone holds the NEW files while still declaring the old version, which is
+    the state a stale clone is really in: the refresh moves the declared version,
+    and only then is the delta true. The cache holds no 0.1.0-beta.14 at all —
+    the stand-in CLI creates it, so a run that copied from the directory it
+    resolved at startup would copy the old files and this world would catch it.
+    """
+    mem13 = make_plugin(root, "elephant-mem", version="0.1.0-beta.13",
+                        scripts={"recall.py": "print('recall 13')\n",
+                                 "build-index.py": STUB_BUILD_INDEX,
+                                 "validate-okf.py": STUB_VALIDATE_OK},
+                        templates={"open-loop.md": "# loop 13\n"})
+    # The next release, staged under a marketplace nothing resolves, so it
+    # reaches the run only through the clone and the install — never as a
+    # directory the cache fallback could have found lying around.
+    incoming = make_plugin(root, "elephant-mem", version="0.1.0-beta.14",
+                           marketplace="staging",
+                           scripts={"recall.py": "print('recall 14')\n",
+                                    "close-loops.py": "print('close 14')\n",
+                                    "build-index.py": STUB_BUILD_INDEX,
+                                    "validate-okf.py": validator},
+                           templates={"open-loop.md": "# loop 14\n"})
+    wiki4 = make_plugin(root, "elephant-wiki", version="0.1.0-beta.4",
+                        scripts={"wiki.py": "print('wiki 4')\n",
+                                 "wiki.js": "// spa 4\n", "graph.js": "// graph 4\n"})
+    registry = make_registry(root, {
+        "elephant-mem@elephant-mem": {"installPath": str(mem13),
+                                      "version": "0.1.0-beta.13"},
+        "elephant-wiki@elephant-mem": {"installPath": str(wiki4),
+                                       "version": "0.1.0-beta.4"},
+    })
+    clone = make_clone(root, {
+        "plugin": ("elephant-mem", "0.1.0-beta.13", incoming),
+        "elephant-wiki": ("elephant-wiki", "0.1.0-beta.4", wiki4),
+    })
+    bundle = make_bundle(
+        root, "bundle",
+        scripts={"recall.py": "print('recall 13')\n",
+                 "build-index.py": STUB_BUILD_INDEX,
+                 "validate-okf.py": STUB_VALIDATE_OK,
+                 # one wiki file frozen at an older build, and the other two
+                 # never installed — the scoped copy has to tell them apart
+                 "wiki.py": "print('wiki 3')\n"},
+        templates={"open-loop.md": "# loop 13\n"},
+        extra={**HAND_WRITTEN,
+               ".gitignore": (REAL_MEM_PLUGIN / "assets" / "seed" / ".gitignore")
+               .read_text(encoding="utf-8"),
+               "knowledge/entities/index.md": "# Entity index\n\n- stale\n"})
+    home = Path(root) / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    log = Path(root) / "claude-calls.log"
+    write(log, "")
+    world = {
+        "root": Path(root), "bundle": bundle, "registry": registry,
+        "clone": clone, "log": log, "home": home,
+        "pointer": write_pointer(Path(root) / "pointer.json", bundle),
+        "plan": {"log": str(log), "clone": str(clone),
+                 "cache": str(Path(root) / "cache"), "registry": str(registry),
+                 "marketplace": "elephant-mem",
+                 "declare": {"plugin": declares},
+                 "refresh_fails": refresh_fails, "install_fails": install_fails},
+    }
+    world["claude"] = make_fake_claude(root, world["plan"])
+    world["head"] = init_git(bundle)
+    return world
+
+
+def repoint(world, **changes):
+    """Rewrite the stand-in CLI's plan between phases — the way a second refresh
+    would find the marketplace further along than the first one did."""
+    world["plan"].update(changes)
+    write(Path(world["claude"]).parent / "plan.json",
+          json.dumps(world["plan"], indent=2) + "\n")
+
+
+def calls(world, clear=False):
+    """Every command the stand-in CLI was asked to run, in order."""
+    lines = [ln for ln in world["log"].read_text(encoding="utf-8").splitlines() if ln]
+    if clear:
+        write(world["log"], "")
+    return lines
+
+
+def in_world(world, *args, **kwargs):
+    kwargs.setdefault("plugins_dir", world["root"])
+    kwargs.setdefault("pointer", world["pointer"])
+    kwargs.setdefault("home", world["home"])
+    kwargs.setdefault("claude", world["claude"])
+    return run_cli(args, **kwargs)
+
+
+def committed_paths(bundle):
+    return sorted(p for p in git(bundle, "show", "--pretty=format:", "--name-only",
+                                 "HEAD").stdout.splitlines() if p)
+
+
 def main():
     eu = load_executable()
     with tempfile.TemporaryDirectory() as tmp:
@@ -200,6 +478,8 @@ def main():
         plugins_dir_checks(eu, tmp)
         bundle_checks(eu, tmp)
         check_cli_checks(eu, tmp)
+        run_checks(eu, tmp)
+        failure_checks(eu, tmp)
         interpreter_checks(eu)
         real_tree_checks(eu, tmp)
 
@@ -1037,6 +1317,246 @@ def check_cli_checks(eu, tmp):
            all(part in done.stdout for part in
                ("in sync", "required drift", "could-not-verify", "EVERYTHING else")),
            done.stdout)
+
+
+# ── the full run ─────────────────────────────────────────────────────────────
+
+def run_checks(eu, tmp):
+    """E18, E19, E28, E29, E30 and E39 in the order a user meets them: a plan,
+    the run that follows it, and the run after that with nothing left to do."""
+    if not git_available():
+        record("git on PATH (every GitHub-hosted runner has it)", False,
+               "git not found — the full run commits, so these checks cannot run")
+        return
+    world = make_world(tmp / "run")
+    bundle, registry = world["bundle"], world["registry"]
+
+    # ── `--plan` ─────────────────────────────────────────────────────────────
+    before = snapshot(bundle)
+    declared_before = registry.read_text(encoding="utf-8")
+    done = in_world(world, "--plan")
+    record("E18 --plan exits 0", done.returncode == eu.RUN_OK,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("E18 the delta is printed, installed against what the clone now offers",
+           "0.1.0-beta.13 → 0.1.0-beta.14" in done.stdout, done.stdout)
+    record("E18 the refresh ran first, and exactly once — a delta read before it "
+           "can report 'current' off a clone that stopped at an older commit",
+           calls(world) == ["plugin marketplace update elephant-mem"], calls(world))
+    record("E18 the plan names the file the new release adds and the two it moves",
+           all(part in done.stdout for part in
+               ("scripts/close-loops.py", "scripts/recall.py",
+                "templates/open-loop.md")), done.stdout)
+    record("E18 the plan names the outdated wiki file the bundle has",
+           "scripts/wiki.py" in done.stdout, done.stdout)
+    record("E18 and leaves out the wiki files the bundle never had, which a copy "
+           "would not install either",
+           "scripts/graph.js" not in done.stdout
+           and "scripts/wiki.js" not in done.stdout, done.stdout)
+    record("E18 --plan installed nothing: the registry still names beta.13",
+           registry.read_text(encoding="utf-8") == declared_before)
+    record("E18 --plan wrote nothing into the bundle — no copy, no index rewrite, "
+           "no commit, no stamp",
+           snapshot(bundle) == before,
+           sorted(set(snapshot(bundle)) ^ set(before)))
+
+    # ── the run that follows it ──────────────────────────────────────────────
+    # A second refresh would find the marketplace further along. `--no-refresh`
+    # is what keeps the delta the user approved from moving under them.
+    repoint(world, declare={"plugin": "0.1.0-beta.15"})
+    calls(world, clear=True)
+    done = in_world(world, "--yes", "--no-refresh")
+    record("the run exits 0", done.returncode == eu.RUN_OK,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("E19 --no-refresh runs no second marketplace update",
+           not any("marketplace" in line for line in calls(world)), calls(world))
+    record("E19 the version installed is the one the plan showed, not the one a "
+           "second refresh would have moved to",
+           "0.1.0-beta.14" in registry.read_text(encoding="utf-8")
+           and "0.1.0-beta.15" not in registry.read_text(encoding="utf-8"),
+           registry.read_text(encoding="utf-8"))
+    record("one `claude plugin update` per installed plugin of the family, each "
+           "carrying -y, which the CLI requires off a TTY",
+           calls(world) == ["plugin update elephant-mem@elephant-mem -y",
+                            "plugin update elephant-wiki@elephant-mem -y"],
+           calls(world))
+    record("the copy came from the directory the install had just written — one "
+           "that did not exist when the run started, so only re-resolution finds it",
+           (bundle / "scripts" / "recall.py").read_text(encoding="utf-8")
+           == "print('recall 14')\n",
+           (bundle / "scripts" / "recall.py").read_text(encoding="utf-8"))
+    record("a required script the bundle lacked is installed — the motivating "
+           "failure, repaired",
+           (bundle / "scripts" / "close-loops.py").is_file())
+    record("templates move with the scripts",
+           (bundle / "templates" / "open-loop.md").read_text(encoding="utf-8")
+           == "# loop 14\n")
+    record("the outdated wiki file the bundle had is refreshed",
+           (bundle / "scripts" / "wiki.py").read_text(encoding="utf-8")
+           == "print('wiki 4')\n")
+    record("and the wiki files it never had are still not there: a bundle that "
+           "never built a wiki does not get one from an update",
+           not (bundle / "scripts" / "graph.js").exists()
+           and not (bundle / "scripts" / "wiki.js").exists())
+    record("E29 no hand-written fact, loop or source changed, and elephant.json, "
+           "config.md and vocab.json are untouched",
+           all((bundle / rel).read_text(encoding="utf-8") == content
+               for rel, content in HAND_WRITTEN.items()),
+           [rel for rel, content in HAND_WRITTEN.items()
+            if (bundle / rel).read_text(encoding="utf-8") != content])
+    record("the index was rebuilt, by the freshly copied build-index.py",
+           "rebuilt by build-index" in
+           (bundle / "knowledge" / "entities" / "index.md").read_text(encoding="utf-8"))
+    committed = committed_paths(bundle)
+    record("E28 the commit covers knowledge as well as scripts and templates — "
+           "today's update leaves the index rewrite for the next `git add -A`",
+           {"knowledge/entities/index.md", "scripts/close-loops.py",
+            "scripts/recall.py", "templates/open-loop.md"} <= set(committed),
+           committed)
+    record("E28 the gitignored stamp is not in the commit",
+           not any("last-update-check" in path for path in committed), committed)
+    record("E28 the commit is local: no remote was configured and none was added",
+           git(bundle, "remote").stdout.strip() == "",
+           git(bundle, "remote").stdout)
+    stamp = json.loads((bundle / "state" / "last-update-check.json")
+                       .read_text(encoding="utf-8"))
+    record("E39 the run stamps last-update-check.json with the version it saw",
+           stamp.get("latest_seen") == "0.1.0-beta.14", stamp)
+    record("E39 and a fresh last_checked, which is what holds the weekly nudge",
+           abs((datetime.datetime.now().astimezone()
+                - datetime.datetime.fromisoformat(stamp["last_checked"]))
+               .total_seconds()) < 300, stamp)
+    record("the run says a restart is needed to load the plugin just installed",
+           "restart" in done.stdout and "0.1.0-beta.14" in done.stdout, done.stdout)
+
+    # ── E30: the same run again, with nothing left to do ─────────────────────
+    head = git(bundle, "rev-parse", "HEAD").stdout.strip()
+    stamped = (bundle / "state" / "last-update-check.json").read_text(encoding="utf-8")
+    calls(world, clear=True)
+    done = in_world(world, "--yes", "--no-refresh")
+    record("E30 a run with nothing to copy exits 0 and says the bundle is in sync",
+           done.returncode == eu.RUN_OK and "already in sync" in done.stdout,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("E30 nothing was staged, so no commit was attempted rather than an "
+           "empty one failing the run",
+           git(bundle, "rev-parse", "HEAD").stdout.strip() == head
+           and "no commit was made" in done.stdout, done.stdout)
+    record("E30 and it stamps anyway, so the nudge is still throttled",
+           (bundle / "state" / "last-update-check.json").read_text(encoding="utf-8")
+           != stamped)
+    record("a run that moved no version says nothing about restarting",
+           "restart" not in done.stdout, done.stdout)
+
+    # The flags belong to the run, and `--check` is the one path that promises it
+    # wrote nothing. Accepting them there would have it answering for a run it
+    # never performs.
+    for flags in (["--check", "--yes"], ["--check", "--no-refresh"],
+                  ["--check", "--plan"]):
+        done = in_world(world, *flags)
+        record(f"`{' '.join(flags)}` is a usage error, and exits could-not-verify",
+               done.returncode == eu.CHECK_CANNOT_VERIFY,
+               f"{done.returncode} {done.stderr!r}")
+
+
+def failure_checks(eu, tmp):
+    """E20, E21, E22, E26 and E27 — the three ways a run stops, and what it
+    leaves behind when it stops after the copy."""
+    if not git_available():
+        return
+
+    # E20 — the one confirmation, declined.
+    world = make_world(tmp / "declined")
+    bundle = world["bundle"]
+    before = snapshot(bundle)
+    done = in_world(world, stdin="n\n")
+    record("E20 declining exits the declined code, which is neither success nor "
+           "failure and neither of the check's",
+           done.returncode == eu.RUN_DECLINED,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("E20 nothing was installed: the refresh ran and no plugin update did",
+           calls(world) == ["plugin marketplace update elephant-mem"], calls(world))
+    record("E20 and nothing was copied, indexed, committed or stamped",
+           snapshot(bundle) == before,
+           sorted(set(snapshot(bundle)) ^ set(before)))
+    record("E20 the refreshed clone is left as it is — deliberate, and harmless",
+           "0.1.0-beta.14" in (world["clone"] / "plugin" / ".claude-plugin"
+                               / "plugin.json").read_text(encoding="utf-8"))
+    calls(world, clear=True)
+    done = in_world(world)
+    record("E20 a closed stdin is a decline too, rather than a run installing on "
+           "a question nobody answered",
+           done.returncode == eu.RUN_DECLINED, done.stderr)
+    calls(world, clear=True)
+    done = in_world(world, stdin="y\n")
+    record("and answering yes is what proceeds — the decline above is not the "
+           "prompt refusing every answer",
+           done.returncode == eu.RUN_OK
+           and (bundle / "scripts" / "close-loops.py").is_file(),
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+
+    # E21 — the marketplace refresh fails.
+    world = make_world(tmp / "norefresh", refresh_fails=True)
+    bundle = world["bundle"]
+    before = snapshot(bundle)
+    done = in_world(world, "--yes")
+    record("E21 a failed marketplace refresh exits failed-before-copy",
+           done.returncode == eu.RUN_FAILED_BEFORE_COPY,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("E21 it is reported, with the CLI's own words rather than a summary",
+           "could not be refreshed" in done.stderr
+           and "could not reach the marketplace remote" in done.stderr, done.stderr)
+    record("E21 no plugin was updated after it",
+           calls(world) == ["plugin marketplace update elephant-mem"], calls(world))
+    record("E21 and the bundle is untouched", snapshot(bundle) == before)
+
+    # E22 — `claude plugin update` fails.
+    world = make_world(tmp / "noinstall", install_fails=True)
+    bundle = world["bundle"]
+    before = snapshot(bundle)
+    done = in_world(world, "--yes")
+    record("E22 a failed plugin update exits failed-before-copy",
+           done.returncode == eu.RUN_FAILED_BEFORE_COPY,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("E22 the failing command and its output are both named",
+           "plugin update elephant-mem@elephant-mem" in done.stderr
+           and "did not complete" in done.stderr, done.stderr)
+    record("E22 it stops at the first failure rather than trying the rest",
+           calls(world) == ["plugin marketplace update elephant-mem",
+                            "plugin update elephant-mem@elephant-mem -y"],
+           calls(world))
+    record("E22 and nothing was copied", snapshot(bundle) == before)
+
+    # E26, E27 — the validator fails after the copy.
+    world = make_world(tmp / "invalid", validator=STUB_VALIDATE_FAIL)
+    bundle = world["bundle"]
+    head = world["head"]
+    done = in_world(world, "--yes")
+    record("E26 a failed validation after the copy exits failed-after-copy",
+           done.returncode == eu.RUN_FAILED_AFTER_COPY,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("E26 the validator's own output is printed, not a summary of it",
+           "frontmatter is missing `entities`" in done.stderr, done.stderr)
+    record("E26 the validator that ran is the freshly copied one — the old copy "
+           "in the bundle would have passed",
+           "sys.exit(1)" in (bundle / "scripts" / "validate-okf.py")
+           .read_text(encoding="utf-8"))
+    record("E26 nothing was committed",
+           git(bundle, "rev-parse", "HEAD").stdout.strip() == head)
+    record("E26 nothing was stamped: holding the weekly nudge over a bundle that "
+           "has just failed is the one thing the stamp must not do",
+           not (bundle / "state" / "last-update-check.json").exists())
+    record("E26 and the copy is still on disk — there is no rollback, on purpose",
+           (bundle / "scripts" / "close-loops.py").is_file())
+    record("E27 the restore commands are printed, covering knowledge as well as "
+           "scripts and templates, since the index rewrite is in there too",
+           all(f"{verb} {' '.join(('knowledge', 'scripts', 'templates'))}"
+               in done.stderr for verb in ("checkout --", "clean -fd")),
+           done.stderr)
+    record("E27 the index rewrite the restore has to undo really happened",
+           "rebuilt by build-index" in
+           (bundle / "knowledge" / "entities" / "index.md").read_text(encoding="utf-8"))
+    record("E26 the failure names both routes out, as every blocking message does",
+           "elephant-update" in done.stderr and "elephant-mem:update" in done.stderr,
+           done.stderr)
 
 
 def interpreter_checks(eu):

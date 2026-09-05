@@ -20,10 +20,11 @@ time: nothing is stored in the bundle (a record would be absent from exactly the
 stale bundles it exists to catch, and would say the right number about files
 someone has since edited), and nothing is published.
 
-Wired so far: `--check` end to end, over the comparison layer and the resolution
-that feeds it both sides (the registry Claude Code keeps, semver over the plugin
-cache as the fallback, and an interpreter located rather than assumed). The full
-run lands with the task that follows; see `.bb/elephant-update/spec.md`.
+Wired so far: `--check`, and the full run end to end except its last step — the
+marketplace refresh, the delta and the plan, one confirmation, the per-plugin
+install, re-resolution, the scoped copy, the index rebuild and validation, the
+commit and the stamp. The launcher it writes last lands with the task that
+follows; see `.bb/elephant-update/spec.md`.
 
 Pure stdlib, Python 3.10+. Cross-platform (explicit UTF-8 I/O).
 """
@@ -31,9 +32,11 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections import namedtuple
+from datetime import datetime
 from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -612,6 +615,518 @@ def resolve_interpreter(minimum=MIN_PYTHON, candidates=INTERPRETER_CANDIDATES,
     return None
 
 
+# ── the full run ─────────────────────────────────────────────────────────────
+# What `--check` only reports, this repairs: refresh the marketplace clone,
+# install the family's newer plugins, copy the published files into the bundle,
+# rebuild the index, validate, commit and stamp.
+#
+# The order is the design. The marketplace clone is refreshed FIRST, because
+# `claude plugin update` reads the version from that clone rather than from the
+# network: a delta read before the refresh can report "current" off a checkout
+# that stopped at an older commit, which is the contradiction
+# `update/SKILL.md:50-62` exists to explain. The single confirmation comes after
+# it, so the delta the user approves is the delta that gets installed. The
+# registry is re-read AFTER the install, because the whole point is to copy from
+# the version that was just installed and not from the one that was there when
+# the run started.
+#
+# There is no rollback. Validating before and after the copy would compare the
+# bundle's old validator against the newly copied one, so a stricter new release
+# would read as damage the update caused. The bundle is a git repository, so a
+# failed run prints the commands that put it back and stops.
+
+CLI_ENV = "ELEPHANT_CLAUDE_CLI"
+CLI_NAME = "claude"
+
+# What the commit covers. `knowledge` is in it because step 8 runs
+# `build-index.py`, which rewrites entity hub blocks and archive shards there;
+# today's `update` commits the other two and leaves that rewrite dirty for
+# whatever routine next runs `git add -A`, which `catch-up/procedure.md:50-54`
+# names as the thing to avoid. The stamp is outside it and needs no exclusion of
+# its own: `state/` is not in this tuple, and `seed/.gitignore:5` ignores the
+# file anyway.
+COMMIT_PATHS = ("knowledge", "scripts", "templates")
+COMMIT_MESSAGE = "update: re-sync scripts + templates from the installed plugin"
+STAMP_REL = "state/last-update-check.json"
+PIPELINE = ("build-index.py", "validate-okf.py")
+
+
+def claude_cli():
+    """The absolute path of Claude Code's CLI, or None when it is not on PATH.
+
+    `shutil.which` rather than the bare name, because on Windows the CLI is
+    installed as `claude.cmd` and only a PATHEXT-aware lookup finds it.
+    `ELEPHANT_CLAUDE_CLI` names it outright, which serves a machine where it is
+    not on PATH at all and is the seam that keeps a suite from ever invoking the
+    real one.
+    """
+    named = os.environ.get(CLI_ENV, "").strip() or CLI_NAME
+    return shutil.which(named)
+
+
+def run_command(argv, timeout=900, echo=True):
+    """`(returncode, output)`, with stdout and stderr merged.
+
+    Merged because a failing `claude plugin update` explains itself across both
+    and the caller prints the lot rather than deciding which half mattered. A
+    command that cannot start at all is a failure like any other: the caller
+    reports it and stops, and no exception escapes into the middle of a run.
+    """
+    if echo:
+        print(f"  $ {' '.join(str(a) for a in argv)}")
+        sys.stdout.flush()
+    try:
+        done = subprocess.run([str(a) for a in argv],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              timeout=timeout, text=True, encoding="utf-8",
+                              errors="replace")
+    except subprocess.TimeoutExpired:
+        return 124, f"timed out after {timeout}s"
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return 127, f"could not run {argv[0]}: {exc}"
+    return done.returncode, (done.stdout or "").strip()
+
+
+def _no_cli(action, marketplace=MARKETPLACE):
+    return (f"Claude Code's `{CLI_NAME}` CLI is not on PATH, so {action}. "
+            f"Point {CLI_ENV} at it, or run "
+            f"`{CLI_NAME} plugin marketplace update {marketplace}` and "
+            f"`{CLI_NAME} plugin update {family_key(REQUIRED_PLUGIN, marketplace)} -y` "
+            f"yourself and re-run with --no-refresh.")
+
+
+def refresh_marketplace(marketplace=MARKETPLACE):
+    """`(ok, detail)` for `claude plugin marketplace update <marketplace>`."""
+    cli = claude_cli()
+    if not cli:
+        return False, _no_cli("the marketplace clone cannot be refreshed", marketplace)
+    code, output = run_command([cli, "plugin", "marketplace", "update", marketplace])
+    if code != 0:
+        return False, output
+    return True, output
+
+
+def install_plugins(plugins, marketplace=MARKETPLACE):
+    """`(ok, detail)` after updating each installed plugin of the family.
+
+    One call per plugin: `elephant-mem` and `elephant-wiki` version separately,
+    and only the ones actually installed are touched — an absent `elephant-wiki`
+    is a plugin the user never installed, not one this run should install for
+    them. `-y` because the CLI requires it when stdout is not a TTY, which is
+    always the case here.
+    """
+    cli = claude_cli()
+    if not cli:
+        return False, _no_cli("no plugin can be updated", marketplace)
+    for plugin in plugins:
+        key = family_key(plugin, marketplace)
+        code, output = run_command([cli, "plugin", "update", key, "-y"])
+        if code != 0:
+            return False, f"`{CLI_NAME} plugin update {key} -y` exited {code}\n{output}"
+    return True, ""
+
+
+def marketplace_clone(plugins_dir=None, marketplace=MARKETPLACE):
+    """The local git checkout of the marketplace, the thing the refresh moves and
+    the thing `claude plugin update` reads a version from."""
+    return Path(plugins_dir or default_plugins_dir()) / "marketplaces" / marketplace
+
+
+def clone_plugin_dirs(clone):
+    """`({plugin: directory}, notes)` — where the clone ships each plugin from.
+
+    `marketplace.json` names each plugin and a `source` directory, and that
+    directory is a plugin root of its own: `<source>/.claude-plugin/plugin.json`
+    carries the version, `<source>/assets/` holds the files an install places.
+    So one read answers both questions the plan asks — what version is on offer,
+    and which files it would put in the bundle.
+
+    `marketplace.json` declares no version itself, which is exactly why the CLI
+    can report a user current at an older number: the version comes from the
+    commit their clone sits on.
+    """
+    manifest = Path(clone) / ".claude-plugin" / "marketplace.json"
+    try:
+        raw = json.loads(manifest.read_text(encoding="utf-8"))
+    except OSError:
+        return {}, [f"no marketplace clone at {clone}"]
+    except ValueError as exc:
+        return {}, [f"the marketplace manifest at {manifest} is not readable JSON ({exc})"]
+    entries = raw.get("plugins") if isinstance(raw, dict) else None
+    if not isinstance(entries, list):
+        return {}, [f"the marketplace manifest at {manifest} lists no plugins"]
+    dirs = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        source = str(entry.get("source") or "").strip()
+        # A source that is a URL or an absolute path is a plugin the clone does
+        # not carry as a directory of its own; there is nothing local to read.
+        if not name or not source or "://" in source or os.path.isabs(source):
+            continue
+        candidate = Path(clone) / source
+        if candidate.is_dir():
+            dirs[name] = candidate
+    return dirs, []
+
+
+def published_versions(clone_dirs):
+    """`({plugin: version}, notes)` for the directories the clone ships from."""
+    versions, notes = {}, []
+    for name, path in sorted((clone_dirs or {}).items()):
+        try:
+            manifest = json.loads(
+                (path / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+            declared = manifest.get("version") if isinstance(manifest, dict) else None
+        except (OSError, ValueError):
+            declared = None
+        if isinstance(declared, str) and declared.strip():
+            versions[name] = declared.strip()
+        else:
+            notes.append(f"the clone carries {name} but declares no version for it")
+    return versions, notes
+
+
+def plan_lines(bundle, resolution, published, comparison, notes=(), against=""):
+    """The delta and the plan, as the lines a user reads before approving.
+
+    Installed against published for each plugin of the family, then what the copy
+    would do. `against` names the side the copy plan was read from, and it is
+    normally the clone's copy of the release about to be installed rather than
+    the plugin installed right now: a plan read against the installed version
+    prints "nothing to copy" on exactly the run that is about to copy three
+    files, which is a plan nobody can approve.
+    """
+    lines = [f"Bundle: {bundle}"]
+    for plugin in (REQUIRED_PLUGIN, OPTIONAL_PLUGIN):
+        installed = resolution.version_of(plugin)
+        available = published.get(plugin, "")
+        if not installed:
+            tail = f" (the clone offers {available})" if available else ""
+            lines.append(f"  {plugin}: not installed{tail}")
+        elif not available:
+            lines.append(f"  {plugin}: {installed} installed; the marketplace "
+                         f"clone declares no version")
+        elif parse_version(available) > parse_version(installed):
+            lines.append(f"  {plugin}: {installed} → {available}")
+        elif installed == available:
+            lines.append(f"  {plugin}: {installed}, already current")
+        else:
+            lines.append(f"  {plugin}: {installed} installed, {available} in the clone")
+    for note in list(resolution.notes) + list(notes):
+        lines.append(f"  note: {note}")
+    if comparison.cannot_verify:
+        lines.append(f"  the bundle cannot be compared yet: {comparison.cannot_verify}")
+        return lines
+    against = against or "the plugin installed right now"
+    pending = [e for e in comparison.copy_plan if e.state != "same"]
+    if pending:
+        lines.append(f"  {len(pending)} file(s) in the bundle are behind {against}:")
+        # Not `_phrase`, which names the installed plugin: this comparison is
+        # normally against the clone's copy of the release about to be installed.
+        lines += [f"    {e.rel} — "
+                  f"{'not in the bundle' if e.state == 'missing' else 'out of date'}"
+                  for e in pending]
+    else:
+        lines.append(f"  the bundle's copies match {against}")
+    lines.append("  the copy set is re-read after the update, so what lands is "
+                 "whatever the newly installed plugin publishes")
+    return lines
+
+
+def confirmed(prompt="Proceed? [y/N] "):
+    """The one confirmation, after the refresh and before anything is installed.
+
+    EOF is a decline. A run whose stdin is closed cannot be asked, and installing
+    on a question nobody answered is the one reading that is never safe — the
+    caller that means yes says `--yes`.
+    """
+    try:
+        answer = input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def apply_copy(comparison):
+    """Write the copy plan into the bundle. `(copied, failures)`.
+
+    Only the members that are missing or differ are written. A file already
+    identical is left alone rather than rewritten: after normalisation a CRLF
+    checkout compares equal, so rewriting it would replace every line ending on
+    a Windows bundle and stage a whitespace-only change on every single run.
+    """
+    copied, failures = [], []
+    for entry in comparison.copy_plan:
+        if entry.state == "same":
+            continue
+        try:
+            entry.dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(entry.src, entry.dest)
+        except OSError as exc:
+            failures.append(f"{entry.rel}: {exc}")
+            continue
+        copied.append(entry)
+    return copied, failures
+
+
+def run_pipeline(bundle, interpreter):
+    """`(ok, detail)` after `build-index.py` and then `validate-okf.py`, run from
+    the bundle's own freshly copied scripts.
+
+    Both run after the copy and neither before it: validating first would compare
+    the bundle against its old validator, so a stricter new release would read as
+    damage this run caused.
+    """
+    for name in PIPELINE:
+        script = Path(bundle) / "scripts" / name
+        if not script.is_file():
+            return False, f"{script} is not there to run"
+        code, output = run_command(interpreter + [str(script)])
+        if code != 0:
+            return False, f"`{name}` exited {code}\n{output}"
+    return True, ""
+
+
+def _quote(text):
+    """Quote a path for a shell only when it needs it, in the one form Git Bash
+    and cmd both read. Git Bash is the shell every Windows instruction in the
+    README runs in, and these lines are printed for a human to paste."""
+    text = str(text)
+    return f'"{text}"' if any(c in text for c in ' \t"\'') else text
+
+
+def restore_commands(bundle):
+    """The undo a failed run prints. It covers `knowledge` as well as the two
+    copied directories: an undo naming only the copied files would leave the
+    index rewrite in place."""
+    paths = " ".join(_quote(p) for p in COMMIT_PATHS)
+    root = _quote(bundle)
+    return [f"git -C {root} checkout -- {paths}",
+            f"git -C {root} clean -fd {paths}"]
+
+
+def commit_bundle(bundle, message=COMMIT_MESSAGE):
+    """`(sha, detail)` — the sha of the commit, `""` when nothing was staged, or
+    None when committing was not possible at all.
+
+    Local only, never pushing. Nothing staged is not a failure: a run that found
+    the bundle already current has nothing to record, and failing on an empty
+    commit would turn the quiet good outcome into a red one.
+    """
+    git = shutil.which("git")
+    if not git:
+        return None, "git is not on PATH, so nothing was committed"
+    root = str(bundle)
+    code, _ = run_command([git, "-C", root, "rev-parse", "--git-dir"], echo=False)
+    if code != 0:
+        return None, f"{root} is not a git repository, so nothing was committed"
+    paths = [p for p in COMMIT_PATHS if (Path(bundle) / p).exists()]
+    if not paths:
+        return "", ""
+    code, output = run_command([git, "-C", root, "add", "--", *paths], echo=False)
+    if code != 0:
+        return None, output
+    staged, _ = run_command([git, "-C", root, "diff", "--cached", "--quiet"], echo=False)
+    if staged == 0:
+        return "", ""
+    code, output = run_command([git, "-C", root, "commit", "-m", message], echo=False)
+    if code != 0:
+        return None, output
+    code, sha = run_command([git, "-C", root, "rev-parse", "--short", "HEAD"], echo=False)
+    return (sha if code == 0 else "HEAD"), ""
+
+
+def write_stamp(bundle, latest_seen):
+    """`state/last-update-check.json`, in the shape `_shared/core.md:243-251`
+    reads: the weekly nudge's throttle, and gitignored, so it is outside the
+    commit by construction.
+
+    A run that failed after the copy never reaches this, deliberately: holding
+    the nudge for a week over a bundle that has just failed is the one thing the
+    stamp must not do.
+    """
+    path = Path(bundle) / STAMP_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "last_checked": datetime.now().astimezone().isoformat(),
+        "latest_seen": latest_seen,
+    }, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _fail_before(detail):
+    """Nothing was installed or copied, so there is nothing to undo and nothing
+    to say beyond what went wrong."""
+    print(f"{PROG}: {detail}", file=sys.stderr)
+    return RUN_FAILED_BEFORE_COPY
+
+
+def _fail_after(bundle, detail):
+    """The copy is on disk and this run will not commit it, stamp it, or undo
+    it. What it owes the user is the validator's own output and the commands
+    that put the bundle back."""
+    print(f"{PROG}: {detail}", file=sys.stderr)
+    print("Nothing was committed and nothing was stamped. The bundle is a git "
+          "repository, so the undo is:", file=sys.stderr)
+    for command in restore_commands(bundle):
+        print(f"  {command}", file=sys.stderr)
+    print(f"The next check will report drift, which is true. Both ways out still "
+          f"work: run `{PROG}` in a terminal, or invoke `elephant-mem:update` "
+          f"from inside Claude Code.", file=sys.stderr)
+    return RUN_FAILED_AFTER_COPY
+
+
+def run_update(bundle_override="", plugins_dir=None, pointer=None,
+               plan_only=False, assume_yes=False, refresh=True):
+    """The whole path in one command. Returns one of the four run codes.
+
+    The run reports on stdout; only a failure speaks on stderr. That is the
+    opposite of `--check`, which keeps stdout empty because a mode runs it before
+    every unit of work — this one the user invoked on purpose and is watching.
+    """
+    plugins_dir = Path(plugins_dir) if plugins_dir else default_plugins_dir()
+
+    # 1. The bundle first, so a path that is not a bundle stops the run before it
+    #    refreshes a clone or installs anything.
+    bundle, why = resolve_bundle(bundle_override, pointer)
+    if bundle is None:
+        return _fail_before(why)
+
+    # 2. The marketplace clone, before any version is read off it.
+    if refresh:
+        ok, detail = refresh_marketplace()
+        if not ok:
+            return _fail_before(f"the marketplace clone could not be refreshed — "
+                                f"nothing was installed or copied\n{detail}")
+    else:
+        print("Reusing the marketplace clone as it stands (--no-refresh).")
+
+    # 3. The delta and the plan, read after the refresh so both are true.
+    before = resolve_plugins(plugins_dir)
+    clone_dirs, clone_notes = clone_plugin_dirs(marketplace_clone(plugins_dir))
+    published, version_notes = published_versions(clone_dirs)
+    # The plan compares against the clone's copy of each INSTALLED plugin: those
+    # are the files `claude plugin update` is about to place. A plugin the user
+    # never installed is left out, since this run installs nothing new. When the
+    # clone cannot be read the preview falls back to the installed copy, and the
+    # line says which side it read.
+    incoming = {name: path for name, path in clone_dirs.items()
+                if name in before.installs}
+    against = "the release the clone carries"
+    if REQUIRED_PLUGIN not in incoming:
+        incoming, against = before.plugin_dirs, "the plugin installed right now"
+    preview = compare(incoming, bundle)
+    for line in plan_lines(bundle, before, published, preview,
+                           clone_notes + version_notes, against):
+        print(line)
+
+    if plan_only:
+        # `--plan` refreshes the clone and prints the delta. It installs nothing,
+        # copies nothing, commits nothing and stamps nothing, which is what makes
+        # it safe to show before asking.
+        return RUN_OK
+
+    # 4. One confirmation, and declining leaves the refreshed clone alone —
+    #    deliberate, and harmless.
+    if not assume_yes and not confirmed():
+        print("Declined. Nothing was installed and nothing was copied.")
+        return RUN_DECLINED
+
+    # 5. One `claude plugin update` per installed plugin of the family.
+    if not before.installs:
+        return _fail_before(
+            f"no plugin of the {MARKETPLACE} family is installed, so there is "
+            f"nothing to update. Install it with "
+            f"`{CLI_NAME} plugin install {family_key(REQUIRED_PLUGIN)}`.")
+    ok, detail = install_plugins(sorted(before.installs))
+    if not ok:
+        return _fail_before(f"a plugin could not be updated — nothing was "
+                            f"copied\n{detail}")
+
+    # 6. Re-read the registry: the directories that matter are the ones the
+    #    install has just written, not the ones this run started with.
+    after = resolve_plugins(plugins_dir)
+    comparison = compare(after.plugin_dirs, bundle)
+    if comparison.cannot_verify:
+        return _fail_before(f"the installed plugins could not be read after the "
+                            f"update, so nothing was copied: "
+                            f"{comparison.cannot_verify}")
+    for note in after.notes:
+        print(f"  note: {note}")
+    moved = [p for p in sorted(after.installs)
+             if after.version_of(p) != before.version_of(p)]
+    for plugin in moved:
+        print(f"Installed {plugin} {after.version_of(plugin) or '(no version)'} "
+              f"(was {before.version_of(plugin) or 'nothing'}).")
+
+    # 7. The copy: the required set in full, the optional set only where the
+    #    bundle already has the file.
+    copied, failures = apply_copy(comparison)
+    if failures:
+        return _fail_after(bundle, "the copy into the bundle did not finish:\n  "
+                                   + "\n  ".join(failures))
+    print(_copy_report(bundle, copied, comparison))
+
+    # 8. The index rebuild and the validator, from the bundle's fresh scripts.
+    interpreter = resolve_interpreter()
+    if interpreter is None:
+        return _fail_after(bundle, "no Python 3.10+ could be found to run the "
+                                   "bundle's scripts")
+    ok, detail = run_pipeline(bundle, interpreter)
+    if not ok:
+        return _fail_after(bundle, detail)
+
+    # 9. The commit and the stamp, both of which belong to a run that validated.
+    sha, trouble = commit_bundle(bundle)
+    stamp = write_stamp(bundle, published.get(REQUIRED_PLUGIN)
+                        or after.version_of(REQUIRED_PLUGIN) or "")
+
+    # 10. The launcher is written LAST, unconditionally, and verified rather than
+    #     asserted — task 5 in `.bb/elephant-update/spec.md`. Coming after the
+    #     copy, the commit and the stamp is what makes a launcher that will not
+    #     run a report rather than a failure: the update itself is already done,
+    #     so the run says so, prints the fallback line, and still exits 0.
+
+    print(_closing_report(bundle, sha, trouble, stamp, after, moved))
+    return RUN_OK
+
+
+def _copy_report(bundle, copied, comparison):
+    """Printed where the copy happened, not at the end: a report that arrives
+    after the index rebuild and the validator has the run's own steps out of
+    order for anyone reading the terminal."""
+    if not copied:
+        return (f"The bundle's copies were already in sync — "
+                f"{len(comparison.copy_plan)} published file(s), nothing to copy.")
+    lines = [f"Copied {len(copied)} file(s) into {bundle}:"]
+    lines += [f"  {e.rel} — {'installed' if e.state == 'missing' else 'updated'}"
+              for e in copied]
+    current = len(comparison.copy_plan) - len(copied)
+    if current:
+        lines.append(f"  ({current} other published file(s) already current)")
+    return "\n".join(lines)
+
+
+def _closing_report(bundle, sha, trouble, stamp, resolution, moved):
+    lines = []
+    if sha:
+        lines.append(f"Committed {sha} in {bundle} (local only, nothing pushed).")
+    elif sha == "":
+        lines.append("Nothing was staged, so no commit was made.")
+    if trouble:
+        lines.append(f"The commit did not happen: {trouble}")
+    lines.append(f"Stamped {stamp}, which holds the weekly update nudge for a week.")
+    if moved:
+        names = ", ".join(f"{p} {resolution.version_of(p)}" for p in moved)
+        lines.append(f"Claude Code must be restarted to load {names} — a plugin "
+                     f"the CLI has just installed is not the one this session is "
+                     f"still running.")
+    return "\n".join(lines)
+
+
 # ── the CLI ──────────────────────────────────────────────────────────────────
 
 USAGE_EPILOG = """\
@@ -622,6 +1137,18 @@ through its exit code: 0 in sync (silent), 1 required drift (the mode stops),
 tell. A caller matches 0, 1 and 2 and reads EVERYTHING else as could-not-verify,
 this executable being absent or crashing included, so a broken check lets the
 mode proceed instead of stopping everything at once.
+
+With no flag at all this refreshes the marketplace clone, shows the delta, asks
+once, updates every installed plugin of the family, copies the published files
+into the bundle, rebuilds the index, validates, commits and stamps. Its codes
+share the same space and stay clear of the check's: 0 success, 4 declined,
+5 failed before anything was copied, 6 failed after the copy — which commits
+nothing, stamps nothing, and prints the git commands that put the bundle back.
+
+`--plan` prints the delta and stops, having refreshed the clone and written
+nothing else. `--yes --no-refresh` is the run that follows one: it skips the
+question and reuses that refresh, so the delta the user approved is the delta
+that gets installed.
 """
 
 
@@ -645,8 +1172,20 @@ def build_parser():
                     "templates, or check whether it needs updating.",
         epilog=USAGE_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--check", action="store_true",
-                    help="report drift and write nothing (see below)")
+    # `--check` reads and `--plan` refreshes a clone, so the two are different
+    # promises about writing and cannot be asked for at once.
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true",
+                      help="report drift and write nothing (see below)")
+    mode.add_argument("--plan", action="store_true",
+                      help="refresh the clone, print the delta and the plan, "
+                           "and install or copy nothing")
+    ap.add_argument("--yes", action="store_true",
+                    help="skip the confirmation (what elephant-mem:update "
+                         "passes, having asked in the conversation)")
+    ap.add_argument("--no-refresh", dest="refresh", action="store_false",
+                    help="reuse the marketplace clone as it stands, for the run "
+                         "that follows a --plan")
     ap.add_argument("--bundle", default="",
                     help="bundle root (default: ELEPHANT_BUNDLE, then the "
                          "machine pointer)")
@@ -672,7 +1211,14 @@ def run_check(bundle_override="", plugins_dir=None, pointer=None):
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.check and (args.yes or not args.refresh):
+        # Both belong to the run. Accepting them here would have `--check`
+        # answering for a run it never performs, on the one path that must be
+        # able to promise it wrote nothing.
+        parser.error("--check writes nothing, so --yes and --no-refresh have "
+                     "nothing to do with it")
     if args.check:
         comparison, notes = run_check(args.bundle)
         # In sync is silent, notes included. A mode runs this before every piece
@@ -687,12 +1233,8 @@ def main(argv=None):
                 print(f"  {note}", file=sys.stderr)
         return comparison.code
 
-    # The full run lands with the task that follows. Failed-before-copy is the
-    # truthful code for it in the meantime: nothing was refreshed, installed or
-    # copied, and it is not one of the four `--check` reports.
-    print(f"{PROG}: the full run is not wired yet — run with --check, or see "
-          ".bb/elephant-update/spec.md", file=sys.stderr)
-    return RUN_FAILED_BEFORE_COPY
+    return run_update(args.bundle, plan_only=args.plan, assume_yes=args.yes,
+                      refresh=args.refresh)
 
 
 if __name__ == "__main__":
