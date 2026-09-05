@@ -2081,6 +2081,27 @@ def real_tree_checks(eu, tmp):
 # launcher that will not run against a commit and a stamp that already happened.
 
 
+def eol(data):
+    """Bytes with CRLF and lone CR folded to LF.
+
+    Content comparisons over a bundle go through this for the same reason the
+    executable's own `compare()` normalises: on Windows `Path.write_text` turns
+    every `\n` the fixtures hold into `\r\n`, and with `core.autocrlf` on — the
+    default there — `git checkout` rewrites the tree it restores. Neither is the
+    bundle changing, so neither should read as one. What the suite pins about
+    line endings is in the comparison checks, against bytes written on purpose.
+    """
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def same_tree(left, right):
+    """Two `contents()` maps equal once line endings are folded."""
+    return ({rel: eol(data) for rel, data in left.items()}
+            == {rel: eol(data) for rel, data in right.items()})
+
+
 def contents(root, skip=(".git",)):
     """Every file under `root` with its bytes, `.git` left out.
 
@@ -2285,9 +2306,10 @@ def report_checks(eu, tmp):
     record("E27 running them puts the bundle back exactly as it stood: the "
            "copied files, the ones the copy added, and the index rewrite that "
            "an undo naming only the copied files would have left behind",
-           contents(bundle) == before,
+           same_tree(contents(bundle), before),
            sorted(set(contents(bundle)) ^ set(before))
-           or [rel for rel, data in before.items() if contents(bundle).get(rel) != data])
+           or [rel for rel, data in before.items()
+               if eol(contents(bundle).get(rel, b"")) != eol(data)])
     record("E27 and git agrees the tree is clean, which is what the next run "
            "starts from",
            git(bundle, "status", "--porcelain").stdout.strip() == "",
@@ -2295,8 +2317,10 @@ def report_checks(eu, tmp):
     record("E29 the hand-written files were never in that failure's way either: "
            "a run that stops after the copy still touches no fact, loop, source, "
            "elephant.json, config.md or vocab.json",
-           all(before[rel] == content.encode("utf-8")
-               for rel, content in HAND_WRITTEN.items()), sorted(HAND_WRITTEN))
+           all(eol(before[rel]) == eol(content)
+               for rel, content in HAND_WRITTEN.items()),
+           [rel for rel, content in HAND_WRITTEN.items()
+            if eol(before[rel]) != eol(content)])
 
     # ── E29: the footprint, over the whole tree ──────────────────────────────
     # The named list is a list someone has to keep current. This is the same

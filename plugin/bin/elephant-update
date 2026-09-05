@@ -911,6 +911,27 @@ def restore_commands(bundle):
             f"git -C {root} clean -fd {paths}"]
 
 
+def _git_stdout(argv, timeout=120):
+    """`(returncode, stdout)` with stderr kept out of it, unlike `run_command`.
+
+    `run_command` merges the two because a failing `claude plugin update`
+    explains itself across both. That is the wrong shape for a payload meant to
+    be parsed: git writes advice to stderr while succeeding, and with
+    `core.autocrlf` on — the default on Windows — every read below draws a
+    `warning: in the working copy of 'x', LF will be replaced by CRLF` line.
+    Merged, those warnings arrive inside the NUL-separated list and read as
+    paths, and the `git add` built from them fails, so the run makes no commit
+    while still reporting success.
+    """
+    try:
+        done = subprocess.run([str(a) for a in argv], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout, text=True,
+                              encoding="utf-8", errors="replace")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 1, ""
+    return done.returncode, done.stdout or ""
+
+
 def dirty_under(bundle, rel):
     """The paths under `rel` git already sees as changed, before the run writes.
 
@@ -937,7 +958,7 @@ def dirty_under(bundle, rel):
              ["ls-files", "--others", "--exclude-standard", "-z", "--", rel])
     paths = set()
     for argv in reads:
-        code, output = run_command([git, "-C", root, *argv], echo=False)
+        code, output = _git_stdout([git, "-C", root, *argv])
         if code != 0:
             # Unreadable on any one of the three and the honest answer is "all
             # of it is the user's": staging nothing under knowledge/ loses the
