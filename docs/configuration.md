@@ -308,11 +308,15 @@ touches it. Managed by `scripts/state.py`.
   by `catch-up`.
 - `state/needs-review.md` — the low-confidence review queue.
 - `state/last-update-check.json` — throttles the weekly update nudge (see
-  core.md). Git-ignored, like `state/consumption-log.jsonl` and
-  `state/recall.json`: `recall.py roll` appends any of the three rules the
-  bundle's `.gitignore` is missing, since `update` never re-syncs that file. A
-  roll that cannot confirm them writes no record and exits non-zero, rather
-  than leaving that file for the next `git add -A`.
+  core.md), holding it for seven days. Two writers: the nudge itself, and every
+  `elephant-update` run that validated — a run that failed after the copy
+  deliberately does not stamp, so a bundle that has just failed is not held
+  quiet for a week (see [updating.md](updating.md)). Git-ignored, like
+  `state/consumption-log.jsonl` and `state/recall.json`: `recall.py roll`
+  appends any of the three rules the bundle's `.gitignore` is missing, since an
+  update re-syncs `scripts/` and `templates/` and never that file. A roll that
+  cannot confirm them writes no record and exits non-zero, rather than leaving
+  that file for the next `git add -A`.
 - `state/consumption-log.jsonl` — one JSON line per answered read, holding the
   bundle-absolute paths that answer cited. Written only by `recall.py log`.
 - `state/recall.json` — the rolled-up pyramid over that log, the fixed-size

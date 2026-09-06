@@ -8,6 +8,46 @@ confidence (that stays `maintain`'s job). The deterministic half lives in
 `scripts/decay-loops.py`; this procedure is the review/commit wrapper around
 it.
 
+## Preflight
+
+Run the check described in `../_shared/core.md` → **Preflight** before step 1.
+This procedure's first act is to run two bundle scripts, and both of them —
+`recall.py` and `decay-loops.py` — are files the check compares. On the bundle
+that motivated it, `recall.py` was missing outright and `decay-loops.py` was
+four releases behind: `recall.py roll` failed on every hourly `catch-up`,
+`state/recall.json` had never been written, and step 1's scan was reading a
+loop's activity without its fourth date. Nothing in the run said so, and it went
+on expiring loops.
+
+On **required drift**, the two cadences part, because they differ in whether
+anyone is there to read a stop:
+
+- **Interactive** (`elephant-mem:decay`, no `--yes`): stop before step 1 and
+  relay the check's stderr — it already names the drifted files and both routes
+  out — in `conversation_language`. Nothing is rolled, scanned, expired or
+  committed.
+- **Unattended** (`--yes`, or fired by the schedule — see **Cadence**): nobody
+  reads a stop, so take the environment-failure path `catch-up` uses
+  (`../catch-up/procedure.md` → **Degradation**, the stale-scripts branch) and
+  end the run there. Roll nothing, expire nothing. Append one dated line to
+  `knowledge/log.md` as `**Decay**: environment failure (bundle scripts stale)`,
+  naming the drifted files and the two routes out; run `python3
+  scripts/backlog.py add bundle-scripts-stale --summary … --evidence …` — the
+  same id `catch-up` files, so a bundle whose hourly routine already filed it
+  bumps `seen` rather than opening a second item for one cause, and **read its
+  exit code**, because a filing that failed is not a record; then commit
+  **only** that log line and the backlog file, message
+  `decay: environment failure (bundle scripts stale)`. Do not run
+  `build-index.py` or `validate-okf.py`: they are two of the drifted files, and
+  there is nothing to rebuild. If `backlog.py` is itself among the files the
+  check listed — **listed, not missing**: the required set drifts whether a
+  file is absent or merely differs, and a `backlog.py` four releases behind is
+  the failure this check exists to catch — the log line is the whole record.
+  Same if it ran and exited non-zero.
+
+Any other outcome: go on to step 1, and carry the check's one line into this
+run's report when it left one.
+
 ## Procedure
 
 1. **Roll the recall record, then dry-run.** From `<bundle>`, first run

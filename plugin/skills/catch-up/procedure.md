@@ -56,6 +56,47 @@ reachable, stop and treat it as an environment failure:
 The mislabel is the whole bug: a no-op run reads exactly like a quiet hour, so
 this failed 33 times in a row without anyone noticing.
 
+**Stale bundle scripts are the other environment failure, and this routine has
+already met it.** The preflight in `../_shared/core.md` exits required-drift when
+`<bundle>/scripts/` no longer matches the plugin that is installed — which is to
+say when `state.py`, `build-index.py`, `validate-okf.py`, `recall.py`,
+`run-hooks.py` and `backlog.py`, every script the steps below call, are not the
+ones that shipped. Nobody is
+watching a scheduled run, so there is no stop to print here; it takes the shape
+above, with the drift as the failure:
+
+- advance no cursor and ingest nothing — the window is uncovered, not empty;
+- write the `log.md` entry as `environment failure`, naming the drifted files
+  the check listed and the two routes out it printed (`elephant-update` in a
+  terminal, `elephant-mem:update` from inside Claude Code), never as an empty
+  window;
+- `backlog.py add bundle-scripts-stale --summary … --evidence …` — that exact
+  id, every run and in every routine that files it, so an hourly cadence bumps
+  `seen` instead of opening one item an hour. **Read its exit code.** A filing
+  that failed is not a record, and this is the one run where the tool doing the
+  filing is itself suspect;
+- commit **only** that log line and the backlog file, message
+  `catch-up: environment failure (bundle scripts stale)`.
+
+If `backlog.py` is itself one of the files the check listed, the `log.md` line
+is the whole record: write it and stop. **Listed, not missing** — the required
+set drifts on either state, and the notice prints which one per file (`missing
+from the bundle` or `differs from the installed plugin`). A `backlog.py` that is
+present and four releases behind is exactly the failure this check exists to
+catch, so running it to find out reproduces that failure one level down, inside
+the branch that only fires when the bundle is already known to be stale. Same
+outcome if it did run and exited non-zero. Never hand-edit `backlog.json` —
+`backlog.md` is a rendering, and a hand-written canonical is how the ledger
+stops being one.
+
+This is the failure the check exists for, and this routine had already found
+half of it. It detected the missing scripts on its own, filed
+`scripts-dir-missing-recall-and-close-loops` five times in one day, and proposed
+*"add recall.py, or update the procedure to not call them"* — both shipped in
+the installed plugin, and nothing available to the routine could say the
+bundle's copy was four releases behind. What is new is not the detection, it is
+the diagnosis: file the finding under the id above and name the fix that works.
+
 ## Autonomy envelope (what this run may change on its own)
 
 `catch-up` runs unattended, so its authority has to be **written down** rather
@@ -155,6 +196,12 @@ source:
 after.**
 
 ## Procedure
+
+**Preflight, before step 1.** Run the check described in `../_shared/core.md` →
+**Preflight**. On required drift, do not start the sweep: take the stale-scripts
+branch of **Degradation** above and end the run there. On any other outcome go
+on to step 1, and carry the check's one line into this run's `log.md` entry
+(step 8) when it left one.
 
 1. **Forward — Slack streams (each its own cursor).** For every
    `sources.slack.streams.<name>` declared in config: `state.py after <name>` →
@@ -432,7 +479,8 @@ file the backlog item.
 At the very end (after the commit), run the once-per-week update nudge described
 in `../_shared/core.md` (state file `state/last-update-check.json`; skip if
 checked within 7 days; fetch the published `plugin.json`, compare `version`,
-show `claude plugin update elephant-mem@elephant-mem` if newer; always stamp
+show `elephant-update` if newer — naming the marketplace refresh it runs first,
+and `elephant-mem:update` as the route from inside Claude Code; always stamp
 `last_checked`, skip silently if offline). This is the only interactive-ish
 touch in the routine and it never updates anything itself.
 
