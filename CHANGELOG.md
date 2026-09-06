@@ -81,12 +81,21 @@ would execute against stale scripts stops and names the way out.
   the older plugin and reproduces the failure this release exists to fix. Neither
   the launcher nor the executable assumes `python3` on PATH, which `init` already
   records as frequently untrue on Windows. `ELEPHANT_BIN_DIR` says where the pair
-  goes, so no suite and no CI runner writes to a real `~/.local/bin`.
+  goes, so no suite and no CI runner writes to a real `~/.local/bin`. When the
+  directory is not on PATH the run prints the line to add and never edits a
+  profile, and on Windows that line is PowerShell's
+  `[Environment]::SetEnvironmentVariable(..., 'User')` rather than the
+  `setx PATH "%PATH%;<dir>"` every tutorial prints: `setx` truncates the value it
+  saves at 1024 characters and `%PATH%` expands to the machine and user PATHs
+  joined, so on a machine where node, nvm and python have each added themselves,
+  following that advice drops unrelated entries from the registry with no error
+  and surfaces weeks later as some other tool that stopped resolving. A command
+  this project tells someone to run unsupervised does not get to do that.
 - **`init` Stage 9 offers the launcher**, in the stage that already asks before
   touching anything of the user's own, and a decline is an answer rather than an
   error — what it gives up is reaching the command from a terminal, not any part
   of the bundle.
-- **`tests/test_update.py` (304 checks)**, with its own `- run:` line in `ci.yml`
+- **`tests/test_update.py` (306 checks)**, with its own `- run:` line in `ci.yml`
   added in the same change, across the 3-OS × PyYAML matrix. The Windows runner is
   what executes the `.cmd` assertion, and it is the only place that can. A glob
   does not pick up a new suite: `test_backlog.py` went a full release unrun for
@@ -109,7 +118,15 @@ would execute against stale scripts stops and names the way out.
   so takes that path at any cadence. `push-start-day` stops, sends nothing and
   writes nothing at all, leaving the record to the hourly `catch-up`. The
   consequence is accepted rather than softened: ingestion halts, the morning
-  briefing does not arrive, and the notice waits until someone reads it.
+  briefing does not arrive, and the notice waits until someone reads it. Those
+  three procedures file the record with `backlog.py`, so each carries the same
+  guard on the tool doing the filing: if `backlog.py` is among the files the
+  check **listed** — drifted or missing, since the required set fires on either
+  and the notice says which per file — the log line is the whole record, and a
+  filing that exits non-zero is not a record either. Reading that guard as
+  "missing" alone would run a `backlog.py` four releases behind, which is this
+  release's own failure reappearing inside the branch that only fires when the
+  bundle is already known to be stale.
   `elephant-mem:update` and `init` never run the check — one is a route out, and
   the other is copying assets into a bundle that does not exist yet.
 - **`elephant-mem:update` became a thin caller** of the same executable: it shows

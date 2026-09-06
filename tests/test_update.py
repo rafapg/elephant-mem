@@ -1942,6 +1942,26 @@ def launcher_checks(eu, tmp):
     finally:
         os.environ["PATH"] = saved
 
+    # E32 — the Windows line, checked on every OS.
+    #
+    # `path_advice` only appends it under `os.name == "nt"`, so reading it
+    # through that function would leave the assertion running in two of the six
+    # CI cells and vacuous in the other four. The advice is worth pinning
+    # everywhere: `setx PATH "%PATH%;<dir>"` is the form every tutorial prints,
+    # it is what this file used to print, and it truncates the PATH it saves at
+    # 1024 characters — on a machine where node, nvm and python have each added
+    # themselves, following it drops unrelated entries from the registry with no
+    # error. A command this repository tells a user to run unsupervised does not
+    # get to do that, so the regression is worth a check rather than a comment.
+    windows = "\n".join(eu.windows_path_advice(r"C:\Users\jane\.local\bin"))
+    record("E32 the Windows advice sets PATH through .NET, which has no length "
+           "limit, and writes only the user scope",
+           "[Environment]::SetEnvironmentVariable('PATH'" in windows
+           and "GetEnvironmentVariable('PATH','User')" in windows
+           and windows.count("'User'") == 2, windows)
+    record("E32 and it is never `setx`, except to say not to use it",
+           "setx" not in windows.replace("not `setx`", ""), windows)
+
     # E33 — the verification fails, and the run does not.
     bare = launcher_machine(root / "bare-install", carries_bin=False)
     bins = root / "bare-install" / "bin"

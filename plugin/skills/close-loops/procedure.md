@@ -41,11 +41,15 @@ strength of a sweep that never ran. Then append one dated line at the end of
 stale)`, naming the drifted files and the two routes out the check printed; run
 `python3 scripts/backlog.py add bundle-scripts-stale --summary … --evidence …`
 — the same id `catch-up` and `decay` file, so one cause stays one item however
-many routines meet it; and commit **only** that log line and the backlog file,
+many routines meet it, and **read its exit code**, because a filing that failed
+is not a record; and commit **only** that log line and the backlog file,
 message `close-loops: environment failure (bundle scripts stale)`. Do not run
 `build-index.py` or `validate-okf.py`: nothing was written to rebuild, and both
-are drifted files themselves. If `backlog.py` is among the missing, the log line
-is the whole record.
+are drifted files themselves. If `backlog.py` is itself among the files the
+check listed — **listed, not missing**: the required set drifts whether a file
+is absent or merely differs, and running a `backlog.py` that is present and
+four releases behind is the very failure this check exists to catch — the log
+line is the whole record. Same if it ran and exited non-zero.
 
 Any other outcome: go on to step 1, and carry the check's one line into this
 run's report when it left one.

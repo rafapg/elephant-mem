@@ -72,14 +72,22 @@ above, with the drift as the failure:
   window;
 - `backlog.py add bundle-scripts-stale --summary … --evidence …` — that exact
   id, every run and in every routine that files it, so an hourly cadence bumps
-  `seen` instead of opening one item an hour;
+  `seen` instead of opening one item an hour. **Read its exit code.** A filing
+  that failed is not a record, and this is the one run where the tool doing the
+  filing is itself suspect;
 - commit **only** that log line and the backlog file, message
   `catch-up: environment failure (bundle scripts stale)`.
 
-If `backlog.py` is itself one of the files the check reported missing, the
-`log.md` line is the whole record: write it and stop. Never hand-edit
-`backlog.json` — `backlog.md` is a rendering, and a hand-written canonical is
-how the ledger stops being one.
+If `backlog.py` is itself one of the files the check listed, the `log.md` line
+is the whole record: write it and stop. **Listed, not missing** — the required
+set drifts on either state, and the notice prints which one per file (`missing
+from the bundle` or `differs from the installed plugin`). A `backlog.py` that is
+present and four releases behind is exactly the failure this check exists to
+catch, so running it to find out reproduces that failure one level down, inside
+the branch that only fires when the bundle is already known to be stale. Same
+outcome if it did run and exited non-zero. Never hand-edit `backlog.json` —
+`backlog.md` is a rendering, and a hand-written canonical is how the ledger
+stops being one.
 
 This is the failure the check exists for, and this routine had already found
 half of it. It detected the missing scripts on its own, filed

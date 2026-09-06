@@ -208,9 +208,24 @@ by name yet. Add it — this never edits a profile for you:
   (in ~/.zshrc or ~/.bashrc, and on Windows in Git Bash's ~/.bash_profile)
 ```
 
-On Windows it adds the `cmd.exe` and PowerShell form as well
-(`setx PATH "%PATH%;<dir>"`). Until you add it, run the launcher by its full
-path, or use `elephant-mem:update` from inside Claude Code.
+On Windows it adds a second form, for reaching the launcher from `cmd.exe` and
+PowerShell rather than only from Git Bash:
+
+```
+[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';<dir>', 'User')
+```
+
+**Not `setx PATH "%PATH%;<dir>"`**, which is the form most tutorials print and
+which can silently destroy a PATH. `setx` truncates the value it writes at 1024
+characters, and `%PATH%` expands to the machine PATH and the user PATH joined —
+so on a machine where node, nvm, chocolatey and python have each added
+themselves, the write lands truncated and everything past the cut is gone from
+the registry, with no error and no way back. It surfaces weeks later as an
+unrelated tool that stopped resolving. The PowerShell form above has no such
+limit and writes only the user scope, so the machine PATH is left where it is.
+
+Until you add it, run the launcher by its full path, or use
+`elephant-mem:update` from inside Claude Code.
 
 ### If the launcher will not run
 

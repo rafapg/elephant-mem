@@ -1393,6 +1393,33 @@ def on_path(directory):
     return False
 
 
+def windows_path_advice(directory):
+    """The PowerShell line for a persistent PATH, and deliberately **not**
+    `setx PATH "%PATH%;<dir>"`.
+
+    That shorter form is the one every tutorial prints and it can destroy a
+    user's PATH with no error. `setx` truncates the value it saves at 1024
+    characters, and `%PATH%` expands to the machine PATH and the user PATH
+    joined — so on a developer machine, where node, nvm, chocolatey and a
+    python install together clear 1024 on their own, the write lands truncated
+    and the entries past the cut are gone from the registry. The loss surfaces
+    weeks later as some unrelated tool that stopped resolving, which is not a
+    trade this command gets to make on the user's behalf when it is only
+    trying to be reachable by name.
+
+    `[Environment]::SetEnvironmentVariable` has no such limit, and reading the
+    `User` scope back keeps the write inside it instead of copying the machine
+    PATH into the user's own.
+    """
+    read = "[Environment]::GetEnvironmentVariable('PATH','User')"
+    return ["  to reach it from cmd.exe and PowerShell too, run this once in "
+            "PowerShell:",
+            f"  [Environment]::SetEnvironmentVariable('PATH', "
+            f"{read} + ';{directory}', 'User')",
+            "  (not `setx`, which truncates the PATH it saves past 1024 "
+            "characters, silently)"]
+
+
 def path_advice(directory):
     """The line to add, never an edit: a shell profile is the user's own file
     and nothing here writes to it."""
@@ -1404,8 +1431,7 @@ def path_advice(directory):
              "  (in ~/.zshrc or ~/.bashrc, and on Windows in Git Bash's "
              "~/.bash_profile)"]
     if os.name == "nt":
-        lines.append(f'  for cmd.exe and PowerShell instead: '
-                     f'setx PATH "%PATH%;{directory}"')
+        lines += windows_path_advice(directory)
     return lines
 
 

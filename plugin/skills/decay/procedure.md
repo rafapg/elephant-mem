@@ -34,12 +34,16 @@ anyone is there to read a stop:
   naming the drifted files and the two routes out; run `python3
   scripts/backlog.py add bundle-scripts-stale --summary … --evidence …` — the
   same id `catch-up` files, so a bundle whose hourly routine already filed it
-  bumps `seen` rather than opening a second item for one cause; then commit
+  bumps `seen` rather than opening a second item for one cause, and **read its
+  exit code**, because a filing that failed is not a record; then commit
   **only** that log line and the backlog file, message
   `decay: environment failure (bundle scripts stale)`. Do not run
   `build-index.py` or `validate-okf.py`: they are two of the drifted files, and
-  there is nothing to rebuild. If `backlog.py` is itself among the missing, the
-  log line is the whole record.
+  there is nothing to rebuild. If `backlog.py` is itself among the files the
+  check listed — **listed, not missing**: the required set drifts whether a
+  file is absent or merely differs, and a `backlog.py` four releases behind is
+  the failure this check exists to catch — the log line is the whole record.
+  Same if it ran and exited non-zero.
 
 Any other outcome: go on to step 1, and carry the check's one line into this
 run's report when it left one.
