@@ -90,12 +90,16 @@ would execute against stale scripts stops and names the way out.
   joined, so on a machine where node, nvm and python have each added themselves,
   following that advice drops unrelated entries from the registry with no error
   and surfaces weeks later as some other tool that stopped resolving. A command
-  this project tells someone to run unsupervised does not get to do that.
+  this project tells someone to run unsupervised does not get to do that. Both
+  lines quote the directory for the shell they are pasted into: an apostrophe
+  doubled for PowerShell's single-quoted literal, and `"`, `$` and a backtick
+  backslash-escaped for the `export` line, since `C:\Users\O'Brien` is an
+  ordinary directory name and `ELEPHANT_BIN_DIR` can name any of them.
 - **`init` Stage 9 offers the launcher**, in the stage that already asks before
   touching anything of the user's own, and a decline is an answer rather than an
   error — what it gives up is reaching the command from a terminal, not any part
   of the bundle.
-- **`tests/test_update.py` (317 checks)**, with its own `- run:` line in `ci.yml`
+- **`tests/test_update.py` (320 checks)**, with its own `- run:` line in `ci.yml`
   added in the same change, across the 3-OS × PyYAML matrix. The Windows runner is
   what executes the `.cmd` assertion, and it is the only place that can. A glob
   does not pick up a new suite: `test_backlog.py` went a full release unrun for

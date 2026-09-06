@@ -211,7 +211,7 @@ by name yet. Add it — this never edits a profile for you:
 On Windows it adds a second form, for reaching the launcher from `cmd.exe` and
 PowerShell rather than only from Git Bash:
 
-```
+```powershell
 [Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';<dir>', 'User')
 ```
 

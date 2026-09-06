@@ -2041,6 +2041,29 @@ def launcher_checks(eu, tmp):
     record("E32 and it is never `setx`, except to say not to use it",
            "setx" not in windows.replace("not `setx`", ""), windows)
 
+    # E32 — both lines are pasted into a shell, so the path goes in quoted.
+    #
+    # A directory carrying an apostrophe (`C:\Users\O'Brien`, an ordinary name)
+    # ends a single-quoted PowerShell string early, and one carrying a `$` or a
+    # backtick expands or executes inside the double quotes of the `export`
+    # line. Neither is untrusted input — the path is the user's own
+    # `ELEPHANT_BIN_DIR` or home directory — but both print a line that means
+    # something other than the sentence beside it, to someone who was told to
+    # paste it.
+    apostrophe = eu.windows_path_advice(r"C:\Users\O'Brien\.local\bin")[1]
+    record("E32 an apostrophe in the directory is doubled, the one escape a "
+           "single-quoted PowerShell string has",
+           "';C:\\Users\\O''Brien\\.local\\bin'" in apostrophe, apostrophe)
+    record("E32 and the surrounding literal still closes where it should: one "
+           "quote opens it, one closes it, and the doubled pair is not either",
+           apostrophe.count("'") % 2 == 0, apostrophe)
+    hostile = eu._double_quoted('/home/j$USER/"b`id`')
+    record("E32 in the export line the three characters live inside double "
+           "quotes are escaped, and a backslash is not — Git Bash reads "
+           "C:\\Users\\jane as it stands",
+           hostile == '/home/j\\$USER/\\"b\\`id\\`'
+           and eu._double_quoted(r"C:\Users\jane") == r"C:\Users\jane", hostile)
+
     # E33 — the verification fails, and the run does not.
     bare = launcher_machine(root / "bare-install", carries_bin=False)
     bins = root / "bare-install" / "bin"

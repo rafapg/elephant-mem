@@ -1412,12 +1412,37 @@ def windows_path_advice(directory):
     PATH into the user's own.
     """
     read = "[Environment]::GetEnvironmentVariable('PATH','User')"
+    # A single-quoted PowerShell string ends at the first apostrophe and escapes
+    # one by doubling it. The directory is the user's — `ELEPHANT_BIN_DIR`, or a
+    # home directory, and `C:\Users\O'Brien` is an ordinary name — so without
+    # this the line printed for them to paste is a syntax error, or worse, a
+    # different command than the one described.
+    quoted = str(directory).replace("'", "''")
     return ["  to reach it from cmd.exe and PowerShell too, run this once in "
             "PowerShell:",
             f"  [Environment]::SetEnvironmentVariable('PATH', "
-            f"{read} + ';{directory}', 'User')",
+            f"{read} + ';{quoted}', 'User')",
             "  (not `setx`, which truncates the PATH it saves past 1024 "
             "characters, silently)"]
+
+
+def _double_quoted(directory):
+    """`directory` as it goes inside the double quotes of the `export PATH=`
+    line, which is a line printed for a person to paste and run.
+
+    Same reasoning as the PowerShell literal above, for the other shell: inside
+    double quotes a bare `$` expands, a backtick runs a command and a `"` ends
+    the string, so a path carrying one would paste as something other than what
+    the sentence beside it says. `\\` is deliberately left alone — Git Bash is
+    the shell every Windows instruction in the README runs in and reads
+    `C:\\Users\\jane` as it stands, so escaping it would only make the common
+    case unreadable. A path ending in one would be the gap, and `Path` does not
+    produce one.
+    """
+    text = str(directory)
+    for char in ('"', "$", "`"):
+        text = text.replace(char, "\\" + char)
+    return text
 
 
 def path_advice(directory):
@@ -1427,7 +1452,7 @@ def path_advice(directory):
         return []
     lines = [f"{directory} is not on your PATH, so `{PROG}` will not be found by "
              f"name yet. Add it — this never edits a profile for you:",
-             f'  export PATH="{directory}:$PATH"',
+             f'  export PATH="{_double_quoted(directory)}:$PATH"',
              "  (in ~/.zshrc or ~/.bashrc, and on Windows in Git Bash's "
              "~/.bash_profile)"]
     if os.name == "nt":
