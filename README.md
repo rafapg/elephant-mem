@@ -179,8 +179,9 @@ catch. Neither ever updates anything on its own.
 
 The command ships inside the plugin, on the PATH Claude Code hands its own
 processes. To reach it from a terminal, a full run writes a launcher at
-`~/.local/bin/elephant-update` every time it runs; if that directory is not on
-your PATH, the run prints the line to add.
+`~/.local/bin/elephant-update` every time it runs — set `ELEPHANT_BIN_DIR` to
+put it somewhere else. If that directory is not on your PATH, the run prints the
+line to add.
 
 Underneath, updating the plugin itself is still **two** commands, in this order,
 and `elephant-update` runs both for you:

@@ -93,10 +93,12 @@ Two families of mode need more than the rule above, and their own procedures
 carry it. A mode that hands the work to `elephant-worker` (`query`, `briefing`,
 `start-day`, `end-day`) runs the check **before** delegating, so the stop lands
 where the user can read it. A mode with nobody watching does not print a stop at
-all: `catch-up`, the scheduled `decay` and `close-loops` route required drift
-into the environment-failure path and file the record, and `push-start-day`
-stops, sends nothing and writes nothing, leaving the record to the hourly
-`catch-up`.
+all: `catch-up`, `decay` when unattended and `close-loops` at **every** cadence
+route required drift into the environment-failure path and file the record, and
+`push-start-day` stops, sends nothing and writes nothing, leaving the record to
+the hourly `catch-up`. The asymmetry is deliberate: `decay` has a review gate to
+split interactive from unattended on, and `close-loops` has none, so it cannot
+tell whether anyone is reading and treats every run as unattended.
 
 ## elephant-mem — procedural memory
 

@@ -529,6 +529,7 @@ def main():
     eu = load_executable()
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
+        contract_checks(eu)
         comparison_checks(eu, tmp)
         wiki_checks(eu, tmp)
         version_checks(eu)
@@ -554,6 +555,35 @@ def main():
     total = len(checks)
     print(f"\n{passed}/{total} checks passed")
     return 0 if passed == total else 1
+
+
+# ── the numbers other files hardcode ────────────────────────────────────────
+
+def contract_checks(eu):
+    """The exit codes as literals, because everything that reads them is prose.
+
+    Every other assertion in this file compares against the symbolic name, which
+    is the right habit and also blind to the one mistake that matters here:
+    swap two constants' values and the suite stays green while
+    `USAGE_EPILOG`, `docs/updating.md` and `update/SKILL.md` all keep promising
+    the old numbers to callers that are shell scripts and skill prose, not
+    Python. `5` and `6` sit adjacent in the source, differ by whether a bundle
+    was already written into, and carry opposite recovery advice — the rollback
+    command for one is wrong for the other. So the numbers are pinned once,
+    here, as the contract they are.
+    """
+    for name, value in (("CHECK_IN_SYNC", 0),
+                        ("CHECK_REQUIRED_DRIFT", 1),
+                        ("CHECK_OPTIONAL_DRIFT", 2),
+                        ("CHECK_CANNOT_VERIFY", 3),
+                        ("RUN_OK", 0),
+                        ("RUN_DECLINED", 4),
+                        ("RUN_FAILED_BEFORE_COPY", 5),
+                        ("RUN_FAILED_AFTER_COPY", 6)):
+        actual = getattr(eu, name)
+        record(f"the documented exit code {name} is {value}, the number the "
+               f"docs and the usage text hand to callers",
+               actual == value, f"{name} == {actual}")
 
 
 # ── the required set ─────────────────────────────────────────────────────────
@@ -1607,6 +1637,55 @@ def dirty_knowledge_checks(eu, tmp):
            "itself rather than finding its work already gone",
            "2026-01-02-a-fact.md" in still_dirty
            and "2026-01-03-half-done.md" in still_dirty, still_dirty)
+
+    # E29 — and the same guarantee when git itself will not answer.
+    #
+    # `dirty_under` returns None on a failed read rather than the partial set it
+    # did manage to gather, and the difference is the whole guarantee. That
+    # reading is taken BEFORE the run writes, so a set that came back short does
+    # not read as short: it reads as a bundle where those files were clean, and
+    # every one of them is then attributed to the run and swept into its commit.
+    # Failing closed gives up committing the run's own index rewrite, which the
+    # next routine redoes; failing open buries a person's unfinished work under a
+    # commit message about scripts and templates, which nothing redoes.
+    world = make_world(tmp / "dirty-blind")
+    bundle = world["bundle"]
+    mine = bundle / "knowledge" / "facts" / "2026-01-02-a-fact.md"
+    write(mine, mine.read_text(encoding="utf-8").replace("A fact.", "Mid-sentence"))
+    real = eu._git_stdout
+    failed_once = []
+
+    def one_read_fails(argv, timeout=120):
+        """The tracked-modified read fails; the other two answer.
+
+        One read, not all three: with every read failing there is nothing to
+        attribute either way, and both a fail-closed and a fail-open reading
+        stage nothing. It is the partial answer that is dangerous.
+        """
+        argv = list(argv)
+        if "diff" in argv and "--cached" not in argv and not failed_once:
+            failed_once.append(argv)
+            return 1, ""
+        return real(argv, timeout=timeout)
+
+    eu._git_stdout = one_read_fails
+    try:
+        keep = eu.dirty_under(bundle, eu.KNOWLEDGE_REL)
+    finally:
+        eu._git_stdout = real
+    record("E29 a git read that fails leaves `dirty_under` with no answer at "
+           "all, not with the half it collected",
+           keep is None and failed_once, f"{keep!r} after {len(failed_once)} failure(s)")
+    head = git(bundle, "rev-parse", "HEAD").stdout.strip()
+    sha, detail = eu.commit_bundle(bundle, keep_dirty=keep)
+    record("E29 and on that answer the commit step stages nothing under "
+           "knowledge/ rather than claiming a person's edit as its own",
+           sha == "" and git(bundle, "rev-parse", "HEAD").stdout.strip() == head,
+           f"{sha!r} {detail}")
+    record("E29 which is not a failed run — nothing staged is not an error — "
+           "and the words their author left are still the ones on disk",
+           "Mid-sentence" in mine.read_text(encoding="utf-8"),
+           mine.read_text(encoding="utf-8"))
 
 
 def failure_checks(eu, tmp):

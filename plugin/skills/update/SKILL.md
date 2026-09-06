@@ -75,10 +75,13 @@ before asking. Relay what it printed in `conversation_language`.
 and there is no plan: the bundle could not be resolved, or the marketplace
 refresh failed — the user is offline, `claude` is not on PATH, or a `--bundle`
 names somewhere that is not a bundle. The refresh runs before the delta is read,
-so this failure lands here rather than at step 3. Stop, relay stderr, and say
-nothing was touched, which is true: a run that stops here has installed nothing
-and copied nothing. Do **not** go to step 2 and ask the user to approve an
-install off a plan that was never printed.
+so this failure lands here rather than at step 3. Stop, relay stderr, and make
+the script's own claim rather than a wider one: **nothing was installed or
+copied**. Not "nothing was touched" — the refresh runs before the delta is read,
+so by the time this failure lands it may already have moved the local
+marketplace clone, and the narrower sentence is the one that stays true. Do
+**not** go to step 2 and ask the user to approve an install off a plan that was
+never printed.
 
 **The refresh comes first, and that ordering is the point.** `claude plugin
 update` reads the version from the user's local clone of the marketplace
