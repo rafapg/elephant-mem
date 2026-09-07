@@ -1,0 +1,1809 @@
+#!/usr/bin/env python3
+"""One command for the update path a bundle needs: refresh the marketplace clone,
+update the installed plugins of the `elephant-mem` family, and re-sync the copies
+of `scripts/` and `templates/` the bundle runs from.
+
+A bundle carries its own copy of the plugin's scripts so it runs standalone, and
+keeping that copy current is a separate act from updating the plugin. A user who
+runs `claude plugin update` alone ends up with a new plugin driving old scripts,
+and until this executable existed no mode noticed: `close-loops.py` and
+`recall.py` were simply absent from a bundle whose plugin had shipped them four
+releases earlier.
+
+This file lives in `plugin/bin/` and deliberately not in `plugin/assets/scripts/`.
+That directory is the set a re-sync copies into every bundle and the set three
+suites glob, so a file added there is picked up by checks that have no business
+reading this one. It is neither a bundle script nor copied anywhere.
+
+`--check` is the preflight every mode runs. It reads both sides off disk, every
+time: nothing is stored in the bundle (a record would be absent from exactly the
+stale bundles it exists to catch, and would say the right number about files
+someone has since edited), and nothing is published.
+
+The full run is the whole path in one command: the marketplace refresh, the delta
+and the plan, one confirmation, the per-plugin install, re-resolution, the scoped
+copy, the index rebuild and validation, the commit, the stamp, and last of all
+the launcher at `~/.local/bin/elephant-update` that makes the command reachable
+from a login shell. The launcher is written last on purpose, so one that will not
+run is a report rather than a failure of an update already done.
+
+Pure stdlib, Python 3.10+. Cross-platform (explicit UTF-8 I/O).
+"""
+import argparse
+import base64
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from collections import namedtuple
+from datetime import datetime
+from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
+PROG = "elephant-update"
+
+# ── exit codes ───────────────────────────────────────────────────────────────
+# `--check` and the full run share one code space and stay disjoint above zero,
+# so a caller reading a code always knows which of the two produced it. A caller
+# of `--check` matches IN_SYNC, REQUIRED_DRIFT and OPTIONAL_DRIFT and reads
+# EVERYTHING else — CANNOT_VERIFY included, and equally an executable that is
+# absent or crashed and so cannot report itself — as could-not-verify, which
+# lets the mode proceed.
+CHECK_IN_SYNC = 0
+CHECK_REQUIRED_DRIFT = 1
+CHECK_OPTIONAL_DRIFT = 2
+CHECK_CANNOT_VERIFY = 3
+RUN_OK = 0
+RUN_DECLINED = 4
+RUN_FAILED_BEFORE_COPY = 5
+RUN_FAILED_AFTER_COPY = 6
+
+# ── the published set ────────────────────────────────────────────────────────
+# Named, not swept. Each pattern is relative to `<plugin>/assets/` and matched
+# against the plugin directory the run resolved, never compiled in here — so
+# `assets/scripts/__pycache__/` (present on a development machine, gitignored)
+# is outside the set rather than something a listing would compare, and so are
+# the `init`-only assets `vocab.json`, `elephant-plugin.md` and `seed/`.
+#
+# A matched file's path inside the bundle is the same relative path, which is
+# where both plugins already install: `assets/scripts/x.py` → `<bundle>/scripts/x.py`.
+#
+# The two plugins contribute differently, and collapsing them would leave the
+# motivating failure unfixed. `elephant-mem` publishes the REQUIRED set: a file
+# it ships and the bundle lacks is drift, and a copy installs it. `elephant-wiki`
+# publishes an OPTIONAL set: a bundle that never built a wiki has none of those
+# files, which is not drift and installs nothing, and one holding an older copy
+# is drift the update fixes but never a stop — the wiki renders the memory, it
+# does not run it.
+MARKETPLACE = "elephant-mem"
+REQUIRED_PLUGIN = "elephant-mem"
+OPTIONAL_PLUGIN = "elephant-wiki"
+
+PublishedSet = namedtuple("PublishedSet", "plugin required patterns")
+
+PUBLISHED = (
+    PublishedSet(REQUIRED_PLUGIN, True, ("scripts/*.py", "templates/*.md")),
+    PublishedSet(OPTIONAL_PLUGIN, False,
+                 ("scripts/wiki.py", "scripts/wiki.js", "scripts/graph.js")),
+)
+
+# One compared file. `state` is "same", "differs" or "missing" (from the bundle);
+# `src` is the plugin's copy, `dest` where it belongs in the bundle.
+Delta = namedtuple("Delta", "rel plugin required state src dest")
+
+
+def normalise_newlines(data):
+    """Comparison is over normalised line endings, not raw bytes. Git for
+    Windows checks out CRLF and this repo carries no `.gitattributes`, so a byte
+    comparison would report every file as drifted on Windows and block every
+    mode there. Lone CR goes the same way: it is the same class of checkout
+    artifact, never a real difference in a `.py`, `.md` or `.js` asset."""
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def published_files(plugin_root, patterns):
+    """The published files a plugin directory actually holds, as
+    {relative path under assets/: absolute path}. Matched, never listed."""
+    assets = Path(plugin_root) / "assets"
+    found = {}
+    for pattern in patterns:
+        for entry in sorted(assets.glob(pattern)):
+            if entry.is_file():
+                found[entry.relative_to(assets).as_posix()] = entry
+    return found
+
+
+class Comparison:
+    """What `--check` found, and what a copy would do about it.
+
+    `entries` holds every file in the published set of every plugin that
+    resolved — including the ones that match, so a report can say so. Files the
+    bundle holds that no resolved plugin publishes are never in it: the scan runs
+    from the plugin side, so they are neither drift nor touched. An uninstalled
+    `elephant-wiki` puts its three files in exactly that position.
+    """
+
+    def __init__(self, bundle=None, entries=(), cannot_verify=None):
+        self.bundle = bundle
+        self.entries = list(entries)
+        self.cannot_verify = cannot_verify
+
+    @property
+    def required_drift(self):
+        """A required file that differs, or that the bundle lacks entirely."""
+        return [e for e in self.entries if e.required and e.state != "same"]
+
+    @property
+    def optional_drift(self):
+        """An optional file the bundle HAS and holds an older copy of. One the
+        bundle lacks is not drift — nothing built a wiki there."""
+        return [e for e in self.entries if not e.required and e.state == "differs"]
+
+    @property
+    def copy_plan(self):
+        """The required set in full, and the optional set only where the bundle
+        already has the file."""
+        return [e for e in self.entries
+                if e.required or e.state != "missing"]
+
+    @property
+    def code(self):
+        if self.cannot_verify:
+            return CHECK_CANNOT_VERIFY
+        if self.required_drift:
+            return CHECK_REQUIRED_DRIFT
+        if self.optional_drift:
+            return CHECK_OPTIONAL_DRIFT
+        return CHECK_IN_SYNC
+
+
+def compare(plugin_dirs, bundle):
+    """Read both sides off disk and classify every published file.
+
+    `plugin_dirs` maps a plugin name to the directory the run resolved for it;
+    a name that is absent, None, or not a directory is a plugin that is not
+    installed. Only `elephant-mem` failing to resolve is could-not-verify —
+    without it there is no required set and the check has nothing to say.
+    """
+    bundle_root = Path(bundle).expanduser() if bundle else None
+    if bundle_root is None or not bundle_root.is_dir():
+        return Comparison(cannot_verify=f"no bundle at {bundle or '<unset>'}")
+
+    resolved = {}
+    for name, path in (plugin_dirs or {}).items():
+        if path and Path(path).expanduser().is_dir():
+            resolved[name] = Path(path).expanduser()
+
+    if REQUIRED_PLUGIN not in resolved:
+        return Comparison(bundle=bundle_root,
+                          cannot_verify=f"could not resolve the {REQUIRED_PLUGIN} plugin")
+
+    # Required first: if the two plugins ever published the same relative path,
+    # the required classification is the one that must win.
+    sets = [(spec, published_files(resolved[spec.plugin], spec.patterns))
+            for spec in PUBLISHED if spec.plugin in resolved]
+
+    # A directory that resolved but publishes nothing is a half-installed plugin,
+    # not an agreement. Reading it as in-sync would be the one outcome worse than
+    # a false stop: the silent pass this whole command exists to make impossible.
+    if not next(files for spec, files in sets if spec.required):
+        return Comparison(
+            bundle=bundle_root,
+            cannot_verify=f"the {REQUIRED_PLUGIN} plugin at "
+                          f"{resolved[REQUIRED_PLUGIN]} publishes no files — "
+                          f"the install looks incomplete")
+
+    entries = []
+    seen = set()
+    for spec, files in sets:
+        for rel, src in sorted(files.items()):
+            if rel in seen:
+                continue
+            seen.add(rel)
+            dest = bundle_root / rel
+            if not dest.is_file():
+                state = "missing"
+            else:
+                state = "same" if _same(src, dest) else "differs"
+            entries.append(Delta(rel, spec.plugin, spec.required, state, src, dest))
+    return Comparison(bundle=bundle_root, entries=entries)
+
+
+def _same(src, dest):
+    try:
+        return normalise_newlines(src.read_bytes()) == normalise_newlines(dest.read_bytes())
+    except OSError:
+        return False
+
+
+def check_notice(comparison):
+    """The stderr text for a comparison. In sync is silent; every other outcome
+    says what it found. A blocking message names BOTH ways out, because a
+    blocked user may be one whose shell has no launcher yet."""
+    code = comparison.code
+    if code == CHECK_IN_SYNC:
+        return ""
+    if code == CHECK_CANNOT_VERIFY:
+        return f"{PROG}: cannot verify the bundle's scripts — {comparison.cannot_verify}"
+    if code == CHECK_REQUIRED_DRIFT:
+        lines = [f"{PROG}: the bundle's copy of {len(comparison.required_drift)} "
+                 f"file(s) is not the installed plugin's:"]
+        lines += [f"  {e.rel} — {_phrase(e.state)}" for e in comparison.required_drift]
+        lines.append(f"Two ways out: run `{PROG}` in a terminal, or invoke "
+                     f"`elephant-mem:update` from inside Claude Code.")
+        return "\n".join(lines)
+    lines = [f"{PROG}: {len(comparison.optional_drift)} wiki file(s) in the bundle "
+             f"are outdated (the wiki renders the memory, it does not run it):"]
+    lines += [f"  {e.rel} — {_phrase(e.state)}" for e in comparison.optional_drift]
+    lines.append(f"Not a stop. `{PROG}` refreshes them.")
+    return "\n".join(lines)
+
+
+def _phrase(state):
+    return {"missing": "missing from the bundle",
+            "differs": "differs from the installed plugin"}.get(state, state)
+
+
+# ── the bundle side ──────────────────────────────────────────────────────────
+# Pointer-or-override resolution, in the order `wiki.py:85-97` already uses so
+# the two agree: `--bundle` first, then `ELEPHANT_BUNDLE` (which `run-hooks.py`
+# sets for every hook subprocess, so a routine driving a bundle other than the
+# pointer's is already carrying the answer), then the machine pointer.
+#
+# A mode passes `--bundle` when it resolved a bundle of its own, which is what
+# keeps the check honest about the bundle actually being operated on rather than
+# about whichever one this machine points at.
+#
+# `ELEPHANT_POINTER` relocates the pointer itself. It is the seam a suite uses:
+# the alternative is a test that rewrites a developer's real
+# `~/.config/elephant-mem/config.json`, and there is no case where "no pointer
+# at all" can be exercised without one.
+
+POINTER_ENV = "ELEPHANT_POINTER"
+BUNDLE_ENV = "ELEPHANT_BUNDLE"
+DEFAULT_POINTER = "~/.config/elephant-mem/config.json"
+
+
+def default_pointer():
+    """The machine pointer naming this machine's bundle."""
+    override = os.environ.get(POINTER_ENV, "").strip()
+    return Path(override or DEFAULT_POINTER).expanduser()
+
+
+def _absolute(text):
+    """Absolute, `~` expanded, symlinks left alone. `abspath` and not `resolve`,
+    matching `wiki.py:88`: a bundle reached through a symlinked path is the
+    bundle the caller named, and rewriting it would report a path the caller
+    cannot find in its own messages."""
+    return Path(os.path.abspath(os.path.expanduser(text)))
+
+
+def resolve_bundle(override="", pointer=None):
+    """`(Path, "")` for the bundle to check, or `(None, why)`.
+
+    The `knowledge/` test is what tells a bundle from any other directory, and
+    it is here rather than in `compare()` because a path that is not a bundle
+    must not be compared at all: every published file would read as missing and
+    the answer would be a confident required-drift about the wrong directory.
+    """
+    pointer = Path(pointer).expanduser() if pointer else default_pointer()
+    named = (override or "").strip()
+    source = "passed as --bundle"
+    if not named:
+        named = os.environ.get(BUNDLE_ENV, "").strip()
+        source = f"named by {BUNDLE_ENV}"
+    if named:
+        root = _absolute(named)
+    else:
+        try:
+            declared = json.loads(pointer.read_text(encoding="utf-8"))["bundle_path"]
+        except OSError:
+            return None, (f"there is no bundle pointer at {pointer}, and no "
+                          "--bundle was passed")
+        except (ValueError, KeyError, TypeError) as exc:
+            return None, (f"the bundle pointer at {pointer} names no usable "
+                          f"bundle_path ({exc})")
+        if not isinstance(declared, str) or not declared.strip():
+            return None, f"the bundle pointer at {pointer} names an empty bundle_path"
+        root = _absolute(declared)
+        source = f"named by {pointer}"
+    if not root.is_dir():
+        return None, f"the bundle {source} is not a directory: {root}"
+    if not (root / "knowledge").is_dir():
+        return None, (f"the path {source} does not look like a bundle "
+                      f"(no knowledge/): {root}")
+    return root, ""
+
+
+# ── resolution ───────────────────────────────────────────────────────────────
+# Where the two sides of the comparison come from, and the one place a version
+# is ever compared.
+#
+# **The registry first.** `~/.claude/plugins/installed_plugins.json` names every
+# installed plugin, keyed `<plugin>@<marketplace>`, with an explicit
+# `installPath` and `version`. A version sitting in the cache is not evidence it
+# is installed: the owner's cache holds six of `elephant-mem` (`beta.7` through
+# `beta.13`) and only `beta.13` is installed. Taking the cache's highest happens
+# to agree today, and disagrees after a downgrade, a declined install, or an
+# update that downloaded and then failed.
+#
+# **Semver over the cache as the fallback**, for a missing registry or a schema
+# that moved. Never a text sort: sorted as text `0.1.0-beta.9` follows
+# `0.1.0-beta.13`, which would run the older plugin and reproduce the failure
+# this command exists to fix. A shell `sort` does exactly that, and a Windows
+# batch file cannot sort at all — which is why this is Python and lives here.
+
+REGISTRY_NAME = "installed_plugins.json"
+REGISTRY_SCHEMA = 2  # the version the registry declares today
+
+
+def default_plugins_dir():
+    """The directory holding the registry and the plugin cache.
+
+    `~/.claude/plugins` unless the environment says otherwise:
+    `ELEPHANT_PLUGINS_DIR` points the resolver at a throwaway tree, so no suite
+    reads a developer's or a runner's real install, and `CLAUDE_CONFIG_DIR` is
+    honoured because a user who relocated their config dir took the registry
+    with it. With neither set the path is exactly the verified one.
+    """
+    override = os.environ.get("ELEPHANT_PLUGINS_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    config = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    base = Path(config).expanduser() if config else Path.home() / ".claude"
+    return base / "plugins"
+
+
+# Optional leading `v`, one to three numeric parts, an optional prerelease and
+# build metadata we ignore. Anything else is not a version.
+_VERSION_RE = re.compile(
+    r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.\-]+))?(?:\+[0-9A-Za-z.\-]+)?$")
+
+
+def parse_version(text):
+    """A sortable key for a version string, ordered as semver and never as text.
+
+    Semver precedence, with build metadata ignored: the numeric core first, then
+    a release outranking any prerelease of the same core, then the prerelease
+    identifiers dot by dot — numerically where they are numeric, a numeric
+    identifier below an alphanumeric one, and more identifiers outranking a
+    prefix of themselves. So `0.1.0` > `0.1.0-beta.13` > `0.1.0-beta.9` >
+    `0.1.0-beta` > `0.1.0-alpha.99`.
+
+    A string that is not a version sorts below every string that is, rather than
+    raising: the cache is a directory listing and can hold anything, and one
+    stray entry must not take the resolver down.
+    """
+    match = _VERSION_RE.match((text or "").strip())
+    if not match:
+        return (0, (0, 0, 0), 0, (), text or "")
+    core = tuple(int(part or 0) for part in match.group(1, 2, 3))
+    prerelease = match.group(4)
+    if not prerelease:
+        return (1, core, 1, (), "")
+    identifiers = tuple((0, int(part), "") if part.isdigit() else (1, 0, part)
+                        for part in prerelease.split("."))
+    return (1, core, 0, identifiers, "")
+
+
+def family_key(plugin, marketplace=MARKETPLACE):
+    """The registry key, and the argument `claude plugin update` takes."""
+    return f"{plugin}@{marketplace}"
+
+
+def plugin_of_key(key, marketplace=MARKETPLACE):
+    """The plugin name in a registry key `<plugin>@<marketplace>`, or None when
+    the key belongs to another marketplace.
+
+    The suffix *is* the family test. A prefix heuristic over plugin or directory
+    names would claim someone else's `elephant-notes` from another marketplace,
+    and would miss a plugin of ours that is not named `elephant-*`.
+    """
+    suffix = "@" + marketplace
+    if not isinstance(key, str) or not key.endswith(suffix):
+        return None
+    return key[:-len(suffix)] or None
+
+
+# One installed plugin. `path` is None when a plugin is declared but its
+# directory is not on disk; `source` is "registry" or "cache".
+PluginInstall = namedtuple("PluginInstall", "plugin version path source")
+
+
+class Resolution:
+    """Which plugins of the family are installed, where, and how we found out.
+
+    `notes` carries what a caller should say out loud: why the fallback was
+    taken, or which declared directory turned out not to exist. `compare()`
+    reports could-not-verify from the absence alone and cannot know the reason,
+    so the reason has to travel separately.
+    """
+
+    def __init__(self, installs=(), source="registry", notes=()):
+        self.installs = {install.plugin: install for install in installs}
+        self.source = source
+        self.notes = list(notes)
+
+    @property
+    def plugin_dirs(self):
+        """Exactly what `compare()` takes: each plugin mapped to the directory
+        resolved for it, or None when nothing resolved."""
+        return {name: install.path for name, install in self.installs.items()}
+
+    def version_of(self, plugin):
+        install = self.installs.get(plugin)
+        return install.version if install else ""
+
+    def path_of(self, plugin):
+        install = self.installs.get(plugin)
+        return install.path if install else None
+
+    def __contains__(self, plugin):
+        install = self.installs.get(plugin)
+        return bool(install and install.path)
+
+
+def read_registry(plugins_dir=None, marketplace=MARKETPLACE):
+    """`({plugin: [record, ...]}, "")` for a registry we can use, or
+    `(None, why)` when the caller must fall back to the cache.
+
+    A readable registry that simply names no plugin of the family returns an
+    empty mapping, not None: "not installed" is an answer, and the cache must
+    not overrule it.
+    """
+    path = Path(plugins_dir or default_plugins_dir()) / REGISTRY_NAME
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None, f"no plugin registry at {path}"
+    except ValueError as exc:
+        return None, f"the plugin registry at {path} is not readable JSON ({exc})"
+    if not isinstance(raw, dict):
+        return None, f"the plugin registry at {path} is not an object"
+    schema = raw.get("version")
+    if schema != REGISTRY_SCHEMA:
+        return None, (f"the plugin registry at {path} declares schema version "
+                      f"{schema!r}, not {REGISTRY_SCHEMA} — its shape has moved")
+    plugins = raw.get("plugins")
+    if not isinstance(plugins, dict):
+        return None, f"the plugin registry at {path} carries no plugins object"
+    found = {}
+    for key, value in plugins.items():
+        name = plugin_of_key(key, marketplace)
+        if not name:
+            continue
+        records = value if isinstance(value, list) else [value]
+        found[name] = [r for r in records if isinstance(r, dict)]
+    return found, ""
+
+
+def resolve_from_registry(plugins_dir=None, marketplace=MARKETPLACE):
+    """`(Resolution, "")` from the registry, or `(None, why)` when it could not
+    be used at all.
+
+    A key may carry several records (one per install scope). The highest-version
+    record whose directory is actually on disk wins. When no record's directory
+    exists the plugin resolves to no path and says so, rather than letting the
+    cache stand in: resolving a version the registry does not declare is the
+    silent wrong-version run this whole command exists to close.
+    """
+    found, why = read_registry(plugins_dir, marketplace)
+    if found is None:
+        return None, why
+    installs, notes = [], []
+    for plugin, records in sorted(found.items()):
+        candidates = []
+        for record in records:
+            declared = str(record.get("installPath") or "").strip()
+            version = str(record.get("version") or "").strip()
+            path = Path(declared).expanduser() if declared else None
+            candidates.append(PluginInstall(plugin, version, path, "registry"))
+        if not candidates:
+            continue
+        live = [c for c in candidates if c.path and c.path.is_dir()]
+        if live:
+            installs.append(max(live, key=lambda c: parse_version(c.version)))
+            continue
+        best = max(candidates, key=lambda c: parse_version(c.version))
+        notes.append(
+            f"the registry names {plugin} {best.version or '(no version)'} at "
+            f"{best.path or '(no installPath)'}, which is not on disk")
+        installs.append(best._replace(path=None))
+    return Resolution(installs, "registry", notes), ""
+
+
+def _looks_installed(version_dir):
+    """1 for a directory carrying a plugin manifest, 0 otherwise. Leading the
+    cache sort key, so a half-downloaded or half-removed `beta.13` never
+    outranks a complete `beta.9` — the fallback exists to find a plugin, not the
+    largest number."""
+    return 1 if (version_dir / ".claude-plugin" / "plugin.json").is_file() else 0
+
+
+def resolve_from_cache(plugins_dir=None, marketplace=MARKETPLACE):
+    """The fallback: the cache's highest version per plugin, compared as semver.
+
+    Plugins install to `<plugins>/cache/<marketplace>/<plugin>/<version>/`, so
+    the family still comes from the marketplace directory rather than from a
+    guess at what a plugin of ours is called.
+    """
+    root = Path(plugins_dir or default_plugins_dir()) / "cache" / marketplace
+    try:
+        plugin_dirs = sorted(p for p in root.iterdir() if p.is_dir())
+    except OSError:
+        return Resolution((), "cache", [f"no plugin cache at {root}"])
+    installs = []
+    for plugin_dir in plugin_dirs:
+        try:
+            versions = [v for v in plugin_dir.iterdir() if v.is_dir()]
+        except OSError:
+            continue
+        if not versions:
+            continue
+        best = max(versions,
+                   key=lambda v: (_looks_installed(v), parse_version(v.name)))
+        installs.append(PluginInstall(plugin_dir.name, best.name, best, "cache"))
+    return Resolution(installs, "cache", [])
+
+
+def resolve_plugins(plugins_dir=None, marketplace=MARKETPLACE):
+    """The family's installed plugins: the registry first, semver over the cache
+    as the fallback. `.plugin_dirs` is what `compare()` takes."""
+    resolution, why = resolve_from_registry(plugins_dir, marketplace)
+    if resolution is not None:
+        return resolution
+    fallback = resolve_from_cache(plugins_dir, marketplace)
+    fallback.notes.insert(
+        0, f"{why} — falling back to the highest version in the plugin cache")
+    return fallback
+
+
+# ── the interpreter ──────────────────────────────────────────────────────────
+# Neither this file nor the launcher assumes `python3` on PATH. `init` already
+# records why (`init/procedure.md:25-28`): on Windows `python3` frequently is
+# not there, so it tries `python3`, then `python`, then `py -3`, and remembers
+# whichever answered. Same order here, so the two agree, and the launcher's own
+# shell-side walk mirrors this list rather than inventing a second one.
+
+MIN_PYTHON = (3, 10)
+INTERPRETER_CANDIDATES = (("python3",), ("python",), ("py", "-3"))
+_VERSION_PROBE = "import sys; print('%d.%d' % sys.version_info[:2])"
+
+
+def _probe_interpreter(argv, timeout=15):
+    """`(major, minor)` for a candidate that runs, or None. A candidate that is
+    absent, is not executable, hangs, or answers nothing is not an interpreter:
+    `py` in particular exists on Windows as a launcher that may have no 3.x
+    behind it, and on some machines as a stub that prompts a store install."""
+    try:
+        done = subprocess.run(
+            list(argv) + ["-c", _VERSION_PROBE],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=timeout, text=True, encoding="utf-8", errors="replace")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    parts = (done.stdout or "").strip().split(".")
+    try:
+        return tuple(int(p) for p in parts[:2])
+    except ValueError:
+        return None
+
+
+def resolve_interpreter(minimum=MIN_PYTHON, candidates=INTERPRETER_CANDIDATES,
+                        running=None, probe=None):
+    """The argv prefix that runs a Python new enough for this family's scripts,
+    or None when the machine has none.
+
+    The interpreter already running this file comes first: it is the one
+    candidate whose version needs no probe to be known. Pass `running=""` to
+    skip it and exercise the PATH walk.
+    """
+    probe = probe or _probe_interpreter
+    running = sys.executable if running is None else running
+    if running and tuple(sys.version_info[:2]) >= tuple(minimum):
+        return [running]
+    for argv in candidates:
+        version = probe(tuple(argv))
+        if version and tuple(version) >= tuple(minimum):
+            return list(argv)
+    return None
+
+
+# ── the full run ─────────────────────────────────────────────────────────────
+# What `--check` only reports, this repairs: refresh the marketplace clone,
+# install the family's newer plugins, copy the published files into the bundle,
+# rebuild the index, validate, commit and stamp.
+#
+# The order is the design. The marketplace clone is refreshed FIRST, because
+# `claude plugin update` reads the version from that clone rather than from the
+# network: a delta read before the refresh can report "current" off a checkout
+# that stopped at an older commit, which is the contradiction
+# `update/SKILL.md:50-62` exists to explain. The single confirmation comes after
+# it, so the delta the user approves is the delta that gets installed. The
+# registry is re-read AFTER the install, because the whole point is to copy from
+# the version that was just installed and not from the one that was there when
+# the run started.
+#
+# There is no rollback. Validating before and after the copy would compare the
+# bundle's old validator against the newly copied one, so a stricter new release
+# would read as damage the update caused. The bundle is a git repository, so a
+# failed run prints the commands that put it back and stops.
+
+CLI_ENV = "ELEPHANT_CLAUDE_CLI"
+CLI_NAME = "claude"
+
+# What the commit covers. `knowledge` is in it because step 8 runs
+# `build-index.py`, which rewrites entity hub blocks and archive shards there;
+# today's `update` commits the other two and leaves that rewrite dirty for
+# whatever routine next runs `git add -A`, which `catch-up/procedure.md:50-54`
+# names as the thing to avoid. The stamp is outside it and needs no exclusion of
+# its own: `state/` is not in this tuple, and `seed/.gitignore:5` ignores the
+# file anyway.
+KNOWLEDGE_REL = "knowledge"
+COMMIT_PATHS = ("knowledge", "scripts", "templates")
+COMMIT_MESSAGE = "update: re-sync scripts + templates from the installed plugin"
+STAMP_REL = "state/last-update-check.json"
+PIPELINE = ("build-index.py", "validate-okf.py")
+
+
+def claude_cli():
+    """The absolute path of Claude Code's CLI, or None when it is not on PATH.
+
+    `shutil.which` rather than the bare name, because on Windows the CLI is
+    installed as `claude.cmd` and only a PATHEXT-aware lookup finds it.
+    `ELEPHANT_CLAUDE_CLI` names it outright, which serves a machine where it is
+    not on PATH at all and is the seam that keeps a suite from ever invoking the
+    real one.
+    """
+    named = os.environ.get(CLI_ENV, "").strip() or CLI_NAME
+    return shutil.which(named)
+
+
+def run_command(argv, timeout=900, echo=True):
+    """`(returncode, output)`, with stdout and stderr merged.
+
+    Merged because a failing `claude plugin update` explains itself across both
+    and the caller prints the lot rather than deciding which half mattered. A
+    command that cannot start at all is a failure like any other: the caller
+    reports it and stops, and no exception escapes into the middle of a run.
+    """
+    if echo:
+        print(f"  $ {' '.join(str(a) for a in argv)}")
+        sys.stdout.flush()
+    try:
+        done = subprocess.run([str(a) for a in argv],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              timeout=timeout, text=True, encoding="utf-8",
+                              errors="replace")
+    except subprocess.TimeoutExpired:
+        return 124, f"timed out after {timeout}s"
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return 127, f"could not run {argv[0]}: {exc}"
+    return done.returncode, (done.stdout or "").strip()
+
+
+def _no_cli(action, marketplace=MARKETPLACE):
+    return (f"Claude Code's `{CLI_NAME}` CLI is not on PATH, so {action}. "
+            f"Point {CLI_ENV} at it, or run "
+            f"`{CLI_NAME} plugin marketplace update {marketplace}` and "
+            f"`{CLI_NAME} plugin update {family_key(REQUIRED_PLUGIN, marketplace)} -y` "
+            f"yourself and re-run with --no-refresh.")
+
+
+def refresh_marketplace(marketplace=MARKETPLACE):
+    """`(ok, detail)` for `claude plugin marketplace update <marketplace>`."""
+    cli = claude_cli()
+    if not cli:
+        return False, _no_cli("the marketplace clone cannot be refreshed", marketplace)
+    code, output = run_command([cli, "plugin", "marketplace", "update", marketplace])
+    if code != 0:
+        return False, output
+    return True, output
+
+
+def install_plugins(plugins, marketplace=MARKETPLACE):
+    """`(ok, detail)` after updating each installed plugin of the family.
+
+    One call per plugin: `elephant-mem` and `elephant-wiki` version separately,
+    and only the ones actually installed are touched — an absent `elephant-wiki`
+    is a plugin the user never installed, not one this run should install for
+    them. `-y` because the CLI requires it when stdout is not a TTY, which is
+    always the case here.
+    """
+    cli = claude_cli()
+    if not cli:
+        return False, _no_cli("no plugin can be updated", marketplace)
+    for plugin in plugins:
+        key = family_key(plugin, marketplace)
+        code, output = run_command([cli, "plugin", "update", key, "-y"])
+        if code != 0:
+            return False, f"`{CLI_NAME} plugin update {key} -y` exited {code}\n{output}"
+    return True, ""
+
+
+def marketplace_clone(plugins_dir=None, marketplace=MARKETPLACE):
+    """The local git checkout of the marketplace, the thing the refresh moves and
+    the thing `claude plugin update` reads a version from."""
+    return Path(plugins_dir or default_plugins_dir()) / "marketplaces" / marketplace
+
+
+def clone_plugin_dirs(clone):
+    """`({plugin: directory}, notes)` — where the clone ships each plugin from.
+
+    `marketplace.json` names each plugin and a `source` directory, and that
+    directory is a plugin root of its own: `<source>/.claude-plugin/plugin.json`
+    carries the version, `<source>/assets/` holds the files an install places.
+    So one read answers both questions the plan asks — what version is on offer,
+    and which files it would put in the bundle.
+
+    `marketplace.json` declares no version itself, which is exactly why the CLI
+    can report a user current at an older number: the version comes from the
+    commit their clone sits on.
+    """
+    manifest = Path(clone) / ".claude-plugin" / "marketplace.json"
+    try:
+        raw = json.loads(manifest.read_text(encoding="utf-8"))
+    except OSError:
+        return {}, [f"no marketplace clone at {clone}"]
+    except ValueError as exc:
+        return {}, [f"the marketplace manifest at {manifest} is not readable JSON ({exc})"]
+    entries = raw.get("plugins") if isinstance(raw, dict) else None
+    if not isinstance(entries, list):
+        return {}, [f"the marketplace manifest at {manifest} lists no plugins"]
+    dirs = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        source = str(entry.get("source") or "").strip()
+        # A source that is a URL or an absolute path is a plugin the clone does
+        # not carry as a directory of its own; there is nothing local to read.
+        if not name or not source or "://" in source or os.path.isabs(source):
+            continue
+        candidate = Path(clone) / source
+        if candidate.is_dir():
+            dirs[name] = candidate
+    return dirs, []
+
+
+def published_versions(clone_dirs):
+    """`({plugin: version}, notes)` for the directories the clone ships from."""
+    versions, notes = {}, []
+    for name, path in sorted((clone_dirs or {}).items()):
+        try:
+            manifest = json.loads(
+                (path / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+            declared = manifest.get("version") if isinstance(manifest, dict) else None
+        except (OSError, ValueError):
+            declared = None
+        if isinstance(declared, str) and declared.strip():
+            versions[name] = declared.strip()
+        else:
+            notes.append(f"the clone carries {name} but declares no version for it")
+    return versions, notes
+
+
+def plan_lines(bundle, resolution, published, comparison, notes=(), against=""):
+    """The delta and the plan, as the lines a user reads before approving.
+
+    Installed against published for each plugin of the family, then what the copy
+    would do. `against` names the side the copy plan was read from, and it is
+    normally the clone's copy of the release about to be installed rather than
+    the plugin installed right now: a plan read against the installed version
+    prints "nothing to copy" on exactly the run that is about to copy three
+    files, which is a plan nobody can approve.
+    """
+    lines = [f"Bundle: {bundle}"]
+    for plugin in (REQUIRED_PLUGIN, OPTIONAL_PLUGIN):
+        installed = resolution.version_of(plugin)
+        available = published.get(plugin, "")
+        if not installed:
+            tail = f" (the clone offers {available})" if available else ""
+            lines.append(f"  {plugin}: not installed{tail}")
+        elif not available:
+            lines.append(f"  {plugin}: {installed} installed; the marketplace "
+                         f"clone declares no version")
+        elif parse_version(available) > parse_version(installed):
+            lines.append(f"  {plugin}: {installed} → {available}")
+        elif installed == available:
+            lines.append(f"  {plugin}: {installed}, already current")
+        else:
+            lines.append(f"  {plugin}: {installed} installed, {available} in the clone")
+    for note in list(resolution.notes) + list(notes):
+        lines.append(f"  note: {note}")
+    if comparison.cannot_verify:
+        lines.append(f"  the bundle cannot be compared yet: {comparison.cannot_verify}")
+        return lines
+    against = against or "the plugin installed right now"
+    pending = [e for e in comparison.copy_plan if e.state != "same"]
+    if pending:
+        lines.append(f"  {len(pending)} file(s) in the bundle are behind {against}:")
+        # Not `_phrase`, which names the installed plugin: this comparison is
+        # normally against the clone's copy of the release about to be installed.
+        lines += [f"    {e.rel} — "
+                  f"{'not in the bundle' if e.state == 'missing' else 'out of date'}"
+                  for e in pending]
+    else:
+        lines.append(f"  the bundle's copies match {against}")
+    lines.append("  the copy set is re-read after the update, so what lands is "
+                 "whatever the newly installed plugin publishes")
+    return lines
+
+
+def confirmed(prompt="Proceed? [y/N] "):
+    """The one confirmation, after the refresh and before anything is installed.
+
+    EOF is a decline. A run whose stdin is closed cannot be asked, and installing
+    on a question nobody answered is the one reading that is never safe — the
+    caller that means yes says `--yes`.
+    """
+    try:
+        answer = input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def apply_copy(comparison):
+    """Write the copy plan into the bundle. `(copied, failures)`.
+
+    Only the members that are missing or differ are written. A file already
+    identical is left alone rather than rewritten: after normalisation a CRLF
+    checkout compares equal, so rewriting it would replace every line ending on
+    a Windows bundle and stage a whitespace-only change on every single run.
+
+    `copy`, not `copy2`: the mode carries over but the timestamp does not. A
+    bundle's copy is new as of now, and stamping it with the plugin file's own
+    mtime hands git a file whose stat can still match what its index recorded,
+    which is a cache it is entitled to trust. The commit then leaves the file
+    out while adding the untracked ones beside it — the shape both Windows
+    failures took, on alternating matrix cells.
+    """
+    copied, failures = [], []
+    for entry in comparison.copy_plan:
+        if entry.state == "same":
+            continue
+        try:
+            entry.dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(entry.src, entry.dest)
+        except OSError as exc:
+            failures.append(f"{entry.rel}: {exc}")
+            continue
+        copied.append(entry)
+    return copied, failures
+
+
+def run_pipeline(bundle, interpreter):
+    """`(ok, detail)` after `build-index.py` and then `validate-okf.py`, run from
+    the bundle's own freshly copied scripts.
+
+    Both run after the copy and neither before it: validating first would compare
+    the bundle against its old validator, so a stricter new release would read as
+    damage this run caused.
+    """
+    for name in PIPELINE:
+        script = Path(bundle) / "scripts" / name
+        if not script.is_file():
+            return False, f"{script} is not there to run"
+        code, output = run_command(interpreter + [str(script)])
+        if code != 0:
+            return False, f"`{name}` exited {code}\n{output}"
+    return True, ""
+
+
+def _quote(text):
+    """Quote a path for a shell only when it needs it, in the one form Git Bash
+    and cmd both read. Git Bash is the shell every Windows instruction in the
+    README runs in, and these lines are printed for a human to paste."""
+    text = str(text)
+    return f'"{text}"' if any(c in text for c in ' \t"\'') else text
+
+
+def restore_commands(bundle):
+    """The undo a failed run prints. It covers `knowledge` as well as the two
+    copied directories: an undo naming only the copied files would leave the
+    index rewrite in place."""
+    paths = " ".join(_quote(p) for p in COMMIT_PATHS)
+    root = _quote(bundle)
+    return [f"git -C {root} checkout -- {paths}",
+            f"git -C {root} clean -fd {paths}"]
+
+
+def _git_stdout(argv, timeout=120):
+    """`(returncode, stdout)` with stderr kept out of it, unlike `run_command`.
+
+    `run_command` merges the two because a failing `claude plugin update`
+    explains itself across both. That is the wrong shape for a payload meant to
+    be parsed: git writes advice to stderr while succeeding, and with
+    `core.autocrlf` on — the default on Windows — every read below draws a
+    `warning: in the working copy of 'x', LF will be replaced by CRLF` line.
+    Merged, those warnings arrive inside the NUL-separated list and read as
+    paths, and the `git add` built from them fails, so the run makes no commit
+    while still reporting success.
+    """
+    try:
+        done = subprocess.run([str(a) for a in argv], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout, text=True,
+                              encoding="utf-8", errors="replace")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 1, ""
+    return done.returncode, done.stdout or ""
+
+
+def dirty_under(bundle, rel):
+    """The paths under `rel` git already sees as changed, before the run writes.
+
+    `commit_bundle` subtracts this from what it stages under `knowledge/`. The
+    run rewrites derived files there and has to commit them, but the same
+    directory holds the facts, loops and sources a person wrote, and an `ingest`
+    or `capture` interrupted before its own final commit leaves one of those
+    dirty. Staging the whole tree would sweep it into a commit whose message
+    mentions only scripts and templates, the outcome `catch-up/procedure.md`
+    already scopes its own commit to avoid. A file already dirty when the run
+    starts is the user's, not this run's.
+
+    Three plumbing reads rather than one `status --porcelain`: they emit bare
+    NUL-separated paths, so nothing here depends on the two-column status prefix
+    surviving `run_command`'s strip of the payload. `--exclude-standard` keeps a
+    gitignored file out, which is what a bundle's own `.gitignore` is for.
+    """
+    git = shutil.which("git")
+    if not git:
+        return set()
+    root = str(bundle)
+    reads = (["diff", "--name-only", "-z", "--", rel],
+             ["diff", "--name-only", "-z", "--cached", "--", rel],
+             ["ls-files", "--others", "--exclude-standard", "-z", "--", rel])
+    paths = set()
+    for argv in reads:
+        code, output = _git_stdout([git, "-C", root, *argv])
+        if code != 0:
+            # Unreadable on any one of the three and the honest answer is "all
+            # of it is the user's": staging nothing under knowledge/ loses the
+            # index rewrite from the commit, which the next run redoes, while
+            # guessing wrong here commits a file somebody was still writing.
+            return None
+        paths.update(f for f in output.split("\0") if f)
+    return paths
+
+
+def commit_bundle(bundle, message=COMMIT_MESSAGE, keep_dirty=()):
+    """`(sha, detail)` — the sha of the commit, `""` when nothing was staged, or
+    None when committing was not possible at all.
+
+    Local only, never pushing. Nothing staged is not a failure: a run that found
+    the bundle already current has nothing to record, and failing on an empty
+    commit would turn the quiet good outcome into a red one.
+    """
+    git = shutil.which("git")
+    if not git:
+        return None, "git is not on PATH, so nothing was committed"
+    root = str(bundle)
+    code, _ = run_command([git, "-C", root, "rev-parse", "--git-dir"], echo=False)
+    if code != 0:
+        return None, f"{root} is not a git repository, so nothing was committed"
+    paths = [p for p in COMMIT_PATHS if (Path(bundle) / p).exists()]
+    if not paths:
+        return "", ""
+    keep = None if keep_dirty is None else set(keep_dirty)
+    for rel in paths:
+        if rel == KNOWLEDGE_REL:
+            # Only what this run made dirty. Everything already dirty here was
+            # written by a person and stays unstaged, `keep_dirty` being the
+            # reading taken before the run touched the bundle.
+            now = dirty_under(bundle, rel)
+            if now is None or keep is None:
+                continue
+            add = sorted(now - keep)
+            if not add:
+                continue
+        else:
+            add = [rel]
+        code, output = run_command([git, "-C", root, "add", "--", *add], echo=False)
+        if code != 0:
+            return None, output
+    staged, _ = run_command([git, "-C", root, "diff", "--cached", "--quiet"], echo=False)
+    if staged == 0:
+        return "", ""
+    code, output = run_command([git, "-C", root, "commit", "-m", message], echo=False)
+    if code != 0:
+        return None, output
+    code, sha = run_command([git, "-C", root, "rev-parse", "--short", "HEAD"], echo=False)
+    return (sha if code == 0 else "HEAD"), ""
+
+
+def write_stamp(bundle, latest_seen):
+    """`state/last-update-check.json`, in the shape `_shared/core.md`'s
+    **Update check** section reads: the weekly nudge's throttle, and gitignored, so it is outside the
+    commit by construction.
+
+    A run that failed after the copy never reaches this, deliberately: holding
+    the nudge for a week over a bundle that has just failed is the one thing the
+    stamp must not do.
+    """
+    path = Path(bundle) / STAMP_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "last_checked": datetime.now().astimezone().isoformat(),
+        "latest_seen": latest_seen,
+    }, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _fail_before(detail):
+    """Nothing was installed or copied, so there is nothing to undo and nothing
+    to say beyond what went wrong."""
+    print(f"{PROG}: {detail}", file=sys.stderr)
+    return RUN_FAILED_BEFORE_COPY
+
+
+def _fail_after(bundle, detail):
+    """The copy is on disk and this run will not commit it, stamp it, or undo
+    it. What it owes the user is the validator's own output and the commands
+    that put the bundle back."""
+    print(f"{PROG}: {detail}", file=sys.stderr)
+    print("Nothing was committed and nothing was stamped. The bundle is a git "
+          "repository, so the undo is:", file=sys.stderr)
+    for command in restore_commands(bundle):
+        print(f"  {command}", file=sys.stderr)
+    print(f"The next check will report drift, which is true. Both ways out still "
+          f"work: run `{PROG}` in a terminal, or invoke `elephant-mem:update` "
+          f"from inside Claude Code.", file=sys.stderr)
+    return RUN_FAILED_AFTER_COPY
+
+
+# ── the launcher ─────────────────────────────────────────────────────────────
+# The PATH that carries `elephant-update` inside Claude Code belongs to Claude
+# Code's own processes; a login shell has no plugin directory on it. So a
+# terminal needs a launcher at `~/.local/bin/elephant-update`, the shell path
+# Git Bash shares with macOS and Linux.
+#
+# It cannot be a symlink to this file. Plugins install to
+# `<plugins>/cache/<marketplace>/<plugin>/<version>/`, so every update lands in
+# a new directory and the link would dangle at exactly the moment the user
+# updated. The launcher resolves the installed directory at run time instead,
+# which means it has to carry the resolver: nothing can call this executable
+# before knowing where it is. That copy is the one piece of the logic living
+# outside this file, and it is Python on both sides — a shell sorting version
+# names is the failure this command exists to close, and a batch file cannot
+# sort at all.
+#
+# Every full run rewrites the pair, missing or not. Repairing only what looks
+# broken is what would strand every launcher on disk at whatever the registry
+# looked like the day it was written.
+
+LAUNCHER_NAME = "elephant-update"
+LAUNCHER_DIR_ENV = "ELEPHANT_BIN_DIR"
+DEFAULT_LAUNCHER_DIR = "~/.local/bin"
+
+# The resolver the launcher carries: the registry first, semver over the cache
+# as the fallback, then hand off to `<installPath>/bin/elephant-update`. Kept
+# free of single quotes so it embeds in a POSIX `sh -c '...'` in the clear, and
+# small enough that its base64 form plus the batch line around it stays well
+# under cmd.exe's 8191-character limit.
+LAUNCHER_RESOLVER = r'''"""Resolve the installed elephant-mem plugin and run its executable.
+
+Written into the launcher by `elephant-update` itself and rewritten by every
+full run, so this copy can never become the stale one. Edit
+`plugin/bin/elephant-update` in the plugin repository, not this text.
+
+It exists because nothing can call that executable before knowing where it is:
+plugins install to `<plugins>/cache/<marketplace>/<plugin>/<version>/`, so every
+update lands in a new directory and a symlink would dangle. The registry Claude
+Code keeps says which version is installed; semver over the cache is the
+fallback, and a text sort is never used, since sorted as text 0.1.0-beta.9
+follows 0.1.0-beta.13 and that is the older plugin.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+MARKETPLACE = "elephant-mem"
+PLUGIN = "elephant-mem"
+SCHEMA = 2
+CANNOT_VERIFY = 3
+VERSION_RE = re.compile(
+    r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
+
+
+def plugins_dir():
+    override = os.environ.get("ELEPHANT_PLUGINS_DIR", "").strip()
+    if override:
+        return os.path.expanduser(override)
+    config = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    base = (os.path.expanduser(config) if config
+            else os.path.join(os.path.expanduser("~"), ".claude"))
+    return os.path.join(base, "plugins")
+
+
+def version_key(text):
+    match = VERSION_RE.match((text or "").strip())
+    if not match:
+        return (0, (0, 0, 0), 0, ())
+    core = tuple(int(part or 0) for part in match.group(1, 2, 3))
+    pre = match.group(4)
+    if not pre:
+        return (1, core, 1, ())
+    return (1, core, 0, tuple((0, int(p), "") if p.isdigit() else (1, 0, p)
+                              for p in pre.split(".")))
+
+
+def from_registry(root):
+    """The directory the registry names, "" when it names none that is on disk,
+    or None when the registry cannot be used and the cache has to answer."""
+    try:
+        with open(os.path.join(root, "installed_plugins.json"),
+                  encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or raw.get("version") != SCHEMA:
+        return None
+    plugins = raw.get("plugins")
+    if not isinstance(plugins, dict):
+        return None
+    records = plugins.get(PLUGIN + "@" + MARKETPLACE)
+    if isinstance(records, dict):
+        records = [records]
+    live = []
+    for record in records if isinstance(records, list) else []:
+        if not isinstance(record, dict):
+            continue
+        declared = os.path.expanduser(str(record.get("installPath") or "").strip())
+        if declared and os.path.isdir(declared):
+            live.append((version_key(str(record.get("version") or "")), declared))
+    return max(live)[1] if live else ""
+
+
+def from_cache(root):
+    base = os.path.join(root, "cache", MARKETPLACE, PLUGIN)
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return ""
+    best, rank = "", None
+    for name in names:
+        path = os.path.join(base, name)
+        if not os.path.isdir(path):
+            continue
+        complete = os.path.isfile(
+            os.path.join(path, ".claude-plugin", "plugin.json"))
+        key = (1 if complete else 0, version_key(name))
+        if rank is None or key > rank:
+            best, rank = path, key
+    return best
+
+
+def main():
+    root = plugins_dir()
+    found = from_registry(root)
+    if found is None:
+        found = from_cache(root)
+    if not found:
+        sys.stderr.write(
+            "elephant-update: no installed elephant-mem plugin under " + root
+            + ". Install it with `claude plugin install elephant-mem@elephant-mem`,"
+            + " or run `elephant-mem:update` from inside Claude Code.\n")
+        return CANNOT_VERIFY
+    target = os.path.join(found, "bin", "elephant-update")
+    if not os.path.isfile(target):
+        sys.stderr.write(
+            "elephant-update: " + found + " carries no bin/elephant-update, so"
+            + " this launcher has nothing to run. Update the plugin, or run"
+            + " `elephant-mem:update` from inside Claude Code.\n")
+        return CANNOT_VERIFY
+    return subprocess.run([sys.executable, target] + sys.argv[1:]).returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+# The interpreter walk, in both shells, is INTERPRETER_CANDIDATES rather than a
+# second list invented here: `python3` is frequently absent from a Windows PATH
+# (`init/procedure.md:25-28`) and the two sides must not disagree about what to
+# try next.
+_PROBE_SOURCE = ("import sys; sys.exit(0 if sys.version_info[:2] >= "
+                 "(%d, %d) else 1)" % MIN_PYTHON)
+
+
+def default_launcher_dir():
+    """Where the launcher goes: `~/.local/bin`, the shell path Git Bash shares
+    with macOS and Linux, unless `ELEPHANT_BIN_DIR` says otherwise — which is
+    what keeps a suite from ever writing into a developer's or a runner's own
+    `~/.local/bin`."""
+    override = os.environ.get(LAUNCHER_DIR_ENV, "").strip()
+    return Path(override).expanduser() if override else \
+        Path(DEFAULT_LAUNCHER_DIR).expanduser()
+
+
+def _sh_literal(text):
+    """A POSIX single-quoted shell literal. The resolver carries no single quote
+    of its own, so this normally only wraps it; the escape is here so that can
+    never silently stop being true."""
+    return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
+def launcher_text():
+    """The POSIX launcher: the interpreter walk in `sh`, then the resolver in
+    the clear. Not a heredoc, deliberately — a heredoc is the script's own
+    stdin, and the run this hands off to asks the user one question."""
+    walk = " ".join('"%s"' % " ".join(argv) for argv in INTERPRETER_CANDIDATES)
+    tried = ", ".join(" ".join(argv) for argv in INTERPRETER_CANDIDATES)
+    return f"""#!/bin/sh
+# {LAUNCHER_NAME}: the command, reachable from a login shell.
+#
+# GENERATED by `{PROG}`, and rewritten by every full run whether or not it is
+# missing: it carries its own copy of the resolver below, so repairing only what
+# looks broken would strand it at whatever the registry looked like the day it
+# was written. Edit `plugin/bin/{PROG}` in the plugin repository instead.
+#
+# It is not a symlink into the plugin because every update installs into a new
+# versioned directory and the link would dangle. It does not assume `python3`
+# is on PATH either, which is frequently untrue on Windows.
+
+for ELEPHANT_PY in {walk}; do
+    # Unquoted on purpose: the last candidate is two words.
+    if $ELEPHANT_PY -c "{_PROBE_SOURCE}" >/dev/null 2>&1; then
+        exec $ELEPHANT_PY -c {_sh_literal(LAUNCHER_RESOLVER)} "$@"
+    fi
+done
+
+echo "{PROG}: no Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer on PATH: tried {tried}." >&2
+exit {CHECK_CANNOT_VERIFY}
+"""
+
+
+def launcher_cmd_text():
+    """The Windows launcher. Git Bash's `chmod` grants no NTFS execute
+    permission, so Windows gets this beside the POSIX file rather than instead
+    of it.
+
+    The resolver arrives base64-encoded because a batch variable cannot hold a
+    newline, and because the base64 alphabet contains none of the characters
+    batch would otherwise make us escape. It is the same source the POSIX file
+    carries in the clear, from the same constant, so the two cannot drift.
+
+    No `rem` line here carries a shell metacharacter: `rem` is a command like
+    any other, and an unescaped ampersand in a comment ends it.
+    """
+    payload = base64.b64encode(LAUNCHER_RESOLVER.encode("utf-8")).decode("ascii")
+    run = ("import base64, sys; "
+           "exec(base64.b64decode(sys.argv.pop(1)).decode('utf-8'))")
+    tried = ", ".join(" ".join(argv) for argv in INTERPRETER_CANDIDATES)
+    lines = ["@echo off",
+             f"rem {LAUNCHER_NAME}, the command as cmd.exe and PowerShell reach it.",
+             f"rem GENERATED by {PROG} and rewritten by every full run.",
+             "rem The resolver is base64 below, the same source the POSIX file",
+             "rem beside this one carries in the clear.",
+             "setlocal",
+             f'set "ELEPHANT_PROBE={_PROBE_SOURCE}"',
+             f'set "ELEPHANT_RUN={run}"',
+             f'set "ELEPHANT_B64={payload}"',
+             ""]
+    for argv in INTERPRETER_CANDIDATES:
+        spelling = " ".join(argv)
+        lines += [f'{spelling} -c "%ELEPHANT_PROBE%" >NUL 2>&1',
+                  "if not errorlevel 1 (",
+                  f'    set "ELEPHANT_PY={spelling}"',
+                  "    goto :run",
+                  ")",
+                  ""]
+    lines += [f"echo {PROG}: no Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer "
+              f"on PATH: tried {tried}. 1>&2",
+              f"exit /b {CHECK_CANNOT_VERIFY}",
+              "",
+              ":run",
+              '%ELEPHANT_PY% -c "%ELEPHANT_RUN%" %ELEPHANT_B64% %*',
+              "exit /b %ERRORLEVEL%",
+              ""]
+    return "\r\n".join(lines)
+
+
+def launcher_paths(directory=None):
+    """`(posix, cmd)` — the pair, whether or not this machine writes both."""
+    directory = Path(directory) if directory else default_launcher_dir()
+    return directory / LAUNCHER_NAME, directory / (LAUNCHER_NAME + ".cmd")
+
+
+def write_launcher(directory=None, windows=None):
+    """Write the launcher, unconditionally. `(written, error)`.
+
+    The `.cmd` is written on Windows only: elsewhere it is a file nothing can
+    run, and a `~/.local/bin` with a dead batch file in it is worse than one
+    without.
+    """
+    windows = (os.name == "nt") if windows is None else windows
+    posix_path, cmd_path = launcher_paths(directory)
+    written = []
+    try:
+        posix_path.parent.mkdir(parents=True, exist_ok=True)
+        # `open` rather than `write_text`, whose `newline` argument arrived in
+        # 3.10: these two files carry the line endings their shells expect, and
+        # neither may be translated on the way out.
+        with posix_path.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(launcher_text())
+        try:
+            posix_path.chmod(0o755)
+        except OSError:
+            # A filesystem with no execute bit to grant. Git Bash is one of
+            # them, which is the whole reason the `.cmd` exists.
+            pass
+        written.append(posix_path)
+        if windows:
+            with cmd_path.open("w", encoding="utf-8", newline="") as handle:
+                handle.write(launcher_cmd_text())
+            written.append(cmd_path)
+    except OSError as exc:
+        return written, str(exc)
+    return written, ""
+
+
+def launcher_entry(written):
+    """The one of the pair a shell on this machine would actually run, and so
+    the one to verify: the `.cmd` on Windows, the POSIX file everywhere else."""
+    if not written:
+        return None
+    return written[-1] if os.name == "nt" else written[0]
+
+
+def verify_launcher(path, timeout=120):
+    """Invoke the launcher once and report. `(ok, detail)`.
+
+    Whether the pair is reachable from Git Bash — the shell every Windows
+    instruction in the README runs in — cannot be settled by reading this
+    repository, so this asserts nothing: it runs the file and says what
+    happened. `--help` is the argument because it exercises the whole chain,
+    shell to interpreter to resolver to registry to the installed executable,
+    and writes nothing anywhere.
+    """
+    code, output = run_command([str(path), "--help"], timeout=timeout, echo=False)
+    if code != 0:
+        return False, output or f"it exited {code}"
+    if PROG not in output or "--check" not in output:
+        return False, ("it ran, but what answered was not this executable:\n"
+                       + (output or "(it printed nothing)"))
+    return True, ""
+
+
+def on_path(directory):
+    """Whether a shell would find the launcher by name."""
+    target = os.path.normcase(os.path.abspath(str(directory)))
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry:
+            continue
+        try:
+            here = os.path.normcase(os.path.abspath(os.path.expanduser(entry)))
+        except (OSError, ValueError):
+            continue
+        if here == target:
+            return True
+    return False
+
+
+def windows_path_advice(directory):
+    """The PowerShell line for a persistent PATH, and deliberately **not**
+    `setx PATH "%PATH%;<dir>"`.
+
+    That shorter form is the one every tutorial prints and it can destroy a
+    user's PATH with no error. `setx` truncates the value it saves at 1024
+    characters, and `%PATH%` expands to the machine PATH and the user PATH
+    joined — so on a developer machine, where node, nvm, chocolatey and a
+    python install together clear 1024 on their own, the write lands truncated
+    and the entries past the cut are gone from the registry. The loss surfaces
+    weeks later as some unrelated tool that stopped resolving, which is not a
+    trade this command gets to make on the user's behalf when it is only
+    trying to be reachable by name.
+
+    `[Environment]::SetEnvironmentVariable` has no such limit, and reading the
+    `User` scope back keeps the write inside it instead of copying the machine
+    PATH into the user's own.
+    """
+    read = "[Environment]::GetEnvironmentVariable('PATH','User')"
+    # A single-quoted PowerShell string ends at the first apostrophe and escapes
+    # one by doubling it. The directory is the user's — `ELEPHANT_BIN_DIR`, or a
+    # home directory, and `C:\Users\O'Brien` is an ordinary name — so without
+    # this the line printed for them to paste is a syntax error, or worse, a
+    # different command than the one described.
+    quoted = str(directory).replace("'", "''")
+    return ["  to reach it from cmd.exe and PowerShell too, run this once in "
+            "PowerShell:",
+            f"  [Environment]::SetEnvironmentVariable('PATH', "
+            f"{read} + ';{quoted}', 'User')",
+            "  (not `setx`, which truncates the PATH it saves past 1024 "
+            "characters, silently)"]
+
+
+def _double_quoted(directory):
+    """`directory` as it goes inside the double quotes of the `export PATH=`
+    line, which is a line printed for a person to paste and run.
+
+    Same reasoning as the PowerShell literal above, for the other shell: inside
+    double quotes a bare `$` expands, a backtick runs a command and a `"` ends
+    the string, so a path carrying one would paste as something other than what
+    the sentence beside it says. `\\` is deliberately left alone — Git Bash is
+    the shell every Windows instruction in the README runs in and reads
+    `C:\\Users\\jane` as it stands, so escaping it would only make the common
+    case unreadable. A path ending in one would be the gap, and `Path` does not
+    produce one.
+    """
+    text = str(directory)
+    for char in ('"', "$", "`"):
+        text = text.replace(char, "\\" + char)
+    return text
+
+
+def path_advice(directory):
+    """The line to add, never an edit: a shell profile is the user's own file
+    and nothing here writes to it."""
+    if on_path(directory):
+        return []
+    lines = [f"{directory} is not on your PATH, so `{PROG}` will not be found by "
+             f"name yet. Add it — this never edits a profile for you:",
+             f'  export PATH="{_double_quoted(directory)}:$PATH"',
+             "  (in ~/.zshrc or ~/.bashrc, and on Windows in Git Bash's "
+             "~/.bash_profile)"]
+    if os.name == "nt":
+        lines += windows_path_advice(directory)
+    return lines
+
+
+def _launcher_fallback(interpreter, plugin_dir):
+    """The interpreter-and-path line: what to run when the launcher will not,
+    and the other route out, which every blocking message names."""
+    argv = list(interpreter or []) or list(INTERPRETER_CANDIDATES[0])
+    target = (Path(plugin_dir) / "bin" / LAUNCHER_NAME if plugin_dir
+              else Path(__file__).resolve())
+    return ["  " + " ".join(_quote(part) for part in argv + [str(target)]),
+            "  or invoke `elephant-mem:update` from inside Claude Code."]
+
+
+def install_launcher(directory=None, interpreter=None, plugin_dir=None):
+    """Write the launcher pair, verify it, and return the lines a run prints.
+
+    Never raises, and never fails a run. On the full run it is written last —
+    after the copy, the commit and the stamp — precisely so that a launcher
+    which will not run is a report and not a failure: nothing that already ran
+    depends on this file. So the whole report goes to stdout, where the rest of
+    the run's report goes; stderr here belongs to what actually failed.
+
+    Two routes reach this and the failure text has to be true on both, so it
+    says nothing depends on the file rather than announcing a finished update:
+    `--install-launcher` is `init`'s route and installs, copies and commits
+    nothing, so there is no update behind it to be done.
+    """
+    directory = Path(directory) if directory else default_launcher_dir()
+    written, error = write_launcher(directory)
+    if error:
+        return "\n".join(
+            [f"The launcher could not be written to {directory}: {error}",
+             "Nothing else depends on it. Run it by interpreter and path instead:"]
+            + _launcher_fallback(interpreter, plugin_dir))
+    names = ", ".join(path.name for path in written)
+    lines = [f"Wrote the launcher to {directory} ({names}). Every run rewrites "
+             f"it, missing or not, because it carries its own copy of the "
+             f"resolver."]
+    target = launcher_entry(written)
+    ok, detail = verify_launcher(target)
+    if not ok:
+        lines.append(f"It does not run here, so use the interpreter and the path "
+                     f"instead — nothing else depends on this file: {detail}")
+        return "\n".join(lines + _launcher_fallback(interpreter, plugin_dir))
+    lines.append(f"Verified it: `{target.name}` ran and reached the installed "
+                 f"plugin, which is the only proof this file works here.")
+    return "\n".join(lines + path_advice(directory))
+
+
+def run_install_launcher(directory=""):
+    """`--install-launcher`: the launcher pair and nothing else.
+
+    The route `init` takes at the stage that already asks before touching
+    anything of the user's own. It installs no plugin, reads no bundle and
+    writes nothing else, and it exits 0 even when the launcher will not run, for
+    the same reason the full run does.
+    """
+    resolution = resolve_plugins()
+    print(install_launcher(directory=directory or None,
+                           interpreter=resolve_interpreter(),
+                           plugin_dir=resolution.path_of(REQUIRED_PLUGIN)))
+    return RUN_OK
+
+
+def run_update(bundle_override="", plugins_dir=None, pointer=None,
+               plan_only=False, assume_yes=False, refresh=True):
+    """The whole path in one command. Returns one of the four run codes.
+
+    The run reports on stdout; only a failure speaks on stderr. That is the
+    opposite of `--check`, which keeps stdout empty because a mode runs it before
+    every unit of work — this one the user invoked on purpose and is watching.
+    """
+    plugins_dir = Path(plugins_dir) if plugins_dir else default_plugins_dir()
+
+    # 1. The bundle first, so a path that is not a bundle stops the run before it
+    #    refreshes a clone or installs anything.
+    bundle, why = resolve_bundle(bundle_override, pointer)
+    if bundle is None:
+        return _fail_before(why)
+
+    # 2. The marketplace clone, before any version is read off it.
+    if refresh:
+        ok, detail = refresh_marketplace()
+        if not ok:
+            return _fail_before(f"the marketplace clone could not be refreshed — "
+                                f"nothing was installed or copied\n{detail}")
+    else:
+        print("Reusing the marketplace clone as it stands (--no-refresh).")
+
+    # 3. The delta and the plan, read after the refresh so both are true.
+    before = resolve_plugins(plugins_dir)
+    clone_dirs, clone_notes = clone_plugin_dirs(marketplace_clone(plugins_dir))
+    published, version_notes = published_versions(clone_dirs)
+    # The plan compares against the clone's copy of each INSTALLED plugin: those
+    # are the files `claude plugin update` is about to place. A plugin the user
+    # never installed is left out, since this run installs nothing new. When the
+    # clone cannot be read the preview falls back to the installed copy, and the
+    # line says which side it read.
+    incoming = {name: path for name, path in clone_dirs.items()
+                if name in before.installs}
+    against = "the release the clone carries"
+    if REQUIRED_PLUGIN not in incoming:
+        incoming, against = before.plugin_dirs, "the plugin installed right now"
+    preview = compare(incoming, bundle)
+    for line in plan_lines(bundle, before, published, preview,
+                           clone_notes + version_notes, against):
+        print(line)
+
+    if plan_only:
+        # `--plan` refreshes the clone and prints the delta. It installs nothing,
+        # copies nothing, commits nothing and stamps nothing, which is what makes
+        # it safe to show before asking.
+        return RUN_OK
+
+    # Nothing installed is settled before the question, not after it: asking
+    # someone to approve a run already guaranteed to fail is a question with one
+    # wrong answer and no right one. It sits outside the numbered steps because
+    # it is a guard on them, and `--plan` returns above having printed the delta,
+    # where "not installed" is the useful thing to report.
+    if not before.installs:
+        return _fail_before(
+            f"no plugin of the {MARKETPLACE} family is installed, so there is "
+            f"nothing to update. Install it with "
+            f"`{CLI_NAME} plugin install {family_key(REQUIRED_PLUGIN)}`.")
+
+    # 4. One confirmation, and declining leaves the refreshed clone alone —
+    #    deliberate, and harmless.
+    if not assume_yes and not confirmed():
+        print("Declined. Nothing was installed and nothing was copied.")
+        return RUN_DECLINED
+
+    # 5. One `claude plugin update` per installed plugin of the family.
+    ok, detail = install_plugins(sorted(before.installs))
+    if not ok:
+        return _fail_before(f"a plugin could not be updated — nothing was "
+                            f"copied\n{detail}")
+
+    # 6. Re-read the registry: the directories that matter are the ones the
+    #    install has just written, not the ones this run started with.
+    after = resolve_plugins(plugins_dir)
+    comparison = compare(after.plugin_dirs, bundle)
+    if comparison.cannot_verify:
+        return _fail_before(f"the installed plugins could not be read after the "
+                            f"update, so nothing was copied: "
+                            f"{comparison.cannot_verify}")
+    for note in after.notes:
+        print(f"  note: {note}")
+    moved = [p for p in sorted(after.installs)
+             if after.version_of(p) != before.version_of(p)]
+    for plugin in moved:
+        print(f"Installed {plugin} {after.version_of(plugin) or '(no version)'} "
+              f"(was {before.version_of(plugin) or 'nothing'}).")
+
+    # 7. The copy: the required set in full, the optional set only where the
+    #    bundle already has the file. Nothing above this line has written into
+    #    the bundle, so this is the honest reading of what a person left dirty.
+    keep_dirty = dirty_under(bundle, KNOWLEDGE_REL)
+    copied, failures = apply_copy(comparison)
+    if failures:
+        return _fail_after(bundle, "the copy into the bundle did not finish:\n  "
+                                   + "\n  ".join(failures))
+    print(_copy_report(bundle, copied, comparison))
+
+    # 8. The index rebuild and the validator, from the bundle's fresh scripts.
+    interpreter = resolve_interpreter()
+    if interpreter is None:
+        return _fail_after(bundle, "no Python 3.10+ could be found to run the "
+                                   "bundle's scripts")
+    ok, detail = run_pipeline(bundle, interpreter)
+    if not ok:
+        return _fail_after(bundle, detail)
+
+    # 9. The commit and the stamp, both of which belong to a run that validated.
+    sha, trouble = commit_bundle(bundle, keep_dirty=keep_dirty)
+    stamp = write_stamp(bundle, published.get(REQUIRED_PLUGIN)
+                        or after.version_of(REQUIRED_PLUGIN) or "")
+
+    # 10. The launcher, written LAST and unconditionally, and verified rather
+    #     than asserted. Coming after the copy, the commit and the stamp is what
+    #     makes a launcher that will not run a report rather than a failure: the
+    #     update itself is already done, so the run says so, prints the fallback
+    #     line, and still exits 0.
+    print(install_launcher(interpreter=interpreter,
+                           plugin_dir=after.path_of(REQUIRED_PLUGIN)))
+
+    print(_closing_report(bundle, sha, trouble, stamp, after, moved))
+    return RUN_OK
+
+
+def _copy_report(bundle, copied, comparison):
+    """Printed where the copy happened, not at the end: a report that arrives
+    after the index rebuild and the validator has the run's own steps out of
+    order for anyone reading the terminal."""
+    if not copied:
+        return (f"The bundle's copies were already in sync — "
+                f"{len(comparison.copy_plan)} published file(s), nothing to copy.")
+    lines = [f"Copied {len(copied)} file(s) into {bundle}:"]
+    lines += [f"  {e.rel} — {'installed' if e.state == 'missing' else 'updated'}"
+              for e in copied]
+    current = len(comparison.copy_plan) - len(copied)
+    if current:
+        lines.append(f"  ({current} other published file(s) already current)")
+    return "\n".join(lines)
+
+
+def _closing_report(bundle, sha, trouble, stamp, resolution, moved):
+    lines = []
+    if sha:
+        lines.append(f"Committed {sha} in {bundle} (local only, nothing pushed).")
+    elif sha == "":
+        lines.append("Nothing was staged, so no commit was made.")
+    if trouble:
+        lines.append(f"The commit did not happen: {trouble}")
+    lines.append(f"Stamped {stamp}, which holds the weekly update nudge for a week.")
+    if moved:
+        names = ", ".join(f"{p} {resolution.version_of(p)}" for p in moved)
+        lines.append(f"Claude Code must be restarted to load {names} — a plugin "
+                     f"the CLI has just installed is not the one this session is "
+                     f"still running.")
+    return "\n".join(lines)
+
+
+# ── the CLI ──────────────────────────────────────────────────────────────────
+
+USAGE_EPILOG = """\
+`--check` is the preflight a mode runs before it does any work. It reads the
+bundle and the installed plugins off disk, writes nothing at all, and reports
+through its exit code: 0 in sync (silent), 1 required drift (the mode stops),
+2 drift confined to the wiki's optional files (the mode proceeds), 3 could not
+tell. A caller matches 0, 1 and 2 and reads EVERYTHING else as could-not-verify,
+this executable being absent or crashing included, so a broken check lets the
+mode proceed instead of stopping everything at once.
+
+With no flag at all this refreshes the marketplace clone, shows the delta, asks
+once, updates every installed plugin of the family, copies the published files
+into the bundle, rebuilds the index, validates, commits and stamps. Its codes
+share the same space and stay clear of the check's: 0 success, 4 declined,
+5 failed before anything was copied, 6 failed after the copy — which commits
+nothing, stamps nothing, and prints the git commands that put the bundle back.
+
+`--plan` prints the delta and stops, having refreshed the clone and written
+nothing else. `--yes --no-refresh` is the run that follows one: it skips the
+question and reuses that refresh, so the delta the user approved is the delta
+that gets installed.
+
+The run also rewrites `~/.local/bin/elephant-update` every time, which is what
+makes this command reachable from a login shell at all: Claude Code's own
+processes carry the plugin on their PATH and a terminal does not. That launcher
+carries its own copy of the resolver, so rewriting it unconditionally is the
+point rather than an accident, and `ELEPHANT_BIN_DIR` says where it goes.
+`--install-launcher` writes just that pair, verifies it, and does nothing else.
+"""
+
+
+class _Parser(argparse.ArgumentParser):
+    """Argparse exits 2 on a usage error, and 2 is taken: it means drift
+    confined to the optional set, which a caller reads as "proceed, and mention
+    the wiki". A mistyped flag would arrive as that reassuring answer. So a
+    usage error exits could-not-verify instead, which is the honest one and the
+    one every caller already handles."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        print(f"{PROG}: {message}", file=sys.stderr)
+        raise SystemExit(CHECK_CANNOT_VERIFY)
+
+
+def build_parser():
+    ap = _Parser(
+        prog=PROG,
+        description="Update a bundle's copy of the plugin's scripts and "
+                    "templates, or check whether it needs updating.",
+        epilog=USAGE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    # `--check` reads and `--plan` refreshes a clone, so the two are different
+    # promises about writing and cannot be asked for at once.
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true",
+                      help="report drift and write nothing (see below)")
+    mode.add_argument("--plan", action="store_true",
+                      help="refresh the clone, print the delta and the plan, "
+                           "and install or copy nothing")
+    # `init` writes the launcher at the stage that already asks, having just
+    # created a bundle against a plugin it did not install: the full run is the
+    # wrong thing there, and the launcher is the only part of it that applies.
+    mode.add_argument("--install-launcher", action="store_true",
+                      help="write and verify the launcher pair and nothing "
+                           "else (what init does at its own stage 9)")
+    ap.add_argument("--yes", action="store_true",
+                    help="skip the confirmation (what elephant-mem:update "
+                         "passes, having asked in the conversation)")
+    ap.add_argument("--no-refresh", dest="refresh", action="store_false",
+                    help="reuse the marketplace clone as it stands, for the run "
+                         "that follows a --plan")
+    ap.add_argument("--bundle", default="",
+                    help="bundle root (default: ELEPHANT_BUNDLE, then the "
+                         "machine pointer)")
+    return ap
+
+
+def run_check(bundle_override="", plugins_dir=None, pointer=None):
+    """`(Comparison, notes)` for `--check`. Reads both sides and writes nothing:
+    no stamp, no launcher, no comparison record. A record would be absent from
+    exactly the stale bundles this exists to catch, and repair belongs to the
+    full run, which the user invoked on purpose.
+
+    The notes travel beside the comparison because `compare()` sees only that a
+    plugin did not resolve and cannot say why: a registry naming a directory
+    that is gone and a registry naming no plugin of the family are the same
+    absence to it, and a reader needs the difference.
+    """
+    bundle, why = resolve_bundle(bundle_override, pointer)
+    if bundle is None:
+        return Comparison(cannot_verify=why), []
+    resolution = resolve_plugins(plugins_dir)
+    return compare(resolution.plugin_dirs, bundle), resolution.notes
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.check and (args.yes or not args.refresh):
+        # Both belong to the run. Accepting them here would have `--check`
+        # answering for a run it never performs, on the one path that must be
+        # able to promise it wrote nothing.
+        parser.error("--check writes nothing, so --yes and --no-refresh have "
+                     "nothing to do with it")
+    if args.install_launcher:
+        return run_install_launcher()
+
+    if args.check:
+        comparison, notes = run_check(args.bundle)
+        # In sync is silent, notes included. A mode runs this before every piece
+        # of work it does, so anything printed on the quiet path is printed on
+        # every run, and a stderr line nobody needs teaches its readers to skip
+        # the ones they do.
+        if comparison.code != CHECK_IN_SYNC:
+            notice = check_notice(comparison)
+            if notice:
+                print(notice, file=sys.stderr)
+            for note in notes:
+                print(f"  {note}", file=sys.stderr)
+        return comparison.code
+
+    return run_update(args.bundle, plan_only=args.plan, assume_yes=args.yes,
+                      refresh=args.refresh)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -16,6 +16,44 @@ this routine writes carries a paragraph in the loop file saying what evidence
 convinced it, so a wrong verdict is legible where it was written rather than
 only in a diff. Interactive and scheduled runs follow exactly the same steps.
 
+## Preflight
+
+Run the check described in `../_shared/core.md` → **Preflight** before step 1.
+`close-loops.py` is a file the check compares and the one thing this procedure
+cannot work around, and the bundle that motivated the check did not have it at
+all: this routine could not start, and the only diagnosis anyone got was a
+missing-file error naming a script that was sitting in the installed plugin the
+whole time.
+
+On **required drift**, take the environment-failure path `catch-up` uses
+(`../catch-up/procedure.md` → **Degradation**, the stale-scripts branch), **at
+any cadence**. `decay` splits interactive from unattended at that point; this
+routine has no such seam to split on — it has no review gate at any cadence, so
+nothing in a run tells it whether a person is reading. Treating every run as
+unattended is the honest reading, and it costs an interactive user only that the
+finding arrives filed rather than spoken.
+
+Concretely: examine no loop, write no loop file, and **write nothing to
+`state/closure-sweep.json`** — an unexamined loop recorded as examined is the
+one output of this routine `decay` acts on, and it would expire loops on the
+strength of a sweep that never ran. Then append one dated line at the end of
+`knowledge/log.md` as `**Close-loops**: environment failure (bundle scripts
+stale)`, naming the drifted files and the two routes out the check printed; run
+`python3 scripts/backlog.py add bundle-scripts-stale --summary … --evidence …`
+— the same id `catch-up` and `decay` file, so one cause stays one item however
+many routines meet it, and **read its exit code**, because a filing that failed
+is not a record; and commit **only** that log line and the backlog file,
+message `close-loops: environment failure (bundle scripts stale)`. Do not run
+`build-index.py` or `validate-okf.py`: nothing was written to rebuild, and both
+are drifted files themselves. If `backlog.py` is itself among the files the
+check listed — **listed, not missing**: the required set drifts whether a file
+is absent or merely differs, and running a `backlog.py` that is present and
+four releases behind is the very failure this check exists to catch — the log
+line is the whole record. Same if it ran and exited non-zero.
+
+Any other outcome: go on to step 1, and carry the check's one line into this
+run's report when it left one.
+
 ## Procedure
 
 1. **Get the proposal.** From `<bundle>`:

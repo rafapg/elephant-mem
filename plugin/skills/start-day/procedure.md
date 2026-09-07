@@ -39,8 +39,12 @@ never auto-update. Follow `../_shared/core.md`'s **Update check** convention:
 2. Fetch
    `https://raw.githubusercontent.com/rafapg/elephant-mem/main/plugin/.claude-plugin/plugin.json`
    and compare its `version` to the installed plugin's.
-3. If the remote is newer, show `claude plugin update elephant-mem@elephant-mem`
-   once — do not auto-update.
+3. If the remote is newer, show `elephant-update` once — one command that
+   refreshes the marketplace clone (`claude plugin marketplace update
+   elephant-mem`) first, then updates the plugin, then re-syncs the bundle's
+   `scripts/` and `templates/`. Naming the refresh is the point: without it the
+   CLI reports the user current off a stale clone. `elephant-mem:update` is the
+   route from inside Claude Code. Do not auto-update.
 4. Always stamp `last_checked` (even on fetch failure — offline just skips
    silently) so the 7-day gate holds — write it to
    `<bundle>/state/last-update-check.json` directly.

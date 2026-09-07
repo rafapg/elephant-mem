@@ -29,6 +29,12 @@ nothing, and log it as a failure rather than as an empty window. Don't read the
 first rule as covering the second: reading it that way is what kept the failure
 below invisible for 33 runs.
 
+A second condition reaches that same branch: the preflight in
+`../_shared/core.md` exiting **required drift**, meaning the bundle's copy of
+`scripts/` no longer matches the installed plugin and the scripts this routine
+calls are not the ones that shipped. Unattended, that is not something to print
+a stop about — hold every cursor, ingest nothing, and file it.
+
 The full procedure is in [`procedure.md`](procedure.md) — open it and follow it.
 
 ## Execution context: the main thread

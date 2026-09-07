@@ -1,9 +1,9 @@
 # elephant-mem — shared contract
 
 This is the shared contract every mode must load first. It defines what
-elephant-mem is, how to find the bundle, the three lanes, the rollup rule, the
-invariants, the retrieval-trust rule, and the closing notes. Each `<mode>/SKILL.md`
-loads this before running.
+elephant-mem is, how to find the bundle, the preflight that runs before any work,
+the three lanes, the rollup rule, the invariants, the retrieval-trust rule, and the
+closing notes. Each `<mode>/SKILL.md` loads this before running.
 
 ## Finding the bundle (do this first, every mode)
 
@@ -25,6 +25,80 @@ Nothing here hardcodes its path — resolve it at runtime:
 If the current working directory is not the bundle, isolate the actual work in a
 subagent so the bundle's large surfaces (manifest, entity catalog) don't enter
 the main context.
+
+## Preflight — the bundle's scripts match the plugin (every mode)
+
+A bundle carries its own copy of the plugin's `scripts/` and `templates/` so it
+runs standalone, and keeping that copy current is a separate act from updating
+the plugin. A user who runs `claude plugin update` alone ends up with a new
+plugin driving old scripts, and until this check existed no mode noticed: one
+bundle sat four releases behind with `close-loops.py` and `recall.py` absent
+from it entirely, so `close-loops` could not start, `recall.py roll` failed on
+every hourly `catch-up`, and `decay` had been reading loops without their
+fourth activity date.
+
+So once `<bundle>` is resolved and **before doing any work**, run the preflight:
+
+```bash
+elephant-update --check                    # the bundle the machine pointer names
+elephant-update --check --bundle <bundle>  # the bundle this mode resolved
+```
+
+- The executable ships **inside the plugin**, at `<plugin>/bin/`, which is on
+  the PATH of every process Claude Code spawns — call it by name, and a
+  subagent inherits that PATH. A preflight stored in the bundle would be absent
+  from exactly the stale bundles it exists to catch, so it reads the bundle and
+  never the reverse.
+- It reads both sides off disk every time and **writes nothing at all**: no
+  stamp, no launcher, no comparison record in the bundle. Repair belongs to the
+  full run, which the user invokes on purpose.
+- **Pass `--bundle` whenever the mode resolved a bundle other than the machine
+  pointer's**, so the check is about the bundle actually being operated on and
+  not about whichever one this machine points at.
+
+Then read its **exit code** — that is the whole of the answer. Four outcomes:
+
+| code | outcome | what the mode does |
+|---|---|---|
+| `0` | in sync | proceed; the check printed nothing |
+| `1` | drift in the required set | **stop**, naming both routes out |
+| `2` | drift confined to the wiki's optional files | proceed, passing on its one line |
+| anything else | could not verify | proceed, and say verification was not possible |
+
+- **Only required-set drift stops a mode.** That single rule is the whole of
+  what a mode implements. Every other outcome lets the run continue, which is
+  what keeps a broken check from stopping everything at once.
+- **Match `0`, `1` and `2`; read *everything else* as could-not-verify.** That
+  covers `3`, which the check emits when it cannot resolve `elephant-mem` or the
+  bundle, and equally a command that was not found, one that crashed, and a code
+  no version of it documents. Those three cannot report themselves, which is why
+  this rule belongs to the mode calling the check and not to the executable.
+- **On `1`, stop and give both ways out**: run `elephant-update` in a terminal,
+  or invoke `elephant-mem:update` from inside Claude Code. The check already
+  prints that pair on stderr with the drifted files named — relay it in
+  `conversation_language`. Both routes every time: a blocked user may be one
+  whose shell has no launcher yet.
+- **On `2` or on could-not-verify, one line and carry on.** A stale `graph.js`
+  degrades a wiki page, while a stale `close-loops.py` cannot start at all.
+  Never hold an answer or a run back on either.
+
+**Which modes run it.** Every mode except the two that repair the drift:
+`query`, `briefing`, `start-day`, `end-day`, `ingest`, `ingest-audio`,
+`capture`, `catch-up`, `push-start-day`, `close-loops`, `decay`, `maintain`,
+`expand` and `review`. `elephant-mem:update` and `init` **never** run it —
+`update` is one of the two routes out, and `init` is copying the plugin's assets
+into a bundle that does not exist yet, so there is nothing to compare.
+
+Two families of mode need more than the rule above, and their own procedures
+carry it. A mode that hands the work to `elephant-worker` (`query`, `briefing`,
+`start-day`, `end-day`) runs the check **before** delegating, so the stop lands
+where the user can read it. A mode with nobody watching does not print a stop at
+all: `catch-up`, `decay` when unattended and `close-loops` at **every** cadence
+route required drift into the environment-failure path and file the record, and
+`push-start-day` stops, sends nothing and writes nothing, leaving the record to
+the hourly `catch-up`. The asymmetry is deliberate: `decay` has a review gate to
+split interactive from unattended on, and `close-loops` has none, so it cannot
+tell whether anyone is reading and treats every run as unattended.
 
 ## elephant-mem — procedural memory
 
@@ -245,10 +319,29 @@ the user — it never updates anything itself:
 2. Fetch
    `https://raw.githubusercontent.com/rafapg/elephant-mem/main/plugin/.claude-plugin/plugin.json`
    and compare its `version` (semver) to the installed plugin's `version`.
-3. If the remote is newer, show the user the update command once
-   (`claude plugin update elephant-mem@elephant-mem`) — do **not** auto-update.
+3. If the remote is newer, show the command once — do **not** auto-update:
+
+   ```bash
+   elephant-update
+   ```
+
+   Name what it covers alongside it, because the command on its own is not the
+   whole message: it **refreshes the marketplace clone** (`claude plugin
+   marketplace update elephant-mem`) first, then updates the installed plugins
+   of the family, then re-syncs the bundle's `scripts/` and `templates/`. The
+   refresh is the part this nudge used to leave out, and leaving it out is how a
+   user gets told `✓ already at the latest version` while running an old one —
+   `claude plugin update` reads the local marketplace clone, not the published
+   repo. The route from inside Claude Code, which is also the route for a shell
+   that has no launcher for the command yet, is `elephant-mem:update`.
 4. Write back `last_checked` = now and `latest_seen` = the remote version
-   (regardless of outcome, so the 7-day gate holds).
+   (regardless of outcome, so the 7-day gate holds). A full `elephant-update`
+   run stamps the same file, so a nudge that was acted on goes quiet for a week.
+
+This nudge and the **Preflight** above ask different questions and point at the
+same command: the nudge is about a newer *release* existing, the preflight about
+the bundle's copy not matching the plugin **already installed**. Either fires
+without the other, and only the preflight ever stops a mode.
 
 Do this only in interactive modes (e.g. `start-day`) or at the tail of
 `catch-up`; if the fetch fails (offline), skip silently and still stamp

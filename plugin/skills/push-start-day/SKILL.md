@@ -45,6 +45,32 @@ All conversational output is rendered in the bundle's `conversation_language`
 language). The relevance lens is the owner: `owner.slug` from `elephant.json`,
 plus the owner's projects/team.
 
+## Preflight
+
+Run the check described in `../_shared/core.md` → **Preflight** before step 1.
+
+On **required drift** this mode **stops and sends nothing**, and that is the
+whole of its response. It writes nothing to the bundle under any circumstance —
+no `log.md` line, no backlog item, no commit — so unlike `catch-up`, `decay` and
+`close-loops` it has nowhere to file the finding, and it must not acquire one
+here. The record belongs to the hourly `catch-up`, which meets the same drift
+and files it under `bundle-scripts-stale`. What the owner sees is a morning that
+did not arrive, and the notice waits until someone reads it. That consequence is
+accepted rather than worked around: a second channel for a halted routine is out
+of scope until a halt actually goes unnoticed.
+
+Stopping is right here, rather than pushing something degraded. Step 1's second
+block runs `scripts/briefing.py` out of the bundle and its third reads
+`tracking/open-loops.md`, a surface `build-index.py` writes — stale copies of
+either deliver an orientation that reads as ordinary and is not, to a channel
+where nobody can tell it was built from the wrong scripts. That is the opposite
+of the missing Calendar connector step 1 skips in one line: an absent block
+announces itself, a wrong one does not.
+
+Any other outcome: send as usual, and on `2` or could-not-verify put the check's
+one line in the message footer. The message is this mode's only channel to the
+owner, so a line dropped here is a line nobody ever sees.
+
 ## Procedure
 
 1. **Build the orientation.** Produce the exact three-block `start-day`
