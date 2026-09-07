@@ -4,6 +4,21 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Nothing here changes what the plugin does; it lands after 0.1.0-beta.14 was
+tagged and folds into whichever section is cut next.
+
+### Fixed
+
+- **`tests/test_update.py` (321 checks)** now pins the one line joining
+  `path_advice()` to `windows_path_advice()`. The two were tested separately and
+  the wiring between them was not, so reverting that line to the inline
+  `setx PATH "%PATH%;<dir>"` it replaced left the suite green with the helper
+  still correct and still covered. Reading the advice through the helper is what
+  lets the other checks run on all six CI cells rather than only the two Windows
+  ones, and this is the assertion that buys back what that indirection cost.
+
 ## [0.1.0-beta.14] - 2026-09-07
 
 A bundle carries its own copy of the plugin's `scripts/` and `templates/` so it
