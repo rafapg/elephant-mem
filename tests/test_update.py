@@ -2032,14 +2032,34 @@ def launcher_checks(eu, tmp):
     # themselves, following it drops unrelated entries from the registry with no
     # error. A command this repository tells a user to run unsupervised does not
     # get to do that, so the regression is worth a check rather than a comment.
-    windows = "\n".join(eu.windows_path_advice(r"C:\Users\jane\.local\bin"))
+    advice = "\n".join(eu.windows_path_advice(r"C:\Users\jane\.local\bin"))
     record("E32 the Windows advice sets PATH through .NET, which has no length "
            "limit, and writes only the user scope",
-           "[Environment]::SetEnvironmentVariable('PATH'" in windows
-           and "GetEnvironmentVariable('PATH','User')" in windows
-           and windows.count("'User'") == 2, windows)
+           "[Environment]::SetEnvironmentVariable('PATH'" in advice
+           and "GetEnvironmentVariable('PATH','User')" in advice
+           and advice.count("'User'") == 2, advice)
     record("E32 and it is never `setx`, except to say not to use it",
-           "setx" not in windows.replace("not `setx`", ""), windows)
+           "setx" not in advice.replace("not `setx`", ""), advice)
+
+    # E32 — and `path_advice` reaches it.
+    #
+    # Reading the advice through the helper is what lets the two checks above
+    # run on every OS, and it leaves the one line joining the helper to
+    # `path_advice` covered by nothing: reverting that line to the old inline
+    # `setx` call left the suite green while the function it calls stayed
+    # correct and tested. `os.name` is what the branch reads, so that is what
+    # this sets, for the length of one call. `os.path` was bound at import and
+    # does not follow, so `on_path` still answers about this machine.
+    saved_name = os.name
+    try:
+        os.name = "nt"
+        as_windows = "\n".join(eu.path_advice(root / "nowhere-on-path"))
+    finally:
+        os.name = saved_name
+    record("E32 and on Windows `path_advice` really does reach "
+           "`windows_path_advice`, rather than the two being right separately",
+           "SetEnvironmentVariable" in as_windows
+           and 'export PATH="' in as_windows, as_windows)
 
     # E32 — both lines are pasted into a shell, so the path goes in quoted.
     #
