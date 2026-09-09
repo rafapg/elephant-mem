@@ -105,6 +105,34 @@ def _closing_bracket(v):
     return -1
 
 
+def unquote(s):
+    """Unwrap a quoted scalar (list item or bare value) read by the regex
+    parsers below, undoing the two escapes that quoting a free-text value
+    actually produces. Mirrors build-index.py's function of the same name.
+
+    Without it, `tags: ["snapshot", "beleza"]` — the quoting style
+    config.md's own frontmatter convention recommends for free-text values —
+    returns items as `'"snapshot"'`, not `'snapshot'`, and every membership
+    check downstream (`"snapshot" in tags`, in this file's own main()) fails
+    silently: not a single snapshot with quoted tags is ever recognized as
+    one, and the drift report reads as "nothing drifted" no matter what did.
+    """
+    if not (len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'"):
+        return s
+    inner, quote = s[1:-1], s[0]
+    if quote == "'":
+        return inner.replace("''", "'")
+    out, i, n = [], 0, len(inner)
+    while i < n:
+        if inner[i] == "\\" and i + 1 < n and inner[i + 1] in '"\\':
+            out.append(inner[i + 1])
+            i += 2
+            continue
+        out.append(inner[i])
+        i += 1
+    return "".join(out)
+
+
 def strip_comment(v):
     """The scalar `v` with its trailing YAML comment removed.
 
@@ -146,7 +174,7 @@ def field_list(fm, key):
     v = strip_comment(m.group(1))
     if not (v.startswith("[") and v.endswith("]")):
         return []
-    return [x.strip() for x in v[1:-1].split(",") if x.strip()]
+    return [unquote(x.strip()) for x in v[1:-1].split(",") if x.strip()]
 
 
 def field_scalar(fm, key):

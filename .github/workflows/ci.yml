@@ -39,3 +39,4 @@ jobs:
       - run: python tests/test_close_loops.py
       - run: python tests/test_templates.py
       - run: python tests/test_update.py
+      - run: python tests/test_snapshot_drift.py
