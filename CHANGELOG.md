@@ -4,13 +4,56 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0-beta.15] - 2026-09-09
 
-Nothing here changes what the plugin does; it lands after 0.1.0-beta.14 was
-tagged and folds into whichever section is cut next.
+A beta tester's six weeks of daily production use against `0.1.0-beta.7`
+surfaced eight findings. Checked against current `main`, three turned out real
+and worth building; the rest were either already fixed, had an invalidated
+premise, or were judged not worth the maintenance cost (a low-precision
+vocabulary heuristic, mainly). This release ships the three.
+
+### Added
+
+- **`entity-drift.py`, a deterministic staleness check for entity hub
+  descriptions**, covered by `tests/test_entity_drift.py` (36 checks). Three of the
+  bundle's four knowledge surfaces already age (facts through `maintain`,
+  loops through `decay`/`close-loops`, snapshots through `snapshot-drift.py`);
+  the fourth, an entity hub's hand-written `description` — the line every read
+  mode loads first, before following any backlink — had no aging mechanism at
+  all. The new check compares a hub's `updated` date against the newest active
+  fact that names it, ranked by count of newer facts and capped
+  (`elephant.json` → `maintain.entity_drift_max`, default 25, `--max`
+  override — the volume here runs an order of magnitude above snapshots, so it
+  follows `close-loops.py`'s capped-queue pattern rather than
+  `snapshot-drift.py`'s uncapped one). Advisory only, writing a ranked report
+  to its own `state/entity-drift.md` rather than `state/needs-review.md`,
+  whose existing tag↔queue invariant a few hundred free-text lines would have
+  muddied. Wired into `maintain` as a new drift-check bullet alongside the
+  existing snapshot one. A second, heuristic half — inferring from vocabulary
+  that a description's *content*, not just its age, is wrong — was evaluated
+  and set aside: its measured precision plateaued near 45% across five tuning
+  rounds, and its output surfaces employment departures, a sensitivity class
+  this release's deterministic check never touches.
 
 ### Fixed
 
+- **`snapshot-drift.py`'s `field_list()` never unquoted inline list items** —
+  the script shipped with no test coverage at all before this; it now has
+  `tests/test_snapshot_drift.py` (16 checks). `tags: ["snapshot", "beleza"]` returned items as
+  `'"snapshot"'`, not `'snapshot'`, so every membership check downstream
+  (`"snapshot" in tags`, in the script's own `main()`) failed silently — a
+  bundle using quoted list scalars, which is `config.md`'s own frontmatter
+  convention for free-text values, got zero snapshots ever recognized as
+  drifted, indistinguishable from everything being current.
+- **`status` comparisons across `snapshot-drift.py` and the new
+  `entity-drift.py` were both case-sensitive and quote-sensitive.**
+  `status: Deprecated` (capitalized) or `status: "deprecated"` (quoted, valid
+  YAML) was silently *not* excluded from either script's drift signal —
+  reproducing, in two more places, the exact bug class `build-index.py`'s
+  `fact_status()`/`loop_status()` already had to fix and document once.
+  Both scripts now normalize through the same `strip().lower()` and
+  `unquote()` that function established, applied once inside `field_scalar()`
+  so every caller of it benefits, not just the status check.
 - **`tests/test_update.py` (321 checks)** now pins the one line joining
   `path_advice()` to `windows_path_advice()`. The two were tested separately and
   the wiring between them was not, so reverting that line to the inline
@@ -18,6 +61,14 @@ tagged and folds into whichever section is cut next.
   still correct and still covered. Reading the advice through the helper is what
   lets the other checks run on all six CI cells rather than only the two Windows
   ones, and this is the assertion that buys back what that indirection cost.
+
+### Changed
+
+- **`raw/` now documents a `<context>/<topic>/` subfolder convention**
+  (`config.md`, `ingest/procedure.md`), instead of leaving the capture root
+  fully open. A flat root becomes an unsorted pile past a few months of
+  captures across sources; this is a documented convention, not an enforced
+  schema.
 
 ## [0.1.0-beta.14] - 2026-09-07
 
