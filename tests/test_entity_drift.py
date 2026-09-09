@@ -5,12 +5,14 @@ existing snapshot drift-check (`.bb/entity-hub-staleness/spec.md`).
 
 Covers every row of the spec's `## Behavior` table (E1-E13): a hub with no
 qualifying newer fact, a never-backlinked hub, a missing/unparseable
-`updated`, `deprecated`/`superseded` facts excluded from the signal, the
-`entity_drift_max` cap (config default, config override, `--max` override,
-`--max` refused below 1), the zero-candidates message, the plugin-checkout
-refusal guard, PyYAML-indifference, a re-tended hub dropping out of the next
-run, the zero-hubs message, and a fact with no parseable date never
-contributing to `n_newer`.
+`updated`, `deprecated`/`superseded` facts excluded from the signal (case-
+insensitively, on both the fact and the hub side), the `entity_drift_max`
+cap (config default, config override, `--max` override, `--max` refused
+below 1), the zero-candidates message, the plugin-checkout refusal guard,
+PyYAML-indifference, a re-tended hub dropping out of the next run, the
+zero-hubs message, a fact with no parseable date never contributing to
+`n_newer`, and `day_gap()`'s defensive degrade-to-0 on unparseable/missing
+input.
 
 Pure stdlib, Python 3.10+, same scaffolding as tests/test_snapshot_drift.py:
 a throwaway bundle per check, each copy of the script run standalone via
@@ -19,6 +21,7 @@ subprocess so its own `ROOT`/`BUNDLE` resolve into the tempdir.
 Exit code 0 only if every check below passes.
 """
 import datetime
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -58,6 +61,17 @@ def new_bundle(root, name):
     (bundle / "knowledge" / "facts").mkdir(parents=True, exist_ok=True)
     shutil.copy2(SCRIPT, bundle / "scripts" / "entity-drift.py")
     return bundle
+
+
+def import_copy(bundle, name):
+    """Import the bundle's own copy in-process, for the one pure function
+    (day_gap()) with no CLI-observable path of its own to drive via
+    subprocess. Mirrors tests/test_snapshot_drift.py's helper of the same
+    name."""
+    spec = importlib.util.spec_from_file_location(name, bundle / "scripts" / "entity-drift.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def write_hub(bundle, slug, updated="__unset__", status="active", subdir="concept"):
@@ -223,6 +237,84 @@ def test_active_fact_still_counts(root):
         and f"{hub}  updated {tended}  n_newer 1  newest {newest}" in result.stdout
         and "1 of 1 entity hub(s) may be stale." in result.stdout,
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+
+
+def test_deprecated_fact_excluded_regardless_of_case(root):
+    """A fact's `status` is compared case-insensitively, matching
+    build-index.py's fact_status() normalization — `status: Deprecated`
+    excludes a fact from n_newer exactly like `status: deprecated` does."""
+    bundle = new_bundle(root, "e4-deprecated-case")
+    hub = write_hub(bundle, "acme", updated=days_ago(30))
+    write_fact(bundle, "dep", entities=f"[{hub}]", occurred=days_ago(1),
+               status="Deprecated")
+    result = run_script(bundle)
+    record(
+        "status: Deprecated (capitalized) is excluded from n_newer, same as lowercase",
+        result.returncode == 0 and "0 of 0 entity hub(s) may be stale." in result.stdout,
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+
+
+def test_superseded_fact_excluded_regardless_of_case(root):
+    bundle = new_bundle(root, "e4-superseded-case")
+    hub = write_hub(bundle, "acme", updated=days_ago(30))
+    write_fact(bundle, "sup", entities=f"[{hub}]", occurred=days_ago(1),
+               status="SUPERSEDED")
+    result = run_script(bundle)
+    record(
+        "status: SUPERSEDED (uppercase) is excluded from n_newer, same as lowercase",
+        result.returncode == 0 and "0 of 0 entity hub(s) may be stale." in result.stdout,
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+
+
+def test_deprecated_hub_excluded_regardless_of_case(root):
+    """A hub's `status` is compared case-insensitively too — `status:
+    Deprecated` excludes the hub itself from `load_hubs()` entirely. A
+    second hub, otherwise identical and genuinely stale, is planted
+    alongside it: both would qualify as candidates on their dates alone, so
+    only the deprecated one being absent from the total ("of 1", not "of
+    2") and from the printed rows is what actually proves the exclusion —
+    a hub merely not-yet-stale would prove nothing (render()'s "total" only
+    counts candidates, not every hub loaded)."""
+    bundle = new_bundle(root, "e-hub-deprecated-case")
+    acme = write_hub(bundle, "acme", updated=days_ago(30), status="Deprecated")
+    write_fact(bundle, "acme-fresh", entities=f"[{acme}]", occurred=days_ago(1))
+    other = write_hub(bundle, "other", updated=days_ago(30))
+    write_fact(bundle, "other-fresh", entities=f"[{other}]", occurred=days_ago(1))
+    result = run_script(bundle)
+    record(
+        "a hub with status: Deprecated (capitalized) is excluded, its equally-stale sibling is not",
+        result.returncode == 0
+        and "1 of 1 entity hub(s) may be stale." in result.stdout
+        and other in result.stdout
+        and acme not in result.stdout,
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+
+
+def test_day_gap_degrades_to_zero_on_bad_input(root):
+    """day_gap() is defense-in-depth (compute_candidates only ever calls it
+    with already-validated dates) but is untested directly and its except
+    clause only caught ValueError, not the TypeError datetime.date.fromisoformat
+    raises on None — both now covered directly."""
+    bundle = new_bundle(root, "day-gap-unit")
+    mod = import_copy(bundle, "ed_day_gap_unit")
+    ok = (
+        mod.day_gap("not-a-date", "2026-01-01") == 0
+        and mod.day_gap("2026-01-01", "not-a-date") == 0
+        and mod.day_gap(None, "2026-01-01") == 0
+        and mod.day_gap("2026-01-01", None) == 0
+    )
+    record(
+        "day_gap() returns 0 on an unparseable or missing date, never raises",
+        ok,
+        f"day_gap results: "
+        f"{mod.day_gap('not-a-date', '2026-01-01')!r}, "
+        f"{mod.day_gap('2026-01-01', 'not-a-date')!r}, "
+        f"{mod.day_gap(None, '2026-01-01')!r}, "
+        f"{mod.day_gap('2026-01-01', None)!r}",
     )
 
 
@@ -585,6 +677,10 @@ def main():
         test_deprecated_fact_excluded_from_signal,
         test_superseded_fact_excluded_from_signal,
         test_active_fact_still_counts,
+        test_deprecated_fact_excluded_regardless_of_case,
+        test_superseded_fact_excluded_regardless_of_case,
+        test_deprecated_hub_excluded_regardless_of_case,
+        test_day_gap_degrades_to_zero_on_bad_input,
         test_cap_truncates_and_reports_true_total,
         test_config_default_used_when_no_max_flag,
         test_config_absent_falls_back_to_default_25,

@@ -242,7 +242,7 @@ def main():
         for fpath, f in facts.items():
             if fpath == spath:
                 continue
-            if (f["status"] or "active") in ("deprecated", "superseded"):
+            if (f["status"] or "active").strip().lower() in ("deprecated", "superseded"):
                 continue
             related = fpath in snap["relates_to"] or spath in f["relates_to"]
             shares = len(f["entities"] & snap["entities"]) >= SHARE_THRESHOLD

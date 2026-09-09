@@ -282,7 +282,8 @@ def load_hubs():
             fm = m.group(1)
             if field_scalar(fm, "type") != "entity":
                 continue
-            if field_scalar(fm, "status") == "deprecated":
+            status = (field_scalar(fm, "status") or "").strip().lower()
+            if status == "deprecated":
                 continue
             hubs[bundle_path(path)] = {
                 "updated": field_scalar(fm, "updated"),
@@ -309,7 +310,7 @@ def load_facts():
         fm = m.group(1)
         if field_scalar(fm, "type") != "fact":
             continue
-        status = field_scalar(fm, "status") or "active"
+        status = (field_scalar(fm, "status") or "active").strip().lower()
         if status in ("deprecated", "superseded"):
             continue
         facts.append({
@@ -347,12 +348,16 @@ def newest(occurred, updated):
 
 def day_gap(tended, fdate):
     """Days between a hub's `updated` and a qualifying fact's date, or 0 when
-    either isn't a real ISO date — the tie-break degrades to "no gap"
-    rather than raising on a value that merely looked like a date."""
+    either isn't a real ISO date (or is missing entirely — `fromisoformat`
+    raises `TypeError` on `None`, not `ValueError`) — the tie-break degrades
+    to "no gap" rather than raising on a value that merely looked like a
+    date. Both call sites (`compute_candidates`) only ever pass dates
+    already validated by `newest()`/`_iso_or_none()`, so this guard is
+    currently untriggered defense-in-depth, not a live path."""
     try:
         t = datetime.date.fromisoformat(tended)
         f = datetime.date.fromisoformat(fdate)
-    except ValueError:
+    except (ValueError, TypeError):
         return 0
     return (f - t).days
 

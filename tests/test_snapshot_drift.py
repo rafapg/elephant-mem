@@ -250,6 +250,22 @@ def test_deprecated_fact_excluded_from_signal(root):
     )
 
 
+def test_deprecated_fact_excluded_regardless_of_case(root):
+    """status is compared case-insensitively, matching build-index.py's
+    fact_status() normalization — status: Deprecated excludes a fact from
+    the drift signal exactly like status: deprecated does."""
+    bundle = new_bundle(root, "e2e-deprecated-case")
+    write_fact(bundle, "snap", tags="[snapshot]", updated=days_ago(30))
+    write_fact(bundle, "newer", relates_to="[/facts/snap.md]",
+               updated=days_ago(1), status="Deprecated")
+    result = run_script(bundle)
+    record(
+        "status: Deprecated (capitalized) is excluded from the drift signal, same as lowercase",
+        "0 of 1 snapshot(s) may have drifted." in result.stdout,
+        f"stdout:\n{result.stdout}",
+    )
+
+
 def test_no_snapshots_message(root):
     bundle = new_bundle(root, "e2e-none")
     write_fact(bundle, "plain", tags="[]", updated=days_ago(1))
@@ -297,6 +313,7 @@ def main():
         test_shared_entities_bucket_reported_as_review,
         test_single_shared_entity_is_not_enough,
         test_deprecated_fact_excluded_from_signal,
+        test_deprecated_fact_excluded_regardless_of_case,
         test_no_snapshots_message,
         test_ci_wiring,
     ):
