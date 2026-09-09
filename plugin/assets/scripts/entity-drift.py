@@ -201,13 +201,16 @@ def field_scalar(fm, key):
 
     Kept glued, the comment poisoned readers of this shape elsewhere: dates
     compared as strings sort the comment in, and a `status: deprecated  #
-    active | …` no longer equals `deprecated`. Mirrors snapshot-drift.py's
-    function of the same name.
+    active | …` no longer equals `deprecated`. Also unquoted, same reason
+    `field_list()` unquotes each item: `status: "Deprecated"` is valid YAML
+    and would otherwise survive case-normalization as `'"deprecated"'`,
+    never matching the bare retired-status strings. Mirrors
+    snapshot-drift.py's function of the same name.
     """
     m = re.search(rf"^{re.escape(key)}:\s*(\S.*?)\s*$", fm, re.MULTILINE)
     if not m:
         return None
-    return strip_comment(m.group(1)) or None
+    return unquote(strip_comment(m.group(1))) or None
 
 
 def bundle_path(abspath):

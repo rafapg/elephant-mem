@@ -185,11 +185,17 @@ def field_scalar(fm, key):
     sorted ABOVE a bare `2026-06-24` and a same-day fact reported the snapshot
     as drifted; and a `status: deprecated  # active | …` no longer equalled
     `deprecated`, so a retired fact was still counted as a live drift signal.
+
+    Also unquoted: `status: "Deprecated"` (valid YAML, just an unusual style
+    for an enum-like field) would otherwise compare as the literal string
+    `'"deprecated"'` after case-normalizing, never matching `"deprecated"` —
+    the exact same quoting hazard field_list() already had to account for,
+    just on a scalar instead of a list item.
     """
     m = re.search(rf"^{re.escape(key)}:\s*(\S.*?)\s*$", fm, re.MULTILINE)
     if not m:
         return None
-    return strip_comment(m.group(1)) or None
+    return unquote(strip_comment(m.group(1))) or None
 
 
 def bundle_path(abspath):

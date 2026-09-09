@@ -294,6 +294,53 @@ def test_deprecated_hub_excluded_regardless_of_case(root):
     )
 
 
+def test_deprecated_fact_excluded_when_status_is_quoted(root):
+    """`field_scalar()` unquotes before returning: `status: "Deprecated"` —
+    valid YAML, config.md's own convention for free-text scalars, just
+    unusual for an enum field — must exclude the fact exactly like an
+    unquoted, lowercase `status: deprecated` does."""
+    bundle = new_bundle(root, "e4-deprecated-quoted")
+    hub = write_hub(bundle, "acme", updated=days_ago(30))
+    write_fact(bundle, "dep", entities=f"[{hub}]", occurred=days_ago(1),
+               status='"Deprecated"')
+    result = run_script(bundle)
+    record(
+        'status: "Deprecated" (quoted) is excluded from n_newer, same as unquoted lowercase',
+        result.returncode == 0 and "0 of 0 entity hub(s) may be stale." in result.stdout,
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+
+
+def test_superseded_fact_excluded_when_status_is_quoted(root):
+    bundle = new_bundle(root, "e4-superseded-quoted")
+    hub = write_hub(bundle, "acme", updated=days_ago(30))
+    write_fact(bundle, "sup", entities=f"[{hub}]", occurred=days_ago(1),
+               status="'superseded'")
+    result = run_script(bundle)
+    record(
+        "status: 'superseded' (single-quoted) is excluded from n_newer, same as unquoted",
+        result.returncode == 0 and "0 of 0 entity hub(s) may be stale." in result.stdout,
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+
+
+def test_deprecated_hub_excluded_when_status_is_quoted(root):
+    bundle = new_bundle(root, "e-hub-deprecated-quoted")
+    acme = write_hub(bundle, "acme", updated=days_ago(30), status='"Deprecated"')
+    write_fact(bundle, "acme-fresh", entities=f"[{acme}]", occurred=days_ago(1))
+    other = write_hub(bundle, "other", updated=days_ago(30))
+    write_fact(bundle, "other-fresh", entities=f"[{other}]", occurred=days_ago(1))
+    result = run_script(bundle)
+    record(
+        'a hub with status: "Deprecated" (quoted) is excluded, its equally-stale sibling is not',
+        result.returncode == 0
+        and "1 of 1 entity hub(s) may be stale." in result.stdout
+        and other in result.stdout
+        and acme not in result.stdout,
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+
+
 def test_day_gap_degrades_to_zero_on_bad_input(root):
     """day_gap() is defense-in-depth (compute_candidates only ever calls it
     with already-validated dates) but is untested directly and its except
@@ -680,6 +727,9 @@ def main():
         test_deprecated_fact_excluded_regardless_of_case,
         test_superseded_fact_excluded_regardless_of_case,
         test_deprecated_hub_excluded_regardless_of_case,
+        test_deprecated_fact_excluded_when_status_is_quoted,
+        test_superseded_fact_excluded_when_status_is_quoted,
+        test_deprecated_hub_excluded_when_status_is_quoted,
         test_day_gap_degrades_to_zero_on_bad_input,
         test_cap_truncates_and_reports_true_total,
         test_config_default_used_when_no_max_flag,
