@@ -30,6 +30,21 @@ Safety net for autonomous ingestion. Review recent `log.md` and all flags:
   deprecate-and-archive it (`status: deprecated`, keep for provenance) rather
   than let it rot silently. This is the periodic-review ritual, automated as a
   *surfacing* — never an auto-rewrite.
+- **entity hubs** (`type: entity`, not `status: deprecated`): do NOT decay these as
+  orphans — they are authoritative knowledge summaries. Instead **drift-check** them:
+  run `scripts/entity-drift.py`, which flags any hub whose `description` (hand-written
+  prose above the auto-facts block) has fallen behind the newest fact that names it
+  (via the fact's `entities:` backlink). Candidates are ranked by count of newer facts
+  (worst offenders first), then by date gap, then by path. Output is capped at
+  `entity_drift_max` (elephant.json, default 25). Queue nothing — this is drift-finding,
+  not review-queuing. Overwrite `state/entity-drift.md` wholesale with the ranked,
+  capped list (one line per candidate: path, hub's `updated`, count of newer facts, and
+  newest fact's date), or with "no stale hubs" if zero candidates found — not a log,
+  a current truth snapshot. Include `state/entity-drift.md` in the run's commit. For each
+  candidate in the output, consider whether the description's **content** is now wrong
+  (a fact has arrived that changes the context), and if so, re-tend it (merge the newer
+  nuance, bump `updated`) or, if outdated but not wrong, simply bump the date. This is
+  advisory only — never auto-rewrite.
 - flag **orphans** (no entities, no links) for review.
 - **reconcile the review queue** (tag↔queue invariant): every file with the
   `needs-review` tag must appear in `state/needs-review.md`, and vice-versa.

@@ -553,6 +553,46 @@ def drive_snapshot_drift(root):
     )
 
 
+@drives("entity-drift.py")
+def drive_entity_drift(root):
+    bundle = mount_bundle(root, "entity-drift")
+    entity = bundle / "knowledge" / "entities" / "concept" / "t.md"
+    fact = bundle / "knowledge" / "facts" / "t.md"
+
+    # The entity template's `updated:` and the fact template's `occurred:` ship
+    # the same placeholder date, so nothing is "newer" until one is pinned
+    # apart. Link the fact to the entity via `entities:` and push its
+    # `occurred:` a day later — keeping both fields' trailing comments, which
+    # is what broke six other readers on these same templates.
+    seed_field(fact, "entities", '["/entities/concept/t.md"]')
+    seed_field(fact, "occurred", "2026-06-25")
+    seed_field(fact, "updated", "2026-06-20")  # older than occurred, pinned
+    # explicitly so `newest 2026-06-25` below is true by construction — not
+    # by the template's shipped `updated:` happening to be early enough.
+    entity_updated = next(
+        ln for ln in entity.read_text(encoding="utf-8").splitlines()
+        if ln.startswith("updated:")
+    ).split("#", 1)[0].split(":", 1)[1].strip()
+
+    drift = run_script(bundle, "entity-drift.py")
+    out = drift.stdout + drift.stderr
+    record(
+        "entity-drift.py flags the template entity once its linked fact "
+        "post-dates its `updated:` — `entities:` and `occurred:` both read "
+        "past their trailing `#` comments",
+        drift.returncode == 0
+        and f"/entities/concept/t.md  updated {entity_updated}  n_newer 1  "
+            "newest 2026-06-25" in out
+        and "1 of 1 entity hub(s) may be stale." in out,
+        f"exit={drift.returncode}\n{out}",
+    )
+    record(
+        "…and no comment text leaks into the report",
+        "#" not in out,
+        out,
+    )
+
+
 @drives("rename-entity.py")
 def drive_rename_entity(root):
     bundle = mount_bundle(root, "rename-entity")

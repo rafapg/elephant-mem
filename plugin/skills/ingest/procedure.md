@@ -35,7 +35,9 @@ It touches entities — also load `../_shared/entity-resolution.md`.
    `templates/source.md`: set `resource`, `source-kind`, `channel` (precise
    origin: `slack:#channel`, `meeting`, `email`, `gdoc`…), `occurred` (when the
    event/thread happened — NOT today), and a concise summary (a recall aid, not
-   a copy). Optionally save the raw capture to `raw/`.
+   a copy). Optionally save the raw capture to `raw/<context>/<topic>/` (e.g.
+   `raw/work/meetings/`) rather than loose at the root — see
+   `../../assets/seed/config.md` → **Layout** for the convention.
 2. **Extract & route candidates.** Each candidate = one atomic, self-contained
    item; route it to its lane — a durable `fact`, an `open-loop` (a
    commitment/action-item that will complete), or nothing (already episodic).

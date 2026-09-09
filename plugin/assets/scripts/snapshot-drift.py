@@ -105,6 +105,34 @@ def _closing_bracket(v):
     return -1
 
 
+def unquote(s):
+    """Unwrap a quoted scalar (list item or bare value) read by the regex
+    parsers below, undoing the two escapes that quoting a free-text value
+    actually produces. Mirrors build-index.py's function of the same name.
+
+    Without it, `tags: ["snapshot", "beleza"]` — the quoting style
+    config.md's own frontmatter convention recommends for free-text values —
+    returns items as `'"snapshot"'`, not `'snapshot'`, and every membership
+    check downstream (`"snapshot" in tags`, in this file's own main()) fails
+    silently: not a single snapshot with quoted tags is ever recognized as
+    one, and the drift report reads as "nothing drifted" no matter what did.
+    """
+    if not (len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'"):
+        return s
+    inner, quote = s[1:-1], s[0]
+    if quote == "'":
+        return inner.replace("''", "'")
+    out, i, n = [], 0, len(inner)
+    while i < n:
+        if inner[i] == "\\" and i + 1 < n and inner[i + 1] in '"\\':
+            out.append(inner[i + 1])
+            i += 2
+            continue
+        out.append(inner[i])
+        i += 1
+    return "".join(out)
+
+
 def strip_comment(v):
     """The scalar `v` with its trailing YAML comment removed.
 
@@ -146,7 +174,7 @@ def field_list(fm, key):
     v = strip_comment(m.group(1))
     if not (v.startswith("[") and v.endswith("]")):
         return []
-    return [x.strip() for x in v[1:-1].split(",") if x.strip()]
+    return [unquote(x.strip()) for x in v[1:-1].split(",") if x.strip()]
 
 
 def field_scalar(fm, key):
@@ -157,11 +185,17 @@ def field_scalar(fm, key):
     sorted ABOVE a bare `2026-06-24` and a same-day fact reported the snapshot
     as drifted; and a `status: deprecated  # active | …` no longer equalled
     `deprecated`, so a retired fact was still counted as a live drift signal.
+
+    Also unquoted: `status: "Deprecated"` (valid YAML, just an unusual style
+    for an enum-like field) would otherwise compare as the literal string
+    `'"deprecated"'` after case-normalizing, never matching `"deprecated"` —
+    the exact same quoting hazard field_list() already had to account for,
+    just on a scalar instead of a list item.
     """
     m = re.search(rf"^{re.escape(key)}:\s*(\S.*?)\s*$", fm, re.MULTILINE)
     if not m:
         return None
-    return strip_comment(m.group(1)) or None
+    return unquote(strip_comment(m.group(1))) or None
 
 
 def bundle_path(abspath):
@@ -214,7 +248,7 @@ def main():
         for fpath, f in facts.items():
             if fpath == spath:
                 continue
-            if (f["status"] or "active") in ("deprecated", "superseded"):
+            if (f["status"] or "active").strip().lower() in ("deprecated", "superseded"):
                 continue
             related = fpath in snap["relates_to"] or spath in f["relates_to"]
             shares = len(f["entities"] & snap["entities"]) >= SHARE_THRESHOLD

@@ -3,8 +3,8 @@ name: maintain
 disable-model-invocation: true
 description: >
   Safety-net maintenance of elephant-mem — resolve conflicts, consolidate,
-  decay, promote, drift-check snapshots, reconcile the review queue. A
-  deliberate operation with side effects (edits facts, rebuilds, commits).
+  decay, promote, drift-check snapshots and entity hubs, reconcile the review queue.
+  A deliberate operation with side effects (edits facts, rebuilds, commits).
   Invoke only when the user explicitly asks (elephant-mem:maintain).
 ---
 
