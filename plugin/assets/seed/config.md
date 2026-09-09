@@ -58,11 +58,19 @@ knowledge/                   # OKF v0.1 bundle (the queryable surface)
 elephant.json                # bundle config: owner, languages, timezone, sources
 vocab.json                   # controlled vocabulary; yours to extend, never re-synced
 config.md                    # this file
-raw/                         # optional unprocessed capture of a source
+raw/<context>/<topic>/       # optional unprocessed capture of a source, see below
 state/                       # incremental-routine cursors (NOT in the OKF bundle)
 templates/                   # fact / entity / source / open-loop skeletons
 scripts/                     # validate-okf.py, build-index.py, state.py, briefing.py
 ```
+
+`raw/` starts empty and is optional — `ingest` writes to it only when a step
+asks to keep the unprocessed capture (see `../skills/ingest/procedure.md`
+step 1). Past a few months of captures across sources, a flat root becomes an
+unsorted pile; route each capture into `raw/<context>/<topic>/` instead (e.g.
+`raw/work/meetings/`, `raw/personal/finance/`), picking `context`/`topic`
+names that make sense for your own sources and teams. This is a convention,
+not an enforced schema — nothing validates the subfolder a capture lands in.
 
 ## Date
 
