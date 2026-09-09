@@ -101,10 +101,15 @@ def write_fact(bundle, slug, tags="[]", entities="[]", relates_to="[]",
 
 
 # --- unit checks: the pure functions, imported in-process -----------------
+# One bundle, one import, reused across every record() below (test_recall.py's
+# pattern) — field_list()/unquote() are pure string functions with no
+# filesystem dependency, so mounting a fresh bundle per assertion bought
+# nothing but six redundant tempdir mounts and module compiles.
 
-def test_field_list_unquotes_double_quoted_items(root):
-    bundle = new_bundle(root, "unit-dq")
-    mod = import_copy(bundle, "sd_unit_dq")
+def test_field_list_and_unquote_unit_checks(root):
+    bundle = new_bundle(root, "unit")
+    mod = import_copy(bundle, "sd_unit")
+
     got = mod.field_list('tags: ["snapshot", "beleza"]', "tags")
     record(
         "field_list() strips double quotes from inline list items",
@@ -112,10 +117,6 @@ def test_field_list_unquotes_double_quoted_items(root):
         f"got {got!r}",
     )
 
-
-def test_field_list_unquotes_single_quoted_items(root):
-    bundle = new_bundle(root, "unit-sq")
-    mod = import_copy(bundle, "sd_unit_sq")
     got = mod.field_list("tags: ['snapshot', 'ownership']", "tags")
     record(
         "field_list() strips single quotes from inline list items",
@@ -123,10 +124,6 @@ def test_field_list_unquotes_single_quoted_items(root):
         f"got {got!r}",
     )
 
-
-def test_field_list_unquoted_items_still_work(root):
-    bundle = new_bundle(root, "unit-bare")
-    mod = import_copy(bundle, "sd_unit_bare")
     got = mod.field_list("tags: [snapshot, ownership]", "tags")
     record(
         "field_list() leaves already-bare items untouched (no regression)",
@@ -134,12 +131,8 @@ def test_field_list_unquoted_items_still_work(root):
         f"got {got!r}",
     )
 
-
-def test_field_list_trailing_comment_still_stripped(root):
-    """Regression lock for the older fix (96db93e): a comment on the same
-    line as an inline list must not be swallowed into the list."""
-    bundle = new_bundle(root, "unit-comment")
-    mod = import_copy(bundle, "sd_unit_comment")
+    # Regression lock for the older fix (96db93e): a comment on the same line
+    # as an inline list must not be swallowed into the list.
     got = mod.field_list(
         "entities: []          # bundle-absolute links, e.g. [/entities/…]", "entities",
     )
@@ -149,12 +142,7 @@ def test_field_list_trailing_comment_still_stripped(root):
         f"got {got!r}",
     )
 
-
-def test_field_list_quoted_items_with_trailing_comment(root):
-    """The two fixes composed: a quoted list AND a trailing comment on the
-    same line."""
-    bundle = new_bundle(root, "unit-both")
-    mod = import_copy(bundle, "sd_unit_both")
+    # The two fixes composed: a quoted list AND a trailing comment together.
     got = mod.field_list('tags: ["snapshot"]   # editorial rollup', "tags")
     record(
         "field_list() handles quoted items and a trailing comment together",
@@ -162,10 +150,6 @@ def test_field_list_quoted_items_with_trailing_comment(root):
         f"got {got!r}",
     )
 
-
-def test_unquote_escapes(root):
-    bundle = new_bundle(root, "unit-unquote")
-    mod = import_copy(bundle, "sd_unit_unquote")
     cases = [
         ('"plain"', "plain"),
         ("'plain'", "plain"),
@@ -306,12 +290,7 @@ def main():
     print(f"scratch root: {scratch_root}\n")
 
     for fn in (
-        test_field_list_unquotes_double_quoted_items,
-        test_field_list_unquotes_single_quoted_items,
-        test_field_list_unquoted_items_still_work,
-        test_field_list_trailing_comment_still_stripped,
-        test_field_list_quoted_items_with_trailing_comment,
-        test_unquote_escapes,
+        test_field_list_and_unquote_unit_checks,
         test_quoted_snapshot_detected_as_drifted,
         test_unquoted_snapshot_still_detected,
         test_relates_to_bucket_reported_high_signal,

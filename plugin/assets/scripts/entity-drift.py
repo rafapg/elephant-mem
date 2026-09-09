@@ -313,7 +313,7 @@ def load_facts():
         if status in ("deprecated", "superseded"):
             continue
         facts.append({
-            "entities": field_list(fm, "entities"),
+            "entities": set(field_list(fm, "entities")),
             "date": newest(field_scalar(fm, "occurred"), field_scalar(fm, "updated")),
         })
     return facts

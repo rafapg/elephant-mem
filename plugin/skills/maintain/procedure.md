@@ -35,7 +35,7 @@ Safety net for autonomous ingestion. Review recent `log.md` and all flags:
   run `scripts/entity-drift.py`, which flags any hub whose `description` (hand-written
   prose above the auto-facts block) has fallen behind the newest fact that names it
   (via the fact's `entities:` backlink). Candidates are ranked by count of newer facts
-  (worst offenders first), then by date gap, then by path. Output is bucketed at
+  (worst offenders first), then by date gap, then by path. Output is capped at
   `entity_drift_max` (elephant.json, default 25). Queue nothing — this is drift-finding,
   not review-queuing. Overwrite `state/entity-drift.md` wholesale with the ranked,
   capped list (one line per candidate: path, hub's `updated`, count of newer facts, and
