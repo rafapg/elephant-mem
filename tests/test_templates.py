@@ -566,6 +566,9 @@ def drive_entity_drift(root):
     # is what broke six other readers on these same templates.
     seed_field(fact, "entities", '["/entities/concept/t.md"]')
     seed_field(fact, "occurred", "2026-06-25")
+    seed_field(fact, "updated", "2026-06-20")  # older than occurred, pinned
+    # explicitly so `newest 2026-06-25` below is true by construction — not
+    # by the template's shipped `updated:` happening to be early enough.
     entity_updated = next(
         ln for ln in entity.read_text(encoding="utf-8").splitlines()
         if ln.startswith("updated:")

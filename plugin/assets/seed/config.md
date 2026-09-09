@@ -65,7 +65,7 @@ scripts/                     # validate-okf.py, build-index.py, state.py, briefi
 ```
 
 `raw/` starts empty and is optional — `ingest` writes to it only when a step
-asks to keep the unprocessed capture (see `../skills/ingest/procedure.md`
+asks to keep the unprocessed capture (see `../../skills/ingest/procedure.md`
 step 1). Past a few months of captures across sources, a flat root becomes an
 unsorted pile; route each capture into `raw/<context>/<topic>/` instead (e.g.
 `raw/work/meetings/`, `raw/personal/finance/`), picking `context`/`topic`
