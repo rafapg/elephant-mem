@@ -4,6 +4,25 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.16] - 2026-09-10
+
+A user updating a real bundle to `0.1.0-beta.15` on Claude Code 2.1.181 hit
+`elephant-update` failing outright before it copied anything.
+
+### Fixed
+
+- **`install_plugins()` hardcoded `-y` on every `claude plugin update` call,
+  and that CLI release rejected it** — `error: unknown option '-y'`, exit 1
+  from the CLI and exit 5 from the run, before the marketplace release's files
+  ever reached the bundle (in the reported case, `close-loops.py` never made
+  it into `scripts/`, so the skills that call it stayed broken after an
+  update that reported nothing wrong). The flag itself was never the problem;
+  pinning the run to one exact spelling of it was — the same failure returns
+  under any future CLI release that renames or drops `-y` again. A rejection
+  of `-y` specifically now retries once with the long form `--yes` before the
+  run gives up, rather than failing over a flag the installed CLI no longer
+  recognises. `tests/test_update.py` grew to 329 checks.
+
 ## [0.1.0-beta.15] - 2026-09-09
 
 A beta tester's six weeks of daily production use against `0.1.0-beta.7`

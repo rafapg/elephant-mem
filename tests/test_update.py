@@ -292,6 +292,17 @@ if ARGV[:2] == ["plugin", "update"]:
     if PLAN.get("install_fails"):
         print("error: the download for " + ARGV[2] + " did not complete", file=sys.stderr)
         sys.exit(1)
+    # The 2.1.181 regression this stands in for: that release's `plugin
+    # update` rejected `-y` outright, the way commander reports any option it
+    # does not recognise. `reject_yes_flag: true` rejects only `-y`, so a
+    # retry with `--yes` still works; `"both"` rejects `--yes` as well, for
+    # the case elephant-update cannot paper over.
+    rejected = PLAN.get("reject_yes_flag")
+    if (rejected is True and "-y" in ARGV[3:]) or (
+            rejected == "both" and ("-y" in ARGV[3:] or "--yes" in ARGV[3:])):
+        bad = "-y" if "-y" in ARGV[3:] else "--yes"
+        print("error: unknown option '" + bad + "'", file=sys.stderr)
+        sys.exit(1)
     key = ARGV[2]
     plugin = key.split("@")[0]
     catalogue = json.loads((CLONE / ".claude-plugin" / "marketplace.json")
@@ -415,7 +426,8 @@ def init_git(bundle):
 
 
 def make_world(root, *, validator=STUB_VALIDATE_OK, declares="0.1.0-beta.14",
-               refresh_fails=False, install_fails=False, ships_executable=True):
+               refresh_fails=False, install_fails=False, ships_executable=True,
+               reject_yes_flag=False):
     """A machine with `elephant-mem` 0.1.0-beta.13 installed, a clone carrying
     the release that follows it, and a bundle in sync with what is installed.
 
@@ -489,7 +501,8 @@ def make_world(root, *, validator=STUB_VALIDATE_OK, declares="0.1.0-beta.14",
                  "cache": str(Path(root) / "cache"), "registry": str(registry),
                  "marketplace": "elephant-mem",
                  "declare": {"plugin": declares},
-                 "refresh_fails": refresh_fails, "install_fails": install_fails},
+                 "refresh_fails": refresh_fails, "install_fails": install_fails,
+                 "reject_yes_flag": reject_yes_flag},
     }
     world["claude"] = make_fake_claude(root, world["plan"])
     world["head"] = init_git(bundle)
@@ -1755,6 +1768,56 @@ def failure_checks(eu, tmp):
                             "plugin update elephant-mem@elephant-mem -y"],
            calls(world))
     record("E22 and nothing was copied", snapshot(bundle) == before)
+
+    # E41 — the CLI rejects `-y` outright (the 2.1.181 regression: `error:
+    # unknown option '-y'`, reported against a real bundle running
+    # elephant-update). `install_plugins()` is expected to retry with `--yes`
+    # rather than fail the whole run over a flag the CLI stopped recognising.
+    world = make_world(tmp / "rejectyes", reject_yes_flag=True)
+    bundle = world["bundle"]
+    registry = world["registry"]
+    done = in_world(world, "--yes")
+    record("E41 a CLI that rejects `-y` still lets the run succeed",
+           done.returncode == eu.RUN_OK,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("E41 each plugin update is retried with `--yes` after `-y` is "
+           "rejected, in the same order, before the run moves on",
+           calls(world) == ["plugin marketplace update elephant-mem",
+                            "plugin update elephant-mem@elephant-mem -y",
+                            "plugin update elephant-mem@elephant-mem --yes",
+                            "plugin update elephant-wiki@elephant-mem -y",
+                            "plugin update elephant-wiki@elephant-mem --yes"],
+           calls(world))
+    record("E41 the retried install actually landed — the run did not just "
+           "swallow the rejection and stop short",
+           (bundle / "scripts" / "recall.py").read_text(encoding="utf-8")
+           == "print('recall 14')\n",
+           (bundle / "scripts" / "recall.py").read_text(encoding="utf-8"))
+    record("E41 the registry reflects the version installed through the "
+           "retried call, not the rejected one",
+           "0.1.0-beta.14" in registry.read_text(encoding="utf-8"),
+           registry.read_text(encoding="utf-8"))
+
+    # E42 — the CLI rejects both `-y` and `--yes`: a real, reportable failure
+    # rather than one this retry can paper over.
+    world = make_world(tmp / "rejectboth", reject_yes_flag="both")
+    bundle = world["bundle"]
+    before = snapshot(bundle)
+    done = in_world(world, "--yes")
+    record("E42 a CLI that rejects `-y` and `--yes` alike fails the run "
+           "before anything is copied, rather than retrying forever",
+           done.returncode == eu.RUN_FAILED_BEFORE_COPY,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("E42 the report names the command and carries the CLI's own "
+           "rejection, not a generic timeout or crash message",
+           "plugin update elephant-mem@elephant-mem" in done.stderr
+           and "unknown option" in done.stderr, done.stderr)
+    record("E42 exactly one retry per plugin, not an unbounded loop",
+           calls(world) == ["plugin marketplace update elephant-mem",
+                            "plugin update elephant-mem@elephant-mem -y",
+                            "plugin update elephant-mem@elephant-mem --yes"],
+           calls(world))
+    record("E42 and nothing was copied", snapshot(bundle) == before)
 
     # E26, E27 — the validator fails after the copy.
     world = make_world(tmp / "invalid", validator=STUB_VALIDATE_FAIL)

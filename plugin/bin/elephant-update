@@ -709,6 +709,15 @@ def refresh_marketplace(marketplace=MARKETPLACE):
     return True, output
 
 
+def _rejects_flag(output, flag):
+    """True when `output` reads like the CLI does not recognise `flag` at all,
+    rather than failing for some unrelated reason. Commander (the CLI's
+    argument parser) reports that as `error: unknown option '<flag>'` on a
+    line of its own."""
+    return any(line.strip() == f"error: unknown option '{flag}'"
+               for line in output.splitlines())
+
+
 def install_plugins(plugins, marketplace=MARKETPLACE):
     """`(ok, detail)` after updating each installed plugin of the family.
 
@@ -717,6 +726,15 @@ def install_plugins(plugins, marketplace=MARKETPLACE):
     is a plugin the user never installed, not one this run should install for
     them. `-y` because the CLI requires it when stdout is not a TTY, which is
     always the case here.
+
+    A handful of CLI point releases have shipped `plugin update` without the
+    short flag (reported against a real bundle on 2.1.181: `-y` came back
+    `error: unknown option '-y'`, exit 5, before anything was copied — fixed
+    upstream by 2.1.267, but the next regression like it will not announce
+    itself either). Rather than pin the fix to a version number that is
+    already wrong by the time it is read, a rejection of `-y` specifically
+    retries once with the long form `--yes`, which has always named the same
+    option, before this gives up and reports both.
     """
     cli = claude_cli()
     if not cli:
@@ -724,8 +742,10 @@ def install_plugins(plugins, marketplace=MARKETPLACE):
     for plugin in plugins:
         key = family_key(plugin, marketplace)
         code, output = run_command([cli, "plugin", "update", key, "-y"])
+        if code != 0 and _rejects_flag(output, "-y"):
+            code, output = run_command([cli, "plugin", "update", key, "--yes"])
         if code != 0:
-            return False, f"`{CLI_NAME} plugin update {key} -y` exited {code}\n{output}"
+            return False, f"`{CLI_NAME} plugin update {key}` exited {code}\n{output}"
     return True, ""
 
 
