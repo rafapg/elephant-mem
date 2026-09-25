@@ -179,7 +179,7 @@ around 2026-10-05 unless cited or re-raised again.
   and every earlier mirror between them (the examination date, the settled
   test) ended in a deadlock that took a fix to find. And a `done` by evidence
   is a better end for such a loop than an out-of-scope expiry.
-- **Release.** `elephant-mem` only, `0.1.0-beta.16` -> `0.1.0-beta.17`, in the
+- **Release.** `elephant-mem` only, `0.1.0-beta.16` -> `1.0.0-rc.1`, in the
   same PR. No file under `elephant-wiki/` changes (`wiki.py` reads no loop
   field), so the wiki is not bumped. The default of `loop_expiry_days` lives in
   exactly three places: `DEFAULT_EXPIRY_DAYS` in `decay-loops.py`, and the
@@ -946,17 +946,17 @@ Files: `plugin/.claude-plugin/plugin.json`, `CHANGELOG.md`, `README.md`,
 `.github/workflows/ci.yml`.
 
 - [ ] **13. Release plumbing** → all · dep: 1 to 12 · verify: every suite green
-  - `plugin.json`: `0.1.0-beta.16` -> `0.1.0-beta.17`. The wiki is not bumped.
+  - `plugin.json`: `0.1.0-beta.16` -> `1.0.0-rc.1`. The wiki is not bumped.
   - `.github/workflows/ci.yml`: add `- run: python tests/test_loop_lifecycle.py`
     after the `test_close_loops.py` line (no glob picks it up).
-  - `README.md`: the `elephant--mem` badge to `v0.1.0--beta.17`. "**open
+  - `README.md`: the `elephant--mem` badge to `v1.0.0--rc.1`. "**open
     loops** — commitments and action items that eventually close." becomes
     "**open loops**: commitments the owner owes or is owed, which eventually
     close." Mode rows: `close-loops` becomes "optional daily sweep: close or
     drop open loops the evidence shows delivered or obsolete"; `decay` becomes
     "expire open loops silent for 30 days, and loops that are not the
     owner's".
-  - `CHANGELOG.md`: a `## [0.1.0-beta.17] - <tag date>` section above
+  - `CHANGELOG.md`: a `## [1.0.0-rc.1] - <tag date>` section above
     beta.16, house style. A lead paragraph with the measurements (2317 loops,
     987 open; 60% not the owner's, 740 of the open ones; about 1 duplicate
     pair against 263 sibling pairs; `close-loops` closing 0, 0, 1 of 25 and

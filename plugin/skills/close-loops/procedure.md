@@ -306,7 +306,7 @@ before silence does, not to work through a backlog. At 25 loops a run, a fifth
 of every run is reserved for that band. (This paragraph used to promise 735
 stale loops worked through in about 147 runs, roughly five months: a figure from
 0.1.0-beta.13, when `decay` waited on this sweep. That backlog does not survive
-the first `decay` run of 0.1.0-beta.17.) The reserved fifth is only worth
+the first `decay` run of 1.0.0-rc.1.) The reserved fifth is only worth
 something if a run reaches loops the last one did not, which is what the sweep
 record buys: `close-loops.py` treats a loop as
 settled, out of the queue, once it was examined on or after its own last
