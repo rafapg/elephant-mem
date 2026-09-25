@@ -22,8 +22,9 @@ Capture at maximum granularity, route by lifetime (keeps the system scalable):
 
 - **Durable** — `facts/` (`type: fact`). Grows slowly; dedup bounds it. Reached
   via entity backlinks, never a global list.
-- **Open loops** — `tracking/loops/` (`type: open-loop`). Action items that
-  complete; tracked on a derived board, then archived.
+- **Open loops** — `tracking/loops/` (`type: open-loop`). Action items the
+  owner owes or is owed, which complete; tracked on a derived board, then
+  archived.
 - **Episodic** — `sources/<YYYY-MM>/` + `log.md`. Raw volume; archival; loaded
   only when querying by date.
 
@@ -37,8 +38,9 @@ frontmatter-only scans; add embeddings only when `facts/` crosses a few thousand
 
 The bundle belongs to one **owner** (`elephant.json` → `owner`). The owner's
 person entity (`entities/person/<owner.slug>.md`) is the frame for retrieval
-relevance. Capture spans everything; relevance is applied at retrieval and decay,
-never at capture.
+relevance. Capture spans everything and drops nothing for relevance, which is
+applied at retrieval and, for facts, at `maintain`'s decay; a commitment is a
+loop only when it is the owner's, a fact otherwise.
 
 ## Layout
 

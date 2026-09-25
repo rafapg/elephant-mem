@@ -25,7 +25,9 @@ decisions are observable at all. What is covered:
   (c) **the two degenerate readings answer in words** — a loop with no evidence
       is examined and left alone (E11), and a loop with no `**Closure signal:**`
       section is judged against its `description`, with the proposal saying so
-      (E12);
+      (E12). A refined loop's `**Closure signal history:**` is never read as
+      the criterion, and `owed_to` is printed and emitted without joining the
+      ranking;
   (d) **it reads and only reads** — no knowledge file changes, and
       `state/closure-sweep.json` is neither created nor rewritten. The routine
       writes; this script proposes;
@@ -50,7 +52,8 @@ decisions are observable at all. What is covered:
       `state/closure-sweep.json`, and this suite lifts it out of the markdown,
       runs it, and hands the result back to `close-loops.py` — so a recipe that
       writes a shape the script cannot read fails here rather than in the field,
-      where it would silently park `decay` instead.
+      where it would silently send every examined loop back to the queue
+      instead.
 
 Pure stdlib, Python 3.10+, mirroring `tests/test_recall.py`'s conventions: a
 throwaway bundle in a tempdir, subprocess calls into a copy of the real
@@ -70,7 +73,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "plugin" / "assets" / "scripts" / "close-loops.py"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 SKILL_DIR = REPO_ROOT / "plugin" / "skills" / "close-loops"
-DECAY_SKILL_DIR = REPO_ROOT / "plugin" / "skills" / "decay"
 
 OWNER = "jane-doe"
 
@@ -111,7 +113,8 @@ def entity_link(slug, kind="person"):
 
 def write_loop(bundle, name, description="a commitment", owner=(OWNER,),
                entities=(), opened="2026-01-01", updated=None, created=None,
-               status="open", signal="a source showing it shipped", body="Details."):
+               status="open", signal="a source showing it shipped", body="Details.",
+               owed_to=None, after=""):
     """A loop in the shape open-loop.md ships — trailing comments and all.
 
     The comments are not decoration: `status: open  # open | done | dropped |
@@ -119,6 +122,11 @@ def write_loop(bundle, name, description="a commitment", owner=(OWNER,),
     what a naive reader glues onto the value. The fixtures below build the
     three-value comment the template used to ship, which is what the loops
     already on disk carry, so both spellings are exercised.
+
+    `owed_to=None` writes no `owed_to:` line at all, the legacy shape every loop
+    filed before the field existed carries; a sequence writes the line. `after`
+    is appended verbatim after the signal block, which is where a refined loop
+    keeps its `**Closure signal history:**`.
     """
     dates = ""
     for key, value in (("opened", opened), ("created", created or opened),
@@ -127,6 +135,10 @@ def write_loop(bundle, name, description="a commitment", owner=(OWNER,),
             dates += f"{key}: {value}\n"
     owners = ", ".join(entity_link(o) for o in owner)
     ents = ", ".join(entity_link(e) for e in entities)
+    owed = ""
+    if owed_to is not None:
+        owed = ("owed_to: [" + ", ".join(entity_link(o) for o in owed_to)
+                + "]           # who is waiting on it\n")
     signal_block = f"\n\n**Closure signal:** {signal}" if signal else ""
     path = bundle / "knowledge" / "tracking" / "loops" / f"{name}.md"
     path.write_text(
@@ -134,6 +146,7 @@ def write_loop(bundle, name, description="a commitment", owner=(OWNER,),
         "type: open-loop\n"
         f'description: "{description}"\n'
         f"owner: [{owners}]             # bundle-absolute entity links of who owns it\n"
+        f"{owed}"
         f"status: {status}          # open | done | dropped\n"
         f"entities: [{ents}]          # other entities this loop concerns\n"
         "sources: []           # source(s) where it was raised\n"
@@ -143,7 +156,7 @@ def write_loop(bundle, name, description="a commitment", owner=(OWNER,),
         "tags: []\n"
         "timestamp: 2026-01-01\n"
         "---\n"
-        f"\n{body}{signal_block}\n",
+        f"\n{body}{signal_block}{after}\n",
         encoding="utf-8",
     )
     return path
@@ -375,8 +388,7 @@ def test_settled_boundary_is_on_or_after(root):
     Mutating `>` to `>=` in build_queue()'s settling test left all 97 checks
     green while the run went from `0 loop(s) queued of 1 open` to `1 loop(s)
     queued` with a reason that contradicts itself, `active since it was examined
-    (2026-01-05 > 2026-01-05)`. tests/test_decay.py pins the same day at the
-    other end of the pair, where the same mutation is already red.
+    (2026-01-05 > 2026-01-05)`.
     """
     bundle = make_bundle(root, "settled-boundary")
     write_loop(bundle, "same-day", description="Examined the day it last moved",
@@ -390,8 +402,8 @@ def test_settled_boundary_is_on_or_after(root):
                False, f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
         return
     record("a loop examined on the very day of its last activity is settled: on "
-           "or after, not strictly after, which is the boundary decay's gate "
-           "implements too",
+           "or after, not strictly after, which is the settled rule the "
+           "procedure states",
            queued_paths(payload) == [] and payload["counts"]["band2"] == 0,
            f"{queued_paths(payload)}\n{json.dumps(payload['counts'])}")
     text = run(bundle).stdout
@@ -404,12 +416,10 @@ def test_unreadable_examination_date(root):
     """A future or malformed examination date reads as never examined.
 
     `DATE.search` alone finds ten digits in the right shape and nothing more, so
-    `examined: "2099-01-01"` used to read as an examination here while
-    `decay-loops.py`'s examination_date() refused it and parked the loop as
-    never examined. That disagreement is a deadlock: decay waits forever for an
-    examination this queue will never propose, because it already calls the loop
-    settled. The same deadlock the previous round fixed, reached through a
-    different input, so the two readers have to validate the same way.
+    `examined: "2099-01-01"` used to read as an examination here, and the loop
+    was dropped from the queue as settled on a record of an examination that
+    cannot have happened. A settled loop is not proposed again until new
+    material reaches its entities, so a bad value hid it.
     """
     bundle = make_bundle(root, "bad-examination")
     write_loop(bundle, "future", description="Examined in 2099",
@@ -425,8 +435,7 @@ def test_unreadable_examination_date(root):
                f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
         return
     by_path = {lp["path"]: lp for lp in payload["loops"]}
-    record("an examination dated in the future is refused, exactly as "
-           "decay-loops.py's examination_date() refuses it: the loop reads as "
+    record("an examination dated in the future is refused: the loop reads as "
            "never examined and is queued instead of being dropped as settled",
            by_path.get("/tracking/loops/future.md", {}).get("examined") is None
            and by_path.get("/tracking/loops/future.md", {}).get("reason")
@@ -440,14 +449,13 @@ def test_unreadable_examination_date(root):
            == "never examined",
            json.dumps(sorted(by_path)))
 
-    # The other half of the mirror: the shape tolerances survive. The date is
+    # The other half of the rule: the shape tolerances survive. The date is
     # validated on the **matched group** and not on the whole value, because
     # `datetime.date.fromisoformat()` over the whole thing rejects the
     # `2026-09-01T09:00:00-03:00` shape `load_sweep()` documents and tolerates on
     # purpose, and a loop the routine did examine would then read as never
-    # examined and be queued forever. tests/test_decay.py [109] pins the same
-    # shape at the other end of the pair; validating the whole value survives
-    # every suite without this check.
+    # examined and be queued forever. Validating the whole value survives every
+    # other check without this one.
     iso = make_bundle(root, "iso-datetime-examination")
     write_loop(iso, "examined", description="Examined at 09:00, not at midnight",
                opened="2026-01-01", entities=("acme",))
@@ -461,13 +469,12 @@ def test_unreadable_examination_date(root):
            and payload_iso["counts"]["band2"] == 0,
            f"exit={result_iso.returncode}\n{result_iso.stdout}\n{result_iso.stderr}")
 
-    # And the third shape of the same mirror: a date sitting inside prose. A
+    # And the third shape of the same rule: a date sitting inside prose. A
     # human writing a refusal into the sweep record leaves a readable past date
     # in it, and finding ten digits anywhere in the value read that as an
-    # examination. decay-loops.py anchors the match at position 0 and allows
-    # only a time of day after it, so it parks both of these; this reader has to
-    # park them too, or the two disagree again and the loop deadlocks: decay
-    # waits for an examination this queue already counted.
+    # examination. examined_on() anchors the match at position 0 and allows only
+    # a time of day after it, so neither of these settles a loop nobody
+    # examined.
     prose = make_bundle(root, "prose-examination")
     write_loop(prose, "refused", description="A refusal written into the record",
                opened="2026-01-01", entities=("acme",))
@@ -550,7 +557,7 @@ def test_band_one_does_not_starve_band_two(root):
     Absolute precedence is what it looked like at first, and it starves the
     cold end for as long as band 1 keeps overflowing — measured on the owner's
     bundle, 0 of 40 never-examined loops were reached over 30 simulated runs,
-    while band 2 is precisely where the loops `decay` is waiting on live.
+    and band 2 is the cold end of the lane, the loops nothing has re-raised.
     """
     bundle = make_bundle(root, "band1-overflow")
     for i in range(10):
@@ -1016,7 +1023,7 @@ def test_named_loop_bypasses_the_queue(root):
     # An empty proposal and an exit code of 0 read, to the routine, exactly like
     # a loop with no evidence. It cannot tell that from a typo or from a loop
     # that closed last week, and it would record an examination that never
-    # happened — which is what `decay` then acts on.
+    # happened, which the queue then reads as settled.
     write_loop(bundle, "shipped", status="done", opened="2026-01-03")
     missing = run(bundle, ["--loop", "/tracking/loops/nope.md"])
     record("--loop over a path that does not exist warns instead of exiting 0 "
@@ -1094,6 +1101,126 @@ def test_owner_is_what_the_file_declares(root):
                        for c in lp["evidence"]]))
 
 
+def test_history_is_not_the_criterion(root):
+    """E23: a refined loop's `**Closure signal history:**` is not the criterion.
+
+    A refined loop keeps the versions its signal replaced in a section directly
+    after the current one. The regex ends the current paragraph at a blank line
+    or at the next bolded lead-in, and the history section is both, so no regex
+    change is needed; this pins that it stays so. Distinctive words sit only in
+    the history, so a reader that ran on into it would carry them into the
+    criterion and into `terms`.
+    """
+    bundle = make_bundle(root, "history")
+    current = "a release note naming the export"
+    history = ("\n\n**Closure signal history:**\n\n"
+               "- 2026-01-10, from [/sources/2026-01/standup.md]"
+               "(/sources/2026-01/standup.md): was \"a zeppelin quokka demo\"")
+    tight = ("\n**Closure signal history:**\n"
+             "- 2026-01-10, from [/sources/2026-01/standup.md]"
+             "(/sources/2026-01/standup.md): was \"a zeppelin quokka demo\"")
+    write_loop(bundle, "blank-line", description="Ship it", signal=current,
+               after=history, opened="2026-01-01")
+    write_loop(bundle, "next-line", description="Ship it", signal=current,
+               after=tight, opened="2026-01-02")
+    # Pooled through the owner only, so each scores on words alone: the history
+    # word would score 1 if it leaked into `terms`, and the current-criterion
+    # word does score 1, which proves the pool reaches both facts.
+    write_fact(bundle, "history-word", description="the zeppelin quokka arrived",
+               entities=(OWNER,), occurred="2026-02-01")
+    write_fact(bundle, "current-word", description="the release note went out",
+               entities=(OWNER,), occurred="2026-02-01")
+
+    payload, result = proposal(bundle)
+    if payload is None:
+        record("close-loops.py runs over loops carrying a closure signal history",
+               False, f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+        return
+    by_path = {lp["path"]: lp for lp in payload["loops"]}
+    for name in ("blank-line", "next-line"):
+        lp = by_path.get(f"/tracking/loops/{name}.md", {})
+        record(f"E23: with the history section after a {name.replace('-', ' ')}, "
+               "the criterion is the current signal alone, read from the "
+               "`**Closure signal:**` section",
+               lp.get("criterion") == current
+               and lp.get("criterion_source") == "closure-signal",
+               json.dumps({"criterion": lp.get("criterion"),
+                           "source": lp.get("criterion_source")}))
+        order = [c["path"] for c in lp.get("evidence", [])]
+        record(f"…and ({name.replace('-', ' ')}) a fact sharing only a history "
+               "word does not rank, while one sharing a current-criterion word "
+               "does",
+               "/facts/history-word.md" not in order
+               and "/facts/current-word.md" in order, order)
+
+
+def test_owed_to_is_read(root):
+    """H14: `owed_to` is printed and emitted, and joins no signal.
+
+    An "owed to me" loop carries the counterpart in `owner` and the bundle owner
+    in `owed_to`. The proposal shows both so the routine can see whose delivery
+    it is judging. The ranking and the new-material signal are unchanged: a fact
+    on an entity only `owed_to` names is not a candidate.
+    """
+    bundle = make_bundle(root, "owed-to")
+    write_loop(bundle, "owed", description="Bob sends the signed contract",
+               owner=("bob",), owed_to=(OWNER, "carol"), entities=("acme",),
+               opened="2026-01-01")
+    write_loop(bundle, "legacy", description="An old loop with no owed_to line",
+               owner=(OWNER,), owed_to=None, entities=("acme",),
+               opened="2026-01-02")
+    write_fact(bundle, "carol-only", description="the signed contract arrived",
+               entities=("carol",), occurred="2026-02-01")
+
+    payload, result = proposal(bundle)
+    if payload is None:
+        record("close-loops.py runs over a loop carrying owed_to", False,
+               f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+        return
+    by_path = {lp["path"]: lp for lp in payload["loops"]}
+    owed = by_path.get("/tracking/loops/owed.md", {})
+    legacy = by_path.get("/tracking/loops/legacy.md", {})
+    record("H14: `--json` carries `owed_to` as slugs, next to `owner`",
+           owed.get("owed_to") == [OWNER, "carol"] and owed.get("owner") == ["bob"],
+           json.dumps({k: owed.get(k) for k in ("owner", "owed_to")}))
+    record("E2: a legacy loop without the `owed_to` line still proposes, with an "
+           "empty `owed_to`",
+           legacy.get("owed_to") == [] and "/tracking/loops/legacy.md" in by_path,
+           json.dumps({k: legacy.get(k) for k in ("owner", "owed_to")}))
+    record("`owed_to` joins no signal: a fact on an entity only `owed_to` names "
+           "is not a candidate, however well it reads",
+           all(c["path"] != "/facts/carol-only.md"
+               for c in owed.get("evidence", [])),
+           json.dumps([c["path"] for c in owed.get("evidence", [])]))
+    text = run(bundle).stdout
+    record("H14: the text proposal prints `owed_to` on the entities line",
+           f"owner: bob  |  owed_to: {OWNER}, carol" in text, text[:800])
+    record("…and prints `owed_to: —` for the legacy loop",
+           "|  owed_to: —" in text, text[:1200])
+
+
+def test_out_of_scope_is_queued(root):
+    """E25: a third-party loop is queued like any other.
+
+    The queue does not mirror decay's scope rule: such a loop leaves the lane on
+    the next `decay` run, and a `done` by evidence is a better end for it than
+    an out-of-scope expiry.
+    """
+    bundle = make_bundle(root, "out-of-scope")
+    write_loop(bundle, "third-party", description="Bob sends Carol the deck",
+               owner=("bob",), owed_to=("carol",), entities=("acme",),
+               opened="2026-01-01")
+    payload, result = proposal(bundle)
+    if payload is None:
+        record("close-loops.py runs over a third-party loop", False,
+               f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+        return
+    record("E25: a loop naming the bundle owner in none of owner, owed_to, "
+           "entities is still in the queue, examined like any other",
+           queued_paths(payload) == ["/tracking/loops/third-party.md"],
+           queued_paths(payload))
+
+
 # --- (h) the routine --------------------------------------------------------
 
 
@@ -1152,8 +1279,21 @@ def test_procedure_contract():
            low[:0])
     record("H4/E13: the closing write is the three frontmatter fields plus the "
            "prose paragraph — status: done, closed, closed_by, **Resolution:**",
-           all(tok in p for tok in ("status: done", "closed: <today",
+           all(tok in p for tok in ("status: done", "closed: <the deciding source's own date",
                                     "closed_by:", "**Resolution:**")))
+    record("`closed` is the deciding source's date, as the ingest core writes it, "
+           "never this run's: one event lands in one place on resolved-loops.md",
+           "closed: <today" not in p
+           and "the ingest core writes the same field from the same source date" in " ".join(p.split()),
+           "")
+    flat_p = " ".join(p.split())
+    script_src = SCRIPT.read_text(encoding="utf-8")
+    record("the cadence no longer promises a months-deep backlog decay waits on: "
+           "the old figure is kept only as history, and the script's docstring drops it",
+           "`decay` no longer waits for this sweep" in flat_p
+           and "This paragraph used to promise 735" in flat_p
+           and flat_p.count("five months") == 1
+           and "five months" not in script_src and "735" not in script_src, "")
     record("E13: closed_by has to resolve on disk, which is what validate-okf.py "
            "checks and what a hand-written link gets wrong",
            "must resolve on disk" in low and "validate-okf.py" in p)
@@ -1174,38 +1314,57 @@ def test_procedure_contract():
 
     record("H5: every examined loop is recorded, closed or not",
            "closed or not" in low and "closure-sweep.json" in p)
-    record("H5: the outcome vocabulary is the one close-loops.py reads back",
-           "=done" in p and "=open" in p)
+    record("H5/E26: the outcome vocabulary is the one close-loops.py reads back, "
+           "`dropped` included",
+           "=done" in p and "=dropped" in p and "=open" in p)
     record("H5: the sweep write validates every pair before writing anything, "
            "and the prose says what it validates — the recipe below is executed "
            "against exactly these claims",
            "bundle-absolute loop path" in low and "nothing was written" in low
            and "actually recorded" in low)
 
-    # Theme: the boundary of an irreversible operation, stated in prose four
-    # times and implemented as on-or-after at both ends. A document that says
+    # The settled rule's boundary: a loop examined on or after its own last
+    # activity leaves the queue, which is what build_queue() implements and what
+    # test_settled_boundary_is_on_or_after pins in code. A document that says
     # "after" invites a maintainer to "fix" the code and invert it, with the
-    # whole suite still green.
-    #
-    # `decay`'s two files are flattened in with `close-loops`' because the
-    # sentence that matters most is over there: `plugin/skills/decay/
-    # procedure.md` states the gate for `--apply`, the irreversible end of the
-    # pair, and nothing sensed it. Flipping that one line to "after" left
-    # test_decay, this suite and smoke all green, and test_decay.py reads no
-    # procedure at all. The count is what catches it: the decay line spells the
-    # boundary "examined it on or after", so a flip there reads "examined it
-    # after" and slips past the substring test.
-    flat = " ".join("\n".join((
-        p,
-        read_skill("SKILL.md"),
-        read_skill("procedure.md", DECAY_SKILL_DIR),
-        read_skill("SKILL.md", DECAY_SKILL_DIR),
-    )).replace("**", "").lower().split())
-    record("the sweep gate's boundary reads `on or after` wherever either skill "
-           "of the pair states it, `decay`'s own gate included, which is what "
-           "both scripts implement",
-           "examined after" not in flat and flat.count("on or after") >= 4,
-           flat.count("on or after"))
+    # whole suite still green. The count is what catches a flip: "examined on
+    # or after" flipped reads "examined after", and the procedure has to keep
+    # stating the rule at least once.
+    skill = read_skill("SKILL.md")
+    flat = " ".join("\n".join((p, skill)).replace("**", "").lower().split())
+    flat_proc = " ".join(p.replace("**", "").lower().split())
+    record("the settled rule's boundary reads `on or after` wherever the skill "
+           "states it, which is what build_queue() implements",
+           "examined after" not in flat and flat_proc.count("on or after") >= 1,
+           flat_proc.count("on or after"))
+
+    # `dropped` by evidence (D6): the routine writes it, so no sentence may
+    # still say it never does, and nothing may still say this routine is what
+    # lets `decay` act.
+    flat_raw = " ".join("\n".join((p, skill)).split())
+    for phrase in ("hand-set", "never writes `dropped`", "earns `decay`"):
+        record(f"the close-loops skill no longer says {phrase!r}",
+               phrase not in flat_raw, phrase)
+    step2 = p[p.find("2. **Judge each evidence set"):p.find("3. **Write the verdict")]
+    obsolete = next((b for b in step2.split("\n   - ")
+                     if b.startswith("**Obsolete by evidence")), "")
+    record("step 2 carries the obsolete-by-evidence bullet, and its verdict is "
+           "`dropped`, with silence and doubt still `open`",
+           "`dropped`" in obsolete and "silence" in obsolete.lower()
+           and "`open`" in obsolete, obsolete or step2[:400])
+    step3 = p[p.find("3. **Write the verdict"):p.find("4. **Record the sweep")]
+    body_at = step3.find("**Body**")
+    body_sentence = " ".join(step3[body_at:step3.find("```", body_at)].split())
+    record("E24: step 3 appends the resolution at the end of the body, after any "
+           "`**Closure signal history:**` section",
+           body_at >= 0 and "Closure signal history" in body_sentence
+           and "end of the body" in body_sentence, body_sentence)
+    record("step 3 writes `status: dropped` too, and a dropped loop's resolution "
+           "cites the fact that killed the premise",
+           "status: dropped" in step3 and "killed the" in " ".join(step3.split()),
+           step3[:600])
+    record("step 6 logs and commits the dropped count",
+           "M closed, D dropped" in p, "")
 
     record("H6: the run rebuilds, validates, writes one log.md line and makes "
            "one commit",
@@ -1227,8 +1386,9 @@ def test_sweep_recipe_writes_what_the_script_reads(root):
     """The one executable line of the procedure, executed.
 
     A recipe that writes a shape `close-loops.py` cannot read would not fail
-    anywhere: the routine would report loops examined, `decay` would read an
-    empty record, and expiry would park with nothing in any output saying so.
+    anywhere: the routine would report loops examined, the queue would read an
+    empty record, and every examined loop would come back as never examined
+    with nothing in any output saying so.
     """
     body, pairs = sweep_recipe()
     if not body:
@@ -1236,7 +1396,10 @@ def test_sweep_recipe_writes_what_the_script_reads(root):
                False, "no `python3 - … <<'PY'` heredoc found in procedure.md")
         return
     record("procedure.md carries the closure-sweep write as a runnable block, "
-           "with its sample pairs", bool(body) and len(pairs) == 2, str(pairs))
+           "with its sample pairs, one per outcome",
+           bool(body) and len(pairs) == 3
+           and sorted(pr.rpartition("=")[2] for pr in pairs)
+           == ["done", "dropped", "open"], str(pairs))
 
     bundle = make_bundle(root, "sweep-recipe")
     recipe = bundle / "recipe.py"
@@ -1274,16 +1437,15 @@ def test_sweep_recipe_writes_what_the_script_reads(root):
            json.dumps(data, indent=2))
 
     today = datetime.date.today().isoformat()
-    record("the examination is dated today, which is what the settled rule and "
-           "decay's per-loop gate both compare against",
+    record("the examination is dated today, which is what the settled rule "
+           "compares against",
            {e["examined"] for e in data["loops"].values()} == {today},
            json.dumps(data, indent=2))
 
     # The validation the prose promises, executed. `pair.partition("=")` cannot
     # fail, so before this every one of these recorded junk under a key naming a
     # loop that does not exist — and the count printed len(argv)-1, so the step
-    # reported success. The record is the only thing standing between `decay`
-    # and a lane it may not touch, and junk in it is indistinguishable from an
+    # reported success. Junk in the record is indistinguishable from an
     # examination that happened.
     state_file = bundle / "state" / "closure-sweep.json"
     intact = state_file.read_text(encoding="utf-8")
@@ -1320,7 +1482,7 @@ def test_sweep_recipe_writes_what_the_script_reads(root):
     # `python3 -` reads stdin: it has no `__file__`, so it cannot resolve its
     # bundle the way every shipped script does. Run from anywhere else it used to
     # create a `state/` there, print a count and exit 0 while the real record
-    # stayed untouched, and `decay` then held every loop back as never examined.
+    # stayed untouched, and the queue then re-read every loop as never examined.
     elsewhere = Path(root) / "not-a-bundle"
     elsewhere.mkdir()
     stray = subprocess.run(
@@ -1353,6 +1515,24 @@ def test_sweep_recipe_writes_what_the_script_reads(root):
                                        "/tracking/loops/untouched.md"}
            and not list((bundle / "state").glob("*.tmp")),
            f"exit={rewritten.returncode}\n{json.dumps(after, indent=2)}")
+
+    # E26: `dropped` is a verdict this routine writes (an obsolete loop, closed
+    # by evidence), so the recipe records it like `done`, while an outcome
+    # outside the vocabulary, `closed`, is still refused above.
+    dropped = sweep("/tracking/loops/closed-one.md=dropped")
+    after_drop = json.loads(state_file.read_text(encoding="utf-8"))
+    record("the recipe records `=dropped` as an outcome, like `=done`",
+           dropped.returncode == 0 and "1 loop(s) recorded" in dropped.stdout
+           and after_drop["loops"]["/tracking/loops/closed-one.md"]["outcome"]
+           == "dropped",
+           f"exit={dropped.returncode}\n{dropped.stdout}\n{dropped.stderr}\n"
+           f"{json.dumps(after_drop, indent=2)}")
+    payload_drop, _ = proposal(bundle)
+    record("…and close-loops.py reads a `dropped` entry as an examination: that "
+           "loop is not queued again",
+           payload_drop is not None
+           and "/tracking/loops/closed-one.md" not in queued_paths(payload_drop),
+           json.dumps(queued_paths(payload_drop) if payload_drop else None))
 
     # Undo those last writes so the queue assertions below read the two-entry
     # record the earlier calls built.
@@ -1445,6 +1625,8 @@ def main():
                      test_named_loop_bypasses_the_queue,
                      test_max_is_refused_at_the_boundary,
                      test_owner_is_what_the_file_declares,
+                     test_history_is_not_the_criterion,
+                     test_owed_to_is_read, test_out_of_scope_is_queued,
                      test_sweep_recipe_writes_what_the_script_reads,
                      test_checkout_guard):
             try:

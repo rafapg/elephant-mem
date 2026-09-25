@@ -110,9 +110,12 @@ layout.
 The bundle belongs to one **owner**, defined in `elephant.json` as
 `owner: {name, slug}`. The owner is the frame for retrieval relevance: their
 person entity lives at `knowledge/entities/person/<owner.slug>.md` (created by
-`init`). Capture spans everything the owner sees; relevance is applied later, at
-retrieval (see the owner-lens note under Retrieval trust) and at decay — never at
-capture.
+`init`). Capture spans everything the owner sees and drops nothing for
+relevance, which is applied at retrieval (see the owner-lens note under
+Retrieval trust) and, for facts, at `maintain`'s decay. The one routing
+decision the owner frames is the loop lane: a commitment is a loop only when
+the owner owes it or is owed it (`../ingest/procedure.md`, the loop bar), and
+anyone else's commitment is kept as a fact.
 
 ## Languages (from elephant.json)
 
@@ -144,13 +147,19 @@ entity-centric (see below).
 
 An **open-loop** is a commitment/action-item ("the owner will produce the
 planning materials"). It is NOT a durable fact — it completes. Give it a `status`
-(`open|done|dropped|expired`) and a `**Closure signal:**`. `close-loops` reads
-that signal against the evidence and writes `status: done` itself; `catch-up`
-step 4 does the same for a loop a new source shows done; `decay` flips a loop
-that went quiet and survived examination to `status: expired`; `dropped` stays a
-hand-set state. Those are the only writers, and `maintain` never touches a
-loop. Any status other than `open` takes the loop off the board, out of the
-manifest and out of the entity hubs, and `build-index.py` lists it on
+(`open|done|dropped|expired`) and a `**Closure signal:**`. A loop is the
+owner's: owed by them (their entity in `owner`) or to them (in `owed_to`). The
+ingest core (`../ingest/procedure.md` step 4), which every ingest path runs,
+closes (`done`) or drops (`dropped`) a loop a new source shows delivered or
+obsolete, bumps `updated:` when a source re-raises it, and refines its closure
+signal with history; `close-loops`, optional, closes (`done`) or drops
+(`dropped`) by evidence over the backlog, and never bumps or refines a loop it
+leaves open; `decay` expires a loop silent for `decay.loop_expiry_days`
+(default 30) or naming the owner nowhere; `dropped` can also be set by hand.
+`maintain` never touches a loop, and every terminal status is final: a loop
+that left `open` is never reopened. Any status other than `open` takes the loop
+off the board, out of the manifest and out of the entity hubs, and
+`build-index.py` lists it on
 `tracking/resolved-loops.md`, newest first, capped at `index.resolved_max`
 (default 200) with the older ones spilling into a linked sibling shard. So a
 resolved loop older than that cap is on the shard, not on the page. Use

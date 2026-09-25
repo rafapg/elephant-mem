@@ -216,6 +216,29 @@ def test_templates_wellformed():
         )
 
 
+def test_open_loop_declares_owed_to():
+    """`owed_to` is the list an "owed to me" loop carries the bundle owner in,
+    and `decay-loops.py`'s scope test reads it next to `owner` and `entities`.
+    The template declares it right after `owner:`, empty, so a loop filled in
+    from it spells the field the way every reader expects."""
+    lines = (TEMPLATES / "open-loop.md").read_text(encoding="utf-8").splitlines()
+    owner_at = [i for i, ln in enumerate(lines) if ln.startswith("owner:")]
+    nxt = lines[owner_at[0] + 1] if len(owner_at) == 1 and owner_at[0] + 1 < len(lines) else ""
+    value, sep, comment = nxt[len("owed_to:"):].partition(" #")
+    record(
+        "open-loop.md declares `owed_to:` on the line after `owner:`, with an "
+        "empty list value",
+        nxt.startswith("owed_to:") and value.strip() == "[]",
+        f"line after owner: {nxt!r}",
+    )
+    record(
+        "…and its comment carries no ` #` of its own, which a naive reader "
+        "would cut at",
+        bool(sep) and " #" not in comment,
+        repr(nxt),
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. the vocabulary a template documents covers what the writers produce
 # ---------------------------------------------------------------------------
@@ -429,7 +452,7 @@ def drive_decay_loops(root):
     bundle = mount_bundle(root, "decay-loops")
     loop = bundle / "knowledge" / "tracking" / "loops" / "t.md"
     # The template's dates are a placeholder that ages with each release, and
-    # the default expiry is 45 days — pin them well past it so this check is
+    # the default expiry is 30 days — pin them well past it so this check is
     # about `status:` being read as `open`, not about the calendar.
     for key in ("opened", "created", "updated"):
         seed_field(loop, key, "2000-01-01")
@@ -448,11 +471,8 @@ def drive_decay_loops(root):
     )
 
     # --apply writes, so it runs last in this driver's bundle and nothing else
-    # reads it afterwards. --skip-sweep because this check is about the template
-    # being read, not about the closure sweep: without it the gate would hold
-    # the loop back (no `close-loops` run ever examined it) and the check would
-    # fail for a reason that has nothing to do with the templates.
-    applied = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    # reads it afterwards.
+    applied = run_script(bundle, "decay-loops.py", ["--apply"])
     text = loop.read_text(encoding="utf-8")
     record(
         "decay-loops.py --apply flips the template loop to `status: expired`",
@@ -638,6 +658,7 @@ def main():
 
     try:
         test_templates_wellformed()
+        test_open_loop_declares_owed_to()
         test_documented_vocabularies()
         test_reader_coverage()
     except Exception:  # noqa: BLE001 - report as a failed check, not a traceback

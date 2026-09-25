@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Decay stale `open` loops into `status: expired`.
+"""Decay stale or out-of-scope `open` loops into `status: expired`.
 
 Philosophy (owner-approved): loops are noise that, when it keeps recurring,
 earns the right to stay alive — otherwise it should decay automatically.
-Re-mention resets the clock elsewhere, in exactly one place: `catch-up` step 4
-bumps a loop's `updated:` field to a source's date when that source re-raises
-the loop without showing it done. (`capture` opens loops and never returns to
-one; it writes no bump.) This script only reads the signal; it never itself
-decides what counts as re-mention.
+Re-mention resets the clock through `updated:`, written by the ingest core (the
+plugin's `skills/ingest/procedure.md`, steps 2 and 4, written at step 7) on
+every ingest path, and by the review-gate snooze and claim of this script's own
+procedure. This script only reads the signal; it never itself decides what
+counts as re-mention.
 
 Candidate = `status: open` AND its last-activity date (the max of
 `updated`/`opened`/`created`, whichever are present, and the date
 `state/recall.json` last records the loop as cited by an answer) is
-`elephant.json` -> `decay.loop_expiry_days` days back or more (default 45; the
+`elephant.json` -> `decay.loop_expiry_days` days back or more (default 30; the
 comparison is `>=`, so a loop exactly that old expires — same defensive
 fallback pattern as build-index.py's `hub_max_facts`: missing file, missing
 key, or malformed JSON all fall back to the default instead of crashing).
@@ -24,13 +24,31 @@ no citation decays on its file dates exactly as it did before recall existed, so
 an absent, empty or malformed `state/recall.json` collapses this script to its
 previous behavior rather than to a crash.
 
-Default mode is DRY-RUN: prints one candidate per line (bundle-relative path +
-age in days) plus a trailing count, and changes nothing on disk. `--apply`
-flips `status: open` -> `status: expired`, stamps an `expired: YYYY-MM-DD`
-field right after the status line, and appends a `**Resolution:**` paragraph
-to the body — it never deletes a file and never touches `done` / `dropped` /
-already-`expired` loops (they're excluded by the `status: open` filter before
-any file is opened for writing).
+**Out of scope is the other kind of candidate.** A `status: open` loop whose
+`owner`, `owed_to` and `entities` all leave out the bundle owner
+(`elephant.json` -> `owner.slug`) is a commitment between other people, which
+the loop lane does not track. It is a candidate at any age, listed ahead of the
+stale ones. The test reads no date, the citation included: a recent `updated:`
+or a recent answer citing it does not keep a third-party loop in the lane.
+Links are compared by slug (last path segment, `.md` stripped, lowercased,
+quotes removed), with the same `slug()` `close-loops.py` uses, so a hand-written
+bare slug still counts as naming the owner. Expiry is the irreversible side, and
+the permissive comparison is the safe one. Only `owner.slug` is read, never
+`owner.name`, since a name is not an entity link. The rule is skipped with one
+note on stderr, rather than expiring every loop as naming nobody, in three
+cases: there is no `owner.slug`; it names no entity file under
+`knowledge/entities/` (`rename-entity.py` rewrites the loops' links and never
+`elephant.json`, so a renamed or merged owner leaves a stale slug behind); or no
+open loop names the owner at all. And a loop is only out of scope on a positive
+reading: an entity link to the owner anywhere in its frontmatter keeps it in.
+
+Default mode is DRY-RUN: prints one candidate per line (bundle-absolute path
+and its label: out of scope, or the age in days) plus a trailing count split by
+kind, and changes nothing on disk. `--apply` flips `status: open` ->
+`status: expired`, stamps an `expired: YYYY-MM-DD` field right after the status
+line, and appends a `**Resolution:**` paragraph to the body — it never deletes
+a file and never touches `done` / `dropped` / already-`expired` loops (they're
+excluded by the `status: open` filter before any file is opened for writing).
 
 **The resolution is prose in the body, the same shape `close-loops` writes**
 (see `../skills/close-loops/procedure.md` -> step 3): a `**Resolution:**`
@@ -38,29 +56,18 @@ paragraph whose first sentence stands alone, because that first sentence is all
 `tracking/resolved-loops.md` prints. Never a frontmatter field — a sentence of
 judgment carries `: ` and sometimes ` #`, which break or silently truncate an
 unquoted YAML value. Decay's says what a closure's cannot: that nothing
-happened. It is generated, so it is written in English rather than in the
-bundle's `knowledge_language`; the dates and the paths in it are the content,
-and its owner can rewrite the sentence.
+happened, or that the loop was never the owner's. It is generated, so it is
+written in English rather than in the bundle's `knowledge_language`; the dates
+and the paths in it are the content, and its owner can rewrite the sentence.
 
-**`--apply` is gated per loop on `state/closure-sweep.json`** (E15, E18). A
-candidate is expirable only if the sweep shows it was examined on or after its
-own last activity and that the examination left it `open` — the same "settled"
-test `close-loops.py` uses to drop a loop from its queue, so what decay may
-expire is exactly what left that queue. "Its own last activity" there means the
-three **file** dates, the only ones `close-loops.py` reads: the citation date
-decides candidacy and never the gate, because a loop only reaches the gate once
-its citation is already older than the window, and comparing the examination
-against a date `close-loops.py` cannot see parked such a loop in both lanes at
-once. An unexamined candidate is refused **by name**, with the `close-loops`
-command to examine it, and the run still exits 0: expiry is a verdict of
-silence, and silence a routine never looked at is not evidence of anything.
-Losing the record therefore parks decay instead of corrupting it: every loop
-reads as never examined and nothing expires until `close-loops` records
-examinations again.
+`--except <link>` (repeatable, a bundle-absolute loop path) keeps the named
+loops out of this run, in the dry run and on `--apply`: it is how the
+interactive review gate leaves open an out-of-scope loop the owner rejected
+without claiming it, which the `--apply` re-scan would otherwise list again.
 
-`--skip-sweep` bypasses that gate entirely and restores the behavior this
-script had before the gate existed. It is the deliberate way out of a lost or
-unwritable record, and the flag the suites use to pin the pre-gate rules.
+`--skip-sweep` is a deprecated no-op. This script no longer reads
+`state/closure-sweep.json`; the flag is still accepted so a schedule or a habit
+that passes it does not make argparse exit 2 and quietly stop expiry.
 
 Exit code is 0 whenever the script completed a run, whether or not it found
 candidates — non-zero only on a hard, unexpected error. After `--apply` the
@@ -104,19 +111,16 @@ if __name__ == "__main__" and BUNDLE.name == "assets" and (
     )
 KNOWLEDGE = BUNDLE / "knowledge"
 LOOPS_DIR = KNOWLEDGE / "tracking" / "loops"
-# Control state, outside the OKF bundle: `close-loops` writes it (its
-# procedure.md -> "The sweep record"), this script only ever reads it.
-SWEEP = BUNDLE / "state" / "closure-sweep.json"
 
-DEFAULT_EXPIRY_DAYS = 45
+DEFAULT_EXPIRY_DAYS = 30
 
 FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-# What may legally follow the date in an examination value: nothing, or a time
-# of day (`T09:00:00-03:00`, or the same after a space). Anything else is prose,
-# and prose around a date is not a record of an examination. See
-# examination_date().
-DATE_TAIL = re.compile(r"(?:[T ][0-9:.+\-Z]*)?")
+
+# The three link lists the scope test reads. `owed_to` is absent from every
+# loop written before the field existed, and list_field() reads a missing line
+# as the empty list, so such a loop is decided on `owner` and `entities` alone.
+SCOPE_FIELDS = ("owner", "owed_to", "entities")
 
 
 def loop_expiry_days():
@@ -246,6 +250,169 @@ def loop_status(block):
     return raw.strip().lower()
 
 
+def unquote(s):
+    """Unwrap a quoted scalar, undoing the two escapes quoting actually
+    produces: `\\"` and `\\\\` inside double quotes, `''` inside single quotes.
+    Mirrors close-loops.py's function of the same name. A link left wrapped in
+    literal quotes would name no slug, and here that reads as a loop naming
+    nobody, which the scope test expires."""
+    if not (len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'"):
+        return s
+    inner, quote = s[1:-1], s[0]
+    if quote == "'":
+        return inner.replace("''", "'")
+    out, i, n = [], 0, len(inner)
+    while i < n:
+        if inner[i] == "\\" and i + 1 < n and inner[i + 1] in '"\\':
+            out.append(inner[i + 1])
+            i += 2
+            continue
+        out.append(inner[i])
+        i += 1
+    return "".join(out)
+
+
+# A top-level `key:` line, which is where a wrapped inline list that never
+# closed has certainly ended.
+TOP_KEY = re.compile(r"^[A-Za-z_][\w-]*[ \t]*:(?:\s|$)")
+
+
+def list_field(block, key):
+    """Values of a list-valued frontmatter field: `key: [a, b]`, or the block
+    sequence spelling, or a bare scalar read as a one-item list. A missing line
+    is the empty list. Mirrors close-loops.py's function of the same name.
+
+    Every shape valid YAML allows for these lists is read, because here a
+    misread is not a lost signal: it reads the owner out of the loop, and the
+    scope test then expires it. So `owner :` (space before the colon) is the
+    same key; a block sequence may sit at column 0 (`owner:` then `- /x.md`,
+    PyYAML's own `safe_dump` style) and may carry comment lines between its
+    items; and an inline list may wrap across lines, read until its `]`.
+
+    The comma split is naive, matching build-index.py's fallback parser: every
+    value this is used for is a bundle-absolute link or a slug, neither of which
+    can carry a comma.
+    """
+    lines = block.splitlines()
+    head = re.compile(rf"^{re.escape(key)}[ \t]*:(.*)$")
+    for i, ln in enumerate(lines):
+        m = head.match(ln)
+        if not m:
+            continue
+        val = strip_comment(m.group(1))
+        if val.startswith("["):
+            j = i + 1
+            while _closing_bracket(val) < 0 and j < len(lines) and not TOP_KEY.match(lines[j]):
+                val = val + " " + strip_comment(lines[j])
+                j += 1
+            end = _closing_bracket(val)
+            inner = (val[1:end] if end > 0 else val[1:]).strip()
+            return [unquote(x.strip()) for x in inner.split(",") if x.strip()]
+        if val:
+            return [unquote(val)]
+        items = []
+        for nxt in lines[i + 1:]:
+            stripped = nxt.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith("- "):
+                items.append(unquote(strip_comment(stripped[2:])))
+                continue
+            break
+        return items
+    return []
+
+
+def slug(link):
+    """The entity slug a bundle-absolute link names. Compared by slug rather
+    than by path so `/entities/person/x.md` and a hand-written `x` are the same
+    entity — the kind directory is a filing decision, not identity. Mirrors
+    close-loops.py's function of the same name."""
+    s = str(link or "").strip().replace("\\", "/").strip("\"'")
+    if not s:
+        return None
+    s = s.rsplit("/", 1)[-1]
+    if s.endswith(".md"):
+        s = s[:-3]
+    return s.strip().lower() or None
+
+
+def slugs(links):
+    out = []
+    for link in links:
+        s = slug(link)
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def owner_slug():
+    """The bundle owner's entity slug, from `elephant.json` -> `owner.slug`
+    through slug(), or None. Never raises.
+
+    Only `owner.slug` is read. close-loops.py's namesake falls back to
+    `owner.name`, which costs it at worst one ranking filter; here the value
+    decides an irreversible expiry, and a name is not an entity link. None (a
+    missing file, malformed JSON, a non-dict `owner`, an absent, empty or
+    non-string `slug`) switches the scope rule off for the run instead of
+    reading every loop as naming nobody.
+    """
+    try:
+        with open(BUNDLE / "elephant.json", encoding="utf-8") as fh:
+            data = json.load(fh)
+        owner = data.get("owner") if isinstance(data, dict) else None
+        if isinstance(owner, dict):
+            value = owner.get("slug")
+            if isinstance(value, str):
+                return slug(value)
+    except Exception:  # noqa: BLE001, a missing config only skips one rule
+        pass
+    return None
+
+
+def owner_entity_exists(owner):
+    """True iff some `knowledge/entities/<kind>/<owner>.md` exists, compared
+    case-insensitively on the file's stem.
+
+    `owner.slug` present is not `owner.slug` right. `rename-entity.py` rewrites
+    every link to a renamed or merged entity across `knowledge/` and never
+    touches `elephant.json`, so after the owner's own entity is renamed every
+    loop names the new slug while the config still names the old one. Read as
+    is, that config makes every open loop out of scope and the next unattended
+    run expires the whole lane. A slug naming no entity is treated as no slug.
+    """
+    root = KNOWLEDGE / "entities"
+    if not root.is_dir():
+        return False
+    return any(p.stem.lower() == owner for p in root.rglob("*.md"))
+
+
+def owner_link_pattern(owner):
+    """An entity link to the owner, `.../entities/<kind>/<owner>[.md]`, as it
+    may appear anywhere in raw frontmatter text."""
+    return re.compile(
+        rf"entities/[^/\s\"'\[\],]+/{re.escape(owner)}(?:\.md)?(?=[\s\]\"',#]|$)",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+
+def in_scope(block, owner):
+    """True iff the owner's slug is among the slugs of any of `owner`,
+    `owed_to`, `entities`, or an entity link to the owner appears anywhere in
+    the frontmatter. `owner` must not be None: the caller skips the scope rule
+    entirely when there is no owner to test for.
+
+    The second test is a floor under the parser. Out of scope is only ever
+    declared on a positive reading that the owner is absent, since the expiry
+    it leads to is final: a spelling list_field() does not know (a YAML tag, an
+    anchor, a shape nobody has written yet) keeps the loop in the lane, where
+    the 30-day clock still reaches it, instead of expiring it the day it was
+    opened."""
+    if any(owner in slugs(list_field(block, key)) for key in SCOPE_FIELDS):
+        return True
+    return bool(owner_link_pattern(owner).search(block))
+
+
 def recall_lookup():
     """A `bundle-absolute path -> ISO date last cited` callable over
     `state/recall.json`, or one that answers None for every path.
@@ -280,153 +447,6 @@ def recall_lookup():
         )
         return lambda link: None
     return lambda link: recall.last_cited(data, link)
-
-
-def load_sweep():
-    """`state/closure-sweep.json`, or the empty record. Never raises.
-
-    Read here rather than imported from `close-loops.py`: this is the file
-    standing between decay and a lane it may not touch, so the gate must behave
-    the same in a bundle whose `update` brought the new decay script and not yet
-    its sibling. The tolerance is deliberately identical to `close-loops.py`'s
-    reader of the same file, including reading a bare ISO string in place of the
-    entry dict, because a hand-repaired record is a likely shape and refusing it
-    would park expiry over a formatting opinion. The tolerance is over the
-    *shape*, not over the *values*: `gate()` still requires a readable, non-future
-    examination date and an explicit `outcome: open`, so a bare ISO string parks
-    that loop until an examination records an outcome for it.
-
-    Shape (written by the `close-loops` routine, never by a script):
-
-        {"schema": 1, "generated": "<iso>",
-         "loops": {"/tracking/loops/x.md": {"examined": "2026-09-01",
-                                            "outcome": "open"}}}
-
-    Absent or malformed reads as empty, which is E18: every loop then reads as
-    never examined and `--apply` expires nothing until `close-loops` records
-    examinations again, or until `--skip-sweep`.
-    """
-    if not SWEEP.exists():
-        return {"loops": {}}
-    try:
-        data = json.loads(SWEEP.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("top level is not an object")
-    except Exception as exc:  # noqa: BLE001
-        print(
-            f"warning: state/closure-sweep.json is unreadable ({exc}) — treating "
-            "it as empty, so every loop reads as never examined and nothing "
-            "expires this run.",
-            file=sys.stderr,
-        )
-        return {"loops": {}}
-    loops = data.get("loops")
-    return {"loops": loops if isinstance(loops, dict) else {}}
-
-
-def examination_date(value):
-    """The ISO date `value` records, or None if it is not a readable past date.
-
-    `DATE.search` alone finds ten digits in the right shape and nothing more, so
-    `2026-99-99`, `2099-01-01` and a date sitting in prose all reached the gate;
-    only *forward* junk cleared it, and `resolution_paragraph()` then wrote that
-    junk verbatim into the loop file, which `build-index.py` prints onto
-    `tracking/resolved-loops.md`. A durable artifact, so the value is checked
-    here rather than trusted.
-
-    Deliberately validating the **matched group**, not the whole value:
-    `datetime.date.fromisoformat()` over the whole thing rejects the
-    `2026-09-01T09:00:00-03:00` shape `load_sweep()` tolerates on purpose, and
-    would still accept `2099-01-01`. What the group alone cannot say is *where*
-    it was found, and that half is the anchor's: a **past** date inside prose
-    parsed and expired the loop irreversibly, so `"could not decide on
-    2026-09-02"`, a human writing a refusal into the record, was read as an
-    examination that cleared the loop, and the resolution paragraph then
-    asserted onto `tracking/resolved-loops.md` that "the `close-loops`
-    examination on 2026-09-02 did not close it", which never happened. Matching
-    from the start and allowing only a time of day after it means the value has
-    to *be* a date to count as one, so prose around it parks the loop instead,
-    and `"2026-09-02 then 2025-07-30"` no longer lets the first of two dates win
-    silently.
-
-    This refuses the value, not the record: every shape tolerance survives and
-    every unreadable value reads as "never examined", which parks that one loop
-    rather than expiring it.
-    """
-    value = value.strip() if isinstance(value, str) else None
-    m = DATE.match(value) if value else None
-    if not m or not DATE_TAIL.fullmatch(value[m.end():]):
-        return None  # not a date, or a date buried in something else
-    try:
-        parsed = datetime.date.fromisoformat(m.group(0))
-    except ValueError:
-        return None  # ten digits in the right shape, not a date
-    if parsed > datetime.date.today():
-        return None  # an examination cannot be in the future
-    return m.group(0)
-
-
-def sweep_verdict(sweep, link):
-    """`(examined ISO date, outcome)` for one loop, either half None."""
-    entry = (sweep.get("loops") or {}).get(link)
-    outcome = None
-    if isinstance(entry, str):
-        value = entry
-    elif isinstance(entry, dict):
-        value = entry.get("examined") or entry.get("date") or entry.get("last")
-        raw = entry.get("outcome")
-        outcome = raw.strip().lower() if isinstance(raw, str) else None
-    else:
-        return None, None
-    return examination_date(value), outcome
-
-
-def gate(sweep, link, file_activity):
-    """`(expirable, reason)` for one candidate under the sweep gate.
-
-    Expirable iff `close-loops` examined the loop on or after its own last
-    activity and left it `open`. On-or-after, not strictly after, so this is
-    exactly `close-loops.py`'s "settled" test: what leaves that queue is what
-    decay may consider, and a loop examined the same day it last moved does not
-    have to wait a full extra cycle.
-
-    `file_activity` is the max of the loop's `updated`/`opened`/`created` — the
-    three dates and only the three dates `close-loops.py:newest_date()` reads.
-    Handing the citation-inclusive date here instead read as extra caution and
-    was a deadlock: a loop stale by its file dates, cited inside the recall
-    record but longer ago than the window, and examined after its file activity
-    is a candidate here and is settled over there, so neither lane would ever
-    touch it again and the `close-loops` command this gate prints was inert for
-    exactly those loops. The citation's protective role is fully spent in
-    `find_candidates()`; past it, it can only ever park.
-
-    The outcome half is a whitelist. Anything but a recorded `open` holds the
-    loop back, so an off-vocabulary verdict (`closed`, `resolved`, `done=extra`)
-    and an entry carrying no outcome at all both park the loop instead of
-    expiring it on a value this script did not understand.
-    """
-    examined, outcome = sweep_verdict(sweep, link)
-    if examined is None:
-        return False, (
-            "never examined — state/closure-sweep.json has no readable "
-            "examination date for it"
-        )
-    if outcome != "open":
-        if outcome is None:
-            return False, (
-                f"examined {examined} with no outcome recorded — the gate expires "
-                "only a loop an examination explicitly left `open`"
-            )
-        return False, (
-            f"close-loops recorded it as `{outcome}` on {examined}, not `open` — "
-            "only a loop an examination left open is decay's to expire"
-        )
-    if file_activity is not None and examined < file_activity.isoformat():
-        return False, (
-            f"examined {examined}, before its last activity {file_activity} — it "
-            "moved after the examination and has not been re-read since"
-        )
-    return True, f"examined {examined}, on or after its last activity {file_activity}"
 
 
 def last_activity(block, cited=None):
@@ -507,194 +527,230 @@ def expire_block(block, expired_date):
     return "\n".join(lines)
 
 
-def resolution_paragraph(age_days, activity, examined, expiry_days, today,
-                          skipped=False):
-    """The `**Resolution:**` paragraph decay appends when it expires a loop.
+def resolution_paragraph(kind, age_days, activity, expiry_days, today, owner=None):
+    """The `**Resolution:**` paragraph decay appends when it expires a loop,
+    in one of two shapes: `kind` is `"stale"` or `"out-of-scope"`.
 
-    Same shape as the one `close-loops` writes by hand (E17): a body paragraph,
-    two to four sentences, whose **first sentence stands alone** — that
-    sentence, and nothing else from here, is what `tracking/resolved-loops.md`
-    prints next to the date and the outcome. So it names the silence in full
-    rather than opening with "this one went quiet".
+    Same shape as the one `close-loops` writes by hand: a body paragraph, two
+    to four sentences, whose **first sentence stands alone**. That sentence,
+    and nothing else from here, is what `tracking/resolved-loops.md` prints
+    next to the date and the outcome, so it names the silence or the scope
+    verdict in full rather than opening with "this one went quiet".
 
     **Every claim here is window-relative, because decay checks nothing wider.**
-    The sentence used to assert three absolutes it had no standing for: "no
+    The stale sentence used to assert absolutes it had no standing for: "no
     answer cited it" is false whenever recall holds a citation older than the
-    window, "no later source re-raised it" likewise whenever `catch-up` bumped
-    `updated:` longer ago than the window, and "found no evidence it was
-    delivered" was written even where `close-loops` did find evidence and simply
-    could not decide — the sweep records `outcome: open` for "no candidates" and
-    for "undecided" alike, so "did not close it" is the one phrasing accurate for
-    both. What decay can actually stand behind is that nothing has touched the
-    loop since `activity`, which is exactly what it now says.
+    window, and "no later source re-raised it" likewise whenever a source
+    bumped `updated:` longer ago than the window. What decay can actually stand
+    behind is that nothing has touched the loop since `activity`, which is
+    exactly what the stale shape says, and it says the expiry is no verdict on
+    the commitment.
 
-    `examined` is the sweep's date whenever the record holds one, `--skip-sweep`
-    or not: the flag decides whether the gate is *consulted*, never whether an
-    examination *happened*, and blanking it here wrote "no `close-loops`
-    examination is on record for it" onto loops that had one. `skipped` says
-    which of the two cleared the loop, so a `--skip-sweep` run never credits an
-    examination it did not consult.
+    The out-of-scope shape names no age and no activity date, because the scope
+    test reads no date (a loop with no parseable date at all is still such a
+    candidate). What it names is the owner link the loop left out, `owner`
+    being the slug read from `elephant.json`.
     """
-    if examined:
-        opening = (
-            f"**Resolution:** Expired on {today} after {age_days} days of "
-            f"silence: nothing re-raised or cited it after {activity}, and the "
-            f"`close-loops` examination on {examined} did not close it."
+    if kind == "out-of-scope":
+        return (
+            f"**Resolution:** Expired on {today} as out of scope: a third-party "
+            f"commitment, with the bundle owner (`/entities/person/{owner}.md`) "
+            "in none of its owner, owed_to or entities. The loop lane tracks "
+            "only what the owner owes or is owed; a commitment between other "
+            "people belongs in the fact lane, where briefing and query still "
+            "reach it. Expiry here is a scope verdict, not a verdict on the "
+            "commitment."
         )
-    else:
-        opening = (
-            f"**Resolution:** Expired on {today} after {age_days} days of "
-            f"silence: nothing re-raised or cited it after {activity}, and no "
-            "`close-loops` examination is on record for it."
-        )
-    window = (
-        f"Its last activity was {activity}, at or past the {expiry_days}-day "
-        "window `decay.loop_expiry_days` sets in `elephant.json`"
+    return (
+        f"**Resolution:** Expired on {today} after {age_days} days of silence: "
+        f"nothing re-raised or cited it after {activity}. Its last activity was "
+        f"{activity}, at or past the {expiry_days}-day window "
+        "`decay.loop_expiry_days` sets in `elephant.json`. Expiry states "
+        "silence, not a verdict on the commitment: closure by evidence would "
+        "have been written here by an ingest or by `close-loops` instead."
     )
-    if not skipped:
-        middle = (
-            f"{window}, and the examination that cleared it for expiry is "
-            "recorded in state/closure-sweep.json."
-        )
-    elif examined:
-        middle = (
-            f"{window}; this run passed `--skip-sweep`, so it was the flag and "
-            "not the examination recorded in state/closure-sweep.json that "
-            "cleared it."
-        )
-    else:
-        middle = (
-            f"{window}; this run passed `--skip-sweep`, so the sweep gate did "
-            "not stand between the loop and expiry."
-        )
-    closing = (
-        "Expiry states silence, not a verdict on the commitment: closure by "
-        "evidence would have been written here by `close-loops` instead."
-    )
-    return f"{opening} {middle} {closing}"
 
 
 def append_resolution(text, paragraph):
     """`text` with `paragraph` as its last body paragraph, one blank line after
     what was there and a single trailing newline.
 
-    End of body is where the template puts `**Closure signal:**`, so appending
-    here lands the resolution after it — the placement `close-loops`'s procedure
-    specifies for the paragraph it writes by hand.
+    End of body is where the template puts `**Closure signal:**` (and where a
+    refined loop keeps its `**Closure signal history:**` right after it), so
+    appending here lands the resolution after both, the placement
+    `close-loops`'s procedure specifies for the paragraph it writes by hand.
     """
     return text.rstrip("\n") + "\n\n" + paragraph + "\n"
 
 
-def find_candidates(expiry_days):
-    """Every `status: open` loop whose last activity is `expiry_days` days back
-    or more, newest-stale last.
+def find_candidates(expiry_days, owner):
+    """Every `status: open` loop decay may expire, each labelled with its
+    `kind`: `"out-of-scope"` or `"stale"`.
 
-    `activity > cutoff` skips, so a loop whose last activity is *exactly*
-    `expiry_days` days old is a candidate: the boundary is `>=`, which every
-    message in this script now says out loud rather than printing `> N`.
+    Out of scope is tested first, and only when `owner` is not None: the
+    owner's slug in none of `owner`, `owed_to`, `entities`. It reads no date
+    and no citation, so such a loop is a candidate at any age, and a loop that
+    is both out of scope and stale is listed once, as out of scope.
 
-    Each candidate carries **both** activity dates. `activity` is the
-    citation-inclusive one — it decided candidacy here and it is what the age,
-    the report lines and the resolution are measured from. `file_activity` is
-    the max of the three file dates alone, and it exists for `gate()`, which
-    must compare against exactly what `close-loops.py` compares against.
+    The stale test is unchanged from before the scope rule: `activity > cutoff`
+    skips, so a loop whose last activity is *exactly* `expiry_days` days old is
+    a candidate (the boundary is `>=`, which every message in this script says
+    out loud), and a loop with no parseable date at all is not one. `activity`
+    is citation-inclusive, and the age, the report lines and the resolution are
+    all measured from it.
+
+    Sorted out of scope first, by path, then stale oldest first, so the dry run
+    and the review batches group the two kinds.
+
+    **When no open loop names the owner at all, the rule is skipped** for the
+    run, with one note on stderr. A lane where every open loop is someone
+    else's says far more often that `owner.slug` names the wrong entity (a
+    duplicate the loops link instead, a typo that happens to name another
+    file) than that the owner has no commitment left, and expiring all of it
+    on that reading cannot be undone. Skipped, those loops still decay on the
+    stale test.
     """
     today = datetime.date.today()
     cutoff = today - datetime.timedelta(days=expiry_days)
     cited_on = recall_lookup()
-    candidates = []
+    opened = []
     for path in loop_files():
         text = path.read_text(encoding="utf-8")
         m = FM.match(text)
         if not m:
             continue
-        block = m.group(1)
-        if loop_status(block) != "open":
+        if loop_status(m.group(1)) != "open":
             continue
-        file_activity = last_activity(block)
+        opened.append((path, text, m))
+    if owner is not None and opened and not any(
+            in_scope(m.group(1), owner) for _p, _t, m in opened):
+        print(f"note: no open loop names the owner (/entities/person/{owner}.md) in "
+              f"owner, owed_to or entities, so the out-of-scope rule is skipped this "
+              f"run rather than expiring all {len(opened)}; check elephant.json -> "
+              f"owner.slug. Only loops stale for {expiry_days}+ days are candidates.",
+              file=sys.stderr)
+        owner = None
+    out_of_scope, stale = [], []
+    for path, text, m in opened:
+        block = m.group(1)
+        if owner is not None and not in_scope(block, owner):
+            out_of_scope.append({"path": path, "text": text, "match": m,
+                                 "kind": "out-of-scope", "age": None,
+                                 "activity": None})
+            continue
         activity = last_activity(block, cited_on(bundle_link(path)))
         if activity is None or activity > cutoff:
             continue
-        candidates.append(
-            (path, text, m, (today - activity).days, activity, file_activity)
-        )
-    candidates.sort(key=lambda c: -c[3])
-    return candidates
+        stale.append({"path": path, "text": text, "match": m, "kind": "stale",
+                      "age": (today - activity).days, "activity": activity})
+    out_of_scope.sort(key=lambda c: bundle_link(c["path"]))
+    stale.sort(key=lambda c: -c["age"])
+    return out_of_scope + stale
+
+
+def normalize_link(link):
+    """A `--except` value as the bundle-absolute loop path bundle_link()
+    prints. Tolerant of a missing leading slash, a `knowledge/` prefix and
+    backslashes: the value only ever keeps a loop open, so reading it
+    generously is the safe direction."""
+    s = str(link).strip().replace("\\", "/")
+    if s.startswith("/knowledge/"):
+        s = s[len("/knowledge"):]
+    elif s.startswith("knowledge/"):
+        s = s[len("knowledge"):]
+    if not s.startswith("/"):
+        s = "/" + s
+    return s
+
+
+def label(candidate):
+    if candidate["kind"] == "out-of-scope":
+        return "out of scope: the owner is in none of owner, owed_to, entities"
+    return f"{candidate['age']}d stale"
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--apply", action="store_true",
                      help="expire the candidates found (default: dry-run, changes nothing)")
+    ap.add_argument("--except", dest="except_links", action="append", default=[],
+                     metavar="LINK",
+                     help="bundle-absolute path of a loop to leave out of this run "
+                          "(repeatable), in the dry run and on --apply")
     ap.add_argument("--skip-sweep", action="store_true",
-                     help="bypass the state/closure-sweep.json gate: expire every "
-                          "candidate whether or not close-loops examined it")
+                     help="deprecated, no effect: decay no longer reads "
+                          "state/closure-sweep.json")
     args = ap.parse_args()
 
-    expiry_days = loop_expiry_days()
-    candidates = find_candidates(expiry_days)
-    # The record is loaded whether or not the gate is consulted: `--skip-sweep`
-    # decides whether an examination may hold a loop back, never whether one
-    # happened, and the resolution paragraph reports the date either way.
-    sweep_record = load_sweep()
-    sweep = None if args.skip_sweep else sweep_record
+    if args.skip_sweep:
+        print("note: --skip-sweep is deprecated and does nothing: decay no longer "
+              "reads state/closure-sweep.json.", file=sys.stderr)
 
-    def verdict(path, file_activity):
-        """(expirable, reason) — always expirable when the gate is off."""
-        if sweep is None:
-            return True, "--skip-sweep: the sweep gate was not consulted"
-        return gate(sweep, bundle_link(path), file_activity)
+    expiry_days = loop_expiry_days()
+    owner = owner_slug()
+    if owner is None:
+        print(f"note: elephant.json has no owner.slug, so the out-of-scope rule is "
+              f"skipped this run; only loops stale for {expiry_days}+ days are "
+              f"candidates.", file=sys.stderr)
+    elif not owner_entity_exists(owner):
+        print(f"note: elephant.json -> owner.slug `{owner}` names no entity file "
+              f"(knowledge/entities/*/{owner}.md), so the out-of-scope rule is "
+              f"skipped this run; was the owner's entity renamed or merged? Fix "
+              f"owner.slug to match. Only loops stale for {expiry_days}+ days are "
+              f"candidates.", file=sys.stderr)
+        owner = None
+
+    candidates = find_candidates(expiry_days, owner)
+
+    # --except: drop the named loops from this run before anything is printed
+    # or written, so they are counted in neither split.
+    excepted = []
+    for raw in args.except_links:
+        link = normalize_link(raw)
+        if link not in excepted:
+            excepted.append(link)
+    if excepted:
+        found = {bundle_link(c["path"]) for c in candidates}
+        for link in excepted:
+            if link not in found:
+                print(f"note: --except {link} matches no candidate this run; "
+                      "ignored.", file=sys.stderr)
+        candidates = [c for c in candidates if bundle_link(c["path"]) not in excepted]
 
     if not args.apply:
-        n_cleared = 0
-        for path, _text, _m, age_days, _activity, file_activity in candidates:
-            ok, reason = verdict(path, file_activity)
-            n_cleared += ok
-            note = "" if sweep is None else f" — {'cleared' if ok else 'held back'}: {reason}"
-            print(f"{bundle_link(path)}  ({age_days}d stale){note}")
-        print(f"\n{len(candidates)} candidate(s) for decay "
-              f"(status: open, stale >= {expiry_days}d — dry-run, pass --apply to expire)")
-        if sweep is not None and candidates:
-            print(f"Of those, {n_cleared} cleared by state/closure-sweep.json and "
-                  f"{len(candidates) - n_cleared} held back until close-loops has "
-                  f"examined them: python3 scripts/close-loops.py")
+        for c in candidates:
+            print(f"{bundle_link(c['path'])}  ({label(c)})")
+        n_scope = sum(1 for c in candidates if c["kind"] == "out-of-scope")
+        print(f"\n{len(candidates)} candidate(s) for decay ({n_scope} out of scope, "
+              f"{len(candidates) - n_scope} stale >= {expiry_days}d, dry-run, "
+              f"pass --apply to expire)")
         return 0
 
-    today = datetime.date.today()
-    today_str = today.isoformat()
-    n_expired, held = 0, []
-    for path, text, m, age_days, activity, file_activity in candidates:
-        ok, reason = verdict(path, file_activity)
-        if not ok:
-            held.append((bundle_link(path), age_days, reason))
-            print(f"held back: {bundle_link(path)}  ({age_days}d stale) — {reason}")
-            continue
+    today_str = datetime.date.today().isoformat()
+    n_scope = n_stale = 0
+    for c in candidates:
+        path, text, m = c["path"], c["text"], c["match"]
         new_block = expire_block(m.group(1), today_str)
         if new_block is None:
             print(f"warning: {bundle_link(path)} — could not locate `status: open` line, skipped",
                   file=sys.stderr)
             continue
-        examined = sweep_verdict(sweep_record, bundle_link(path))[0]
         new_text = text[:m.start(1)] + new_block + text[m.end(1):]
         new_text = append_resolution(
             new_text,
-            resolution_paragraph(age_days, activity, examined, expiry_days,
-                                  today_str, skipped=sweep is None),
+            resolution_paragraph(c["kind"], c["age"], c["activity"], expiry_days,
+                                 today_str, owner=owner),
         )
         path.write_text(new_text, encoding="utf-8")
-        n_expired += 1
-        print(f"expired: {bundle_link(path)}  ({age_days}d stale)")
+        if c["kind"] == "out-of-scope":
+            n_scope += 1
+            print(f"expired: {bundle_link(path)}  (out of scope)")
+        else:
+            n_stale += 1
+            print(f"expired: {bundle_link(path)}  ({c['age']}d stale)")
 
-    print(f"\n{n_expired} loop(s) expired (status: open -> expired, stale >= {expiry_days}d). "
-          f"Run build-index.py next.")
-    if held:
-        print(f"{len(held)} candidate(s) held back: state/closure-sweep.json does not show "
-              f"them examined on or after their own last activity and left open, so "
-              f"their silence is a lane nothing has read. Run the close-loops "
-              f"routine — python3 scripts/close-loops.py — and they expire on a "
-              f"later run. --skip-sweep expires them without the gate.")
-        if not n_expired:
-            print("Nothing was written this run: no rebuild and no commit are needed.")
+    print(f"\n{n_scope + n_stale} loop(s) expired ({n_scope} out of scope, "
+          f"{n_stale} stale >= {expiry_days}d). Run build-index.py next.")
     return 0
 
 

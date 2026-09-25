@@ -27,13 +27,14 @@ through the entity pages that link them. So this script regenerates:
                                       active fact / open loop, carrying only the
                                       fields needed to DECIDE what to read in
                                       full (path, type, desc, entities, tags,
-                                      occurred, confidence, status). It is NOT
-                                      cheap to load: it grows with every fact and
-                                      is already megabytes on a mature bundle, so
-                                      a consumer hands it to a subagent and
-                                      pre-filters with `rg` rather than reading
-                                      it whole — see the delegation rule in
-                                      skills/_shared/whole-field-scan.md.
+                                      occurred, confidence, status and, on
+                                      open-loop rows, owner and owed_to). It is
+                                      NOT cheap to load: it grows with every
+                                      fact and is already megabytes on a mature
+                                      bundle, so a consumer hands it to a
+                                      subagent and pre-filters with `rg` rather
+                                      than reading it whole — see the delegation
+                                      rule in skills/_shared/whole-field-scan.md.
   6. knowledge/entities/roster.tsv  — the RESOLUTION surface: one self-contained
                                       tab-separated row per active entity (slug,
                                       kind, title, aliases), so an extraction run
@@ -372,9 +373,10 @@ def resolution_sentence(body):
 
     The resolution is prose in the body, never a frontmatter field — a sentence
     of judgment carries `: ` and sometimes ` #`, which the loop template warns
-    breaks or silently truncates an unquoted value. Both writers put the
-    sentence that stands alone first (`close-loops` by hand, decay-loops.py's
-    resolution_paragraph()) precisely because this is where it lands.
+    breaks or silently truncates an unquoted value. Every writer puts the
+    sentence that stands alone first (the ingest core and `close-loops` by
+    hand, decay-loops.py's resolution_paragraph()) precisely because this is
+    where it lands.
 
     Split on `. ` only, so `elephant.json` and `decay.loop_expiry_days` are not
     sentence ends. A paragraph wrapped across lines is collapsed first.
@@ -771,19 +773,32 @@ def main():
         if path.endswith(ARCHIVE_SUFFIX) and path not in archives_written:
             os.remove(path)
 
-    # 5. manifest.jsonl — ultra-slim triage surface (active facts + open loops)
+    # 5. manifest.jsonl — ultra-slim triage surface (active facts + open loops).
+    # An open-loop row also carries `owner` and `owed_to`: the ingest core's
+    # re-mention lookup matches a candidate against open loops on this file,
+    # and an "owed to me" loop names the counterpart only in `owner` and the
+    # bundle owner only in `owed_to`, possibly with nobody in `entities`. On
+    # `entities` alone that loop is invisible to the lookup, so every re-mention
+    # would file a duplicate instead of bumping or closing it. Fact rows gain
+    # neither key.
     manifest = []
     for c in sorted(active(facts) + open_loops, key=occ, reverse=True):
-        manifest.append(json.dumps({
+        row = {
             "path": c["link"],
             "type": c["type"],
             "desc": c["description"] or c["title"],
             "entities": as_list(c["fm"].get("entities")),
+        }
+        if c["type"] == "open-loop":
+            row["owner"] = as_list(c["fm"].get("owner"))
+            row["owed_to"] = as_list(c["fm"].get("owed_to"))
+        row.update({
             "tags": as_list(c["fm"].get("tags")),
             "occurred": occ(c),
             "confidence": str(c["fm"].get("confidence", "")),
             "status": c["status"],
-        }, ensure_ascii=False, separators=(",", ":")))
+        })
+        manifest.append(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
     write("manifest.jsonl", manifest)
 
     print(f"Rebuilt: {len(active(entities))} entities, {len(active(facts))} facts, "

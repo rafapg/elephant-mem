@@ -8,9 +8,9 @@ section no code has ever opened. This script opens it, and hands the daily
 `close-loops` routine a bounded, ranked proposal instead of a 1794-file lane.
 
 It reads and prints. It never writes a knowledge file, never writes
-`state/closure-sweep.json`, and never decides that a loop is done — the routine
-judges the evidence set as a whole and writes the verdict, because "did this get
-delivered" is a judgment and not a string match.
+`state/closure-sweep.json`, and never decides that a loop is done or dropped:
+the routine judges the evidence set as a whole and writes the verdict, because
+"did this get delivered" is a judgment and not a string match.
 
 **The queue is bounded and two-banded** (H2, E9, E10). Each run takes, in order:
 
@@ -23,16 +23,14 @@ delivered" is a judgment and not a string match.
            cannot.
 
 capped at `close_loops_max` (default 25), with a fifth of every run reserved for
-band 2. While band 1 stays under the four fifths it may take, a run of 25
-examines the stale backlog in about a month and the whole open lane in about two
-and a half. Once band 1 saturates, the cold end advances at the reserved fifth
-and no faster: 5 loops a run, so the owner's 735 stale loops take about 147 runs,
-roughly five months. Either figure only holds if a run reaches loops the last one
-did not, so "everything else" is read here as everything **not settled**: a loop
+band 2. `decay` expires a loop after `decay.loop_expiry_days` (default 30) of
+silence without waiting for this queue, so the front of band 2 is loops nearing
+that window: the sweep's job is to end loops by evidence before silence does,
+not to work through a months-deep backlog. That only holds if a run reaches
+loops the last one did not, so "everything else" is read here as everything **not settled**: a loop
 is settled once it was examined on or after its own last activity and has gained
-nothing since. That is deliberately the same shape as the gate `decay-loops.py --apply`
-applies before expiring a loop, one band earlier: what leaves this queue is
-exactly what decay is then allowed to consider.
+nothing since. A settled loop waits for new material to reach its entities
+instead of being re-read every run.
 
 **The evidence is ranked and capped** (H3). Candidates are facts that share an
 entity with the loop — the bundle's retrieval is entity-centric, so that is
@@ -114,9 +112,8 @@ EVIDENCE_CAP = 10
 FM = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # What may legally follow the date in an examination value: nothing, or a time
-# of day. The twin of decay-loops.py's DATE_TAIL, and the two have to agree:
-# a date sitting in prose is not a record of an examination on either side.
-# See examined_on().
+# of day. A date sitting in prose is not a record of an examination. See
+# examined_on().
 DATE_TAIL = re.compile(r"(?:[T ][0-9:.+\-Z]*)?")
 # The closure criterion as the template writes it: a bolded lead-in, then a
 # paragraph. It ends at a blank line, at the next bolded lead-in, or at EOF.
@@ -162,6 +159,14 @@ DATE_TAIL = re.compile(r"(?:[T ][0-9:.+\-Z]*)?")
 # merged` falls back as well, by the same alternative that refuses
 # `**Background**`. Case-insensitive because 2025 loop bodies were written by
 # hand and nothing has ever checked the capital C.
+#
+# A refined loop carries a `**Closure signal history:**` section directly after
+# the current signal, holding the versions it replaced. No regex change reads
+# it right: that section starts with a bolded lead-in, so the match ends there,
+# at the blank line before it or at its own lead-in on the very next line. And
+# history entries never repeat the `**Closure signal:**` lead-in, so `search()`
+# finds the current signal first and the replaced ones never become the
+# criterion.
 CLOSURE_SIGNAL = re.compile(
     r"\*\*Closure signal:\*\*\s*"
     r"(?!\*\*[^*\n]+:\*\*|\*\*[^*:\n]+\*\*|#{1,6}[ \t]|[-*+][ \t]|```|~~~)"
@@ -335,20 +340,38 @@ def field(block, key):
     return unquote(strip_comment(m.group(1))) or None
 
 
+# A top-level `key:` line, which is where a wrapped inline list that never
+# closed has certainly ended.
+TOP_KEY = re.compile(r"^[A-Za-z_][\w-]*[ \t]*:(?:\s|$)")
+
+
 def list_field(block, key):
     """Values of a list-valued frontmatter field: `key: [a, b]`, or the block
     sequence spelling, or a bare scalar read as a one-item list.
+
+    Every shape valid YAML allows for these lists is read: `owner :` (space
+    before the colon) is the same key; a block sequence may sit at column 0
+    (PyYAML's own `safe_dump` style) and carry comment lines between its items;
+    an inline list may wrap across lines, read until its `]`. decay-loops.py
+    carries an identical copy, where a misread reads the owner out of a loop
+    and the scope test expires it, so the two must not drift.
 
     The comma split is naive, matching build-index.py's fallback parser: every
     value this is used for is a bundle-absolute link or a slug, neither of which
     can carry a comma.
     """
     lines = block.splitlines()
+    head = re.compile(rf"^{re.escape(key)}[ \t]*:(.*)$")
     for i, ln in enumerate(lines):
-        if not ln.startswith(key + ":"):
+        m = head.match(ln)
+        if not m:
             continue
-        val = strip_comment(ln[len(key) + 1:])
+        val = strip_comment(m.group(1))
         if val.startswith("["):
+            j = i + 1
+            while _closing_bracket(val) < 0 and j < len(lines) and not TOP_KEY.match(lines[j]):
+                val = val + " " + strip_comment(lines[j])
+                j += 1
             end = _closing_bracket(val)
             inner = (val[1:end] if end > 0 else val[1:]).strip()
             return [unquote(x.strip()) for x in inner.split(",") if x.strip()]
@@ -357,9 +380,9 @@ def list_field(block, key):
         items = []
         for nxt in lines[i + 1:]:
             stripped = nxt.strip()
-            if not stripped:
+            if not stripped or stripped.startswith("#"):
                 continue
-            if nxt[:1] in " \t" and stripped.startswith("- "):
+            if stripped.startswith("- "):
                 items.append(unquote(strip_comment(stripped[2:])))
                 continue
             break
@@ -502,6 +525,7 @@ def read_loops():
         criterion, source = criterion_of(text, m, description)
         owners = slugs(list_field(block, "owner"))
         entities = slugs(list_field(block, "entities"))
+        owed_to = slugs(list_field(block, "owed_to"))
         loops.append({
             "path": bundle_link(path),
             "description": description,
@@ -514,6 +538,10 @@ def read_loops():
             # instead, which only the ranking reads.
             "owner": owners,
             "effective_owner": list(owners),
+            # Who is waiting on the delivery. Printed and emitted only: it
+            # joins neither the ranking nor the new-material signal. A legacy
+            # loop without the line reads as an empty list.
+            "owed_to": owed_to,
             "entities": entities,
             "last_activity": newest_date(block, ("updated", "opened", "created")),
             "terms": tokens(f"{description} {criterion}"),
@@ -606,10 +634,9 @@ def load_sweep():
     """`state/closure-sweep.json`, or the empty record. Never raises.
 
     Control state, not audit: it records which loops were examined and when, so
-    this queue knows what to revisit and `decay-loops.py --apply` knows what was
-    looked at. Losing it parks decay rather than corrupting it — every loop then
-    reads as never examined and returns to band 2, which at 25 a run takes weeks
-    to work through (E18).
+    this queue knows what to revisit. It is this queue's own control state, and
+    `decay` does not read it. Losing it returns every loop to band 2, as never
+    examined, which at 25 a run takes weeks to work through.
 
     Shape (written by the `close-loops` routine, never by this script):
 
@@ -619,7 +646,7 @@ def load_sweep():
 
     A bare ISO string in place of the entry dict is read as the examination
     date, because a hand-repaired record is a likely shape and refusing it would
-    park decay over a formatting opinion.
+    send the loop back to band 2 over a formatting opinion.
     """
     if not SWEEP.exists():
         return {"schema": 1, "generated": None, "loops": {}}
@@ -642,26 +669,22 @@ def load_sweep():
 def examined_on(sweep, link):
     """The ISO date `link` was last examined, or None if there is none readable.
 
-    The value is validated exactly as decay-loops.py's `examination_date()`
-    validates it, and the two have to stay mirrors. `DATE.search` alone finds ten
-    digits in the right shape and nothing else, so `2026-99-99` and `2099-01-01`
-    both read as an examination here while decay refuses them and parks the loop
-    as never examined. That disagreement is a deadlock: decay holds the loop
-    forever waiting for an examination, this queue calls it settled and never
-    proposes one, and neither lane touches it again.
+    A value counts as an examination only if it is a readable, non-future date,
+    anchored at the start. `DATE.search` alone finds ten digits in the right
+    shape and nothing else, so `2026-99-99` and `2099-01-01` would both read as
+    an examination and settle a loop nobody looked at. A settled loop is not
+    proposed again until new material reaches it, so a bad value would hide it.
 
-    Validating the **matched group** rather than the whole value, again like
-    decay: `datetime.date.fromisoformat()` over the whole thing would reject the
+    Validating the **matched group** rather than the whole value:
+    `datetime.date.fromisoformat()` over the whole thing would reject the
     `2026-09-01T09:00:00-03:00` shape `load_sweep()` tolerates on purpose. What
     the group alone cannot say is *where* it was found, which is the anchor's
     half: matching from the start and allowing only a time of day after it means
     the value has to **be** a date to count as one, so `"could not decide on
     2026-09-02"`, a human writing a refusal into the record, is not read as an
     examination, and `"2026-09-02 then 2025-07-30"` does not let the first of two
-    dates win silently. Decay refuses both and parks the loop; this queue has to
-    refuse both too, or the deadlock is back on a different input. An unreadable
-    value reads as "never examined", which returns that one loop to band 2
-    rather than dropping it.
+    dates win silently. An unreadable value reads as "never examined", which
+    returns that one loop to band 2 rather than dropping it.
     """
     entry = (sweep.get("loops") or {}).get(link)
     if isinstance(entry, str):
@@ -756,9 +779,9 @@ def build_queue(loops, sweep, material, cap):
                                lp["last_activity"] or "", lp["path"]))
     # Band 1 is served first but is not absolute: a fifth of the run is reserved
     # for the cold end of the lane. Absolute precedence starves band 2 for as
-    # long as band 1 keeps overflowing, and band 2 is where the loops decay is
-    # waiting on live: measured on the owner's bundle, 0 of 40 cold loops were
-    # examined over 30 simulated runs.
+    # long as band 1 keeps overflowing, and band 2 is the cold end of the lane,
+    # the loops nothing has re-raised: measured on the owner's bundle, 0 of 40
+    # cold loops were examined over 30 simulated runs.
     #
     # The reservation is at least one slot, because `cap // 5` is 0 for every cap
     # below 5 and a plain fifth hands those runs entirely to band 1, which is the
@@ -856,7 +879,10 @@ def render_text(queue, counts, cap):
             )
         entities = ", ".join(loop["entities"]) or "—"
         owners = ", ".join(loop["owner"]) or "—"
-        out.append(f"entities: {entities}  |  owner: {owners}")
+        owed_to = ", ".join(loop.get("owed_to") or []) or "—"
+        out.append(
+            f"entities: {entities}  |  owner: {owners}  |  owed_to: {owed_to}"
+        )
         out.append(f"last activity: {loop['last_activity'] or 'unknown'}")
         if not loop["evidence"]:
             out.append(

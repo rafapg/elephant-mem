@@ -133,7 +133,15 @@ data). Fully annotated example with **fictional** data:
 - `name` — display name, used in conversational prose.
 - `slug` — kebab-case; the owner's person entity is
   `knowledge/entities/person/<slug>.md`, and the retrieval owner-lens is
-  `--entity <slug>`. `init` creates this entity.
+  `--entity <slug>`. `init` creates this entity. `decay` also reads it:
+  it expires any open loop naming this slug in none of `owner`, `owed_to`,
+  `entities`, a third-party commitment outside the loop lane. Without `slug`
+  that rule is skipped, and only loops silent past the window expire. It is
+  skipped the same way, with a note, when `slug` names no entity file under
+  `knowledge/entities/`, or when no open loop names it at all. So after
+  renaming or merging the owner's own entity with `rename-entity.py`, which
+  rewrites every link but never `elephant.json`, set `slug` to the new name:
+  until then the rule stays off.
 
 **`knowledge_language`** (default `"en"`) — language every fact/entity/source file
 is written in. One stable language for the whole bundle.
@@ -143,6 +151,13 @@ query answers. May differ from `knowledge_language`.
 
 **`timezone`** (default the machine's) — IANA name or fixed offset (e.g.
 `"America/New_York"` or `"-05:00"`). Used to interpret cursors and window math.
+
+**`decay`** (optional) — settings for the `decay` mode.
+- `loop_expiry_days` (default `30`) — the silence window: an open loop with no
+  activity (`updated`, `opened`, `created`, or a citation in
+  `state/recall.json`) for this many days or more is expired. A bundle that sets
+  it keeps its value across updates, since `update` never re-syncs
+  `elephant.json`.
 
 **`sources`** (optional) — configures automatic ingestion. Absent/empty means the
 bundle is manual-ingest only; `catch-up` and `push-start-day` have nothing to do
@@ -307,6 +322,10 @@ touches it. Managed by `scripts/state.py`.
   already ingested, so re-observed items merge instead of duplicating. Managed
   by `catch-up`.
 - `state/needs-review.md` — the low-confidence review queue.
+- `state/closure-sweep.json` — the per-loop record the `close-loops` routine
+  writes (which loops it examined, when, and with what verdict). It is that
+  routine's queue control only, committed with the run, and never read by
+  `decay`.
 - `state/last-update-check.json` — throttles the weekly update nudge (see
   core.md), holding it for seven days. Two writers: the nudge itself, and every
   `elephant-update` run that validated — a run that failed after the copy
