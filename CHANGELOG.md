@@ -4,6 +4,193 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.17] - 2026-09-25
+
+The open-loop lane filed commitments that were not the owner's, then waited on a
+sweep that almost never reached a verdict before it let silence end them.
+Measured on the owner's bundle on 2026-09-24: 2317 loop files, 987 of them
+`open`. 60% of all loops (1390) named the bundle owner in neither `owner` nor
+`entities`, and among the open ones the share was higher, 740 of 987.
+Duplicates were not the problem: about 1 true duplicate pair among the open
+loops, against 263 "similar" pairs (same owner, shared entities, at most 14
+days apart) that turned out to be sibling tasks with distinct deliverables. The
+sweep did not close. The last three `close-loops` runs closed 0, 0 and 1 of 25
+examined, and since `decay --apply` expired only what that sweep had examined
+and left open, expiry was paced by a routine whose verdict was almost always
+"open": that day's dry run held back 197 of 202 candidates at 45 days. The
+window was too wide as well. Of the owner's own `done` loops, 66% closed within
+7 days of opening, 86% within 21, 86% within 30 and 93% within 45; the curve is
+flat between 21 and 30, so 30 days loses almost nothing that 45 catches. Of the
+247 open loops in scope (the owner in `owner` or in `entities`), 109 were silent
+for 30 days or more on their file dates, but 73 of those had been cited in
+`state/recall.json` within the last 30 days, which is an activity date, so only
+36 are stale.
+
+The first `decay` run after this release therefore expires about 776 loops, 740
+out of scope and 36 stale, and leaves about 211 open. 61 of the 73 cited loops
+were cited on 2026-09-05 and reach 30 days of silence around 2026-10-05 unless
+they are cited or re-raised again. The way to claim loops before that happens
+is an interactive `elephant-mem:decay` before the schedule's next run, knowing
+it reviews the whole candidate list in batches, several hundred loops on a
+bundle like the owner's. A bundle whose `elephant.json` sets
+`decay.loop_expiry_days` explicitly keeps that value, since `update` never
+re-syncs `elephant.json`; moving it to 30 is a manual edit.
+
+### Added
+
+- **`owed_to` on the loop template.** `templates/open-loop.md` gained
+  `owed_to: []`, the bundle-absolute entity links of whoever is waiting on the
+  delivery. A loop is now the owner's in one of two ways: "I owe", with the
+  owner's entity in `owner`, or "owed to me", with the counterpart in `owner`
+  and the owner in `owed_to`. This reverses the earlier decision to add no
+  field to the template, and safely: the field is optional, and every rule that
+  reads it also reads `owner` and `entities`, so a legacy loop without the line
+  behaves exactly as the rules say it should. `validate-okf.py` does not check
+  it, as it checks no frontmatter link list today. The readers were kept to the
+  minimum the rules need: the scope test in `decay-loops.py`, the proposal and
+  `--json` of `close-loops.py` (printed only, with no change to ranking), and
+  the manifest rows below.
+- **The out-of-scope rule, a continuous rule rather than a one-off
+  migration.** `decay-loops.py` lists, at any age, every `status: open` loop
+  where the owner's slug (`elephant.json` -> `owner.slug`) appears in none of
+  `owner`, `owed_to` and `entities`, and `--apply` expires it with a
+  `**Resolution:**` saying it is a third-party commitment outside the lane. The
+  test reads no date, citations included: a recent `updated:` does not make a
+  commitment the owner's. It compares by slug with the same `slug()`
+  normalization `close-loops.py` uses, in any link shape, because a stricter
+  full-path match would expire a loop whose owner link was hand-written as a
+  bare slug, and expiry is the irreversible side. Only `owner.slug` is read,
+  never `owner.name`, since a name is not an entity link; when it is missing
+  the rule is skipped with one stderr note instead of expiring everything. It
+  is skipped the same way when the slug names no entity file, which is what a
+  rename or merge of the owner's own entity leaves behind: `rename-entity.py
+  --merge` rewrote every loop's link and never touched `elephant.json`, and a
+  reproduction in a throwaway bundle had the next `--apply` expire every fresh
+  loop the owner owed as out of scope. It is also skipped when no open loop
+  names the owner at all, which reads as the wrong slug far more often than as
+  an owner with nothing left. And a loop is out of scope only on a positive
+  reading. The link lists are read in every YAML shape, since the first mirror
+  of the parser read four valid ones as empty or partial (a block sequence at
+  column 0, PyYAML's own dump style; an inline list wrapped across lines; a
+  comment between items; `owner :`) and would have expired those loops the day
+  they were opened. The fix went into `close-loops.py`'s copy too, and a test
+  holds the two to the same answers. An entity link to the owner anywhere in
+  the frontmatter also keeps a loop in, for spellings nobody has written yet.
+  Out-of-scope candidates are listed ahead of stale ones, so the dry run and the
+  review batches group the two kinds. A snooze cannot save one, so rejecting
+  it at the interactive gate has its own meaning: when the owner owes it or is
+  waiting on it, the procedure adds the owner's link to `owner` or `owed_to`
+  and bumps `updated:` to today (the claim); otherwise nothing is written, it
+  is not expired this run, and the next unattended run expires it.
+- **`decay-loops.py --except LINK`**, repeatable, which is what keeps a
+  rejected loop out of this run's `--apply`, since the re-scan would list it
+  again. The flag can only keep a loop open, so it reads link spellings
+  leniently, and a link that matches no candidate prints a note.
+- **Closure signal history.** A source that speaks to the commitment can now
+  refine its `**Closure signal:**` (a deadline moved, the scope shrank, the
+  deliverable changed), and never silently: the previous version is kept in a
+  `**Closure signal history:**` section directly after, with the date and the
+  bundle-absolute link of the source that changed it. `close-loops.py` still
+  reads only the current signal, because its regex already stops at a blank
+  line or at the next bolded lead-in, which the history heading is; a test pins
+  both shapes. A `**Resolution:**` written later goes at the end of the body,
+  after any history, and `tracking/resolved-loops.md` prints its first sentence
+  as before.
+- **`dropped` by evidence.** `status: dropped` had been a hand-set state, and 8
+  of the 2317 loops carried it. `close-loops` and the ingest core, the same two
+  that write `done`, now write it when the evidence shows the premise is gone (a
+  counterpart left the company, a project was cancelled, a later decision made
+  it irrelevant), with a `**Resolution:**` citing the fact that killed the
+  premise and `closed` and `closed_by` exactly as on `done`. The sweep recipe
+  records `=dropped`; `=closed` is still refused. It can still be set by hand.
+  Both writers date `closed` by the deciding source's `occurred`, not by the
+  day of the run: `close-loops` wrote today's date, the ingest core the
+  source's, and `tracking/resolved-loops.md` orders by that field, so the same
+  delivery would have landed in a different place depending on which writer
+  reached it first.
+- **The loop bar, in the shared ingest core.** Three filters, strongest first.
+  The commitment must relate to the owner, owed by or to them; being in the same
+  meeting, channel or thread does not count. Step 2 decides that on names and
+  step 3 confirms it on links, filing as a fact any candidate whose resolution
+  leaves the owner's entity in neither `owner` nor `owed_to`. Its closure must
+  be observable, something an ingested source would show on delivery, or it is
+  a fact. And a re-mention updates instead of creating: after entity resolution
+  the candidate is compared against `status: open` loops only, matched on the
+  entities it shares with them other than the owner's own (every open loop
+  carries that one, so counting it would load the whole lane), and when one
+  already covers the same commitment the source acts on that loop; sibling
+  tasks with distinct deliverables are never merged. A commitment between third
+  parties becomes a fact, still visible to `briefing` and `query`, so nothing is
+  dropped for relevance and only the lane changes. Every terminal status is
+  final: a re-mention of an expired loop files a new one. Every loop write the
+  core decides (new loop, close, drop, bump, refine) happens at step 7, so
+  `--review` gates them too.
+- **`owner` and `owed_to` on the open-loop rows of `manifest.jsonl`.** The
+  re-mention lookup reads the manifest, whose rows carried `entities` only, so
+  an "owed to me" loop with the counterpart in `owner` and the owner only in
+  `owed_to` would have been invisible to it, and every re-mention would have
+  filed a duplicate instead of bumping or closing it. Fact rows gained no key.
+- **`tests/test_loop_lifecycle.py` (78 checks)**, with its own `- run:` line in
+  `ci.yml`. It pins the ingest core's loop rules to the step that carries them,
+  the history format, the absence of any expiry notice in `start-day`,
+  `end-day` and `push-start-day`, and, repo-wide, that none of the retired
+  phrases about the sweep gate or the two writers of `updated:` survives under
+  `plugin/`, `docs/` or the README, naming the file when one does. It also
+  checks that its own `ci.yml` line is still there.
+  `tests/test_decay.py` grew to 200 checks, with the six gate tests deleted;
+  `tests/test_close_loops.py` went to 148, `tests/test_index.py` to 114 and
+  `tests/test_templates.py` to 32.
+
+### Changed
+
+- **`decay.loop_expiry_days` defaults to 30**, down from 45, on the closure
+  curve above. `docs/configuration.md`, which documented no `decay` key at all,
+  now has the entry. An explicit value in `elephant.json` is kept.
+- **`decay` is no longer gated on `state/closure-sweep.json`.** The per-loop
+  gate 0.1.0-beta.13 put on `--apply` expired a stale loop only once
+  `close-loops` had examined it on or after its last activity and left it open.
+  With a sweep that closed 1 of the 75 loops its last three runs examined, that
+  gate held back 197 of 202 candidates. `decay-loops.py` no
+  longer reads the file, and expiry is silence alone. Kept: the
+  `**Resolution:**` paragraph on every expiry, now naming which kind it was, the
+  interactive review gate with its snooze, and the `state/recall.json` citation
+  as the fourth activity date.
+- **`--skip-sweep` is a deprecated no-op** that prints one stderr note and
+  changes nothing. It was kept rather than removed because argparse would exit
+  2 on any schedule prompt, script or habit that still passes it, and an
+  unattended `decay` that exits 2 simply stops expiring with nobody reading the
+  error. One argparse line is the cheaper side of that trade.
+- **The clock resets on every ingest path.** The rule that closes a loop a
+  source shows delivered and the rule that bumps `updated:` when a source
+  re-raises it moved out of `catch-up` step 4 into the ingest core, so `ingest`,
+  `ingest-audio`, `catch-up` and `capture` all run them. The bump goes to the
+  source's own date, and for `capture`, where the user is the source, to today.
+  The re-mention bar is unchanged: chasing, rescheduling or reporting a
+  commitment blocked counts, while merely naming the same people or project does
+  not. The docs that said `updated:` had exactly two writers, or that `capture`
+  was not one, were rewritten.
+- **`close-loops` is optional.** It stays a daily sweep hunting loops that are
+  done or obsolete, and `state/closure-sweep.json` is now only its own queue
+  control; `decay` runs independently of it. `close-loops.py` does not skip
+  out-of-scope loops: they leave the lane on the next `decay` run and no new
+  ones are created, a second copy of the scope rule would be one more mirrored
+  rule between the two scripts, and every earlier mirror between them ended in a
+  deadlock. A `done` by evidence is a better end for such a loop anyway.
+
+### Fixed
+
+- **A loop re-raised through `ingest`, `ingest-audio` or `capture` aged as if
+  nobody had spoken of it.** The close and bump rules lived only in `catch-up`
+  step 4, so those three paths never touched an existing loop, and a
+  commitment chased in a pasted thread or stated in a conversation still
+  expired on its old date. They now inherit the rules from the core.
+- **A bump could move `updated:` backwards.** `catch-up` set a re-raised loop's
+  `updated:` to the source's own date with no comparison, so a late or
+  backfilled window older than the loop's current `updated:` shortened its
+  clock, the opposite of what the bump exists for. A re-raising source older
+  than the current `updated:` now bumps nothing, and neither does a source with
+  no date, except under `capture`, whose date is today.
+
 ## [0.1.0-beta.16] - 2026-09-10
 
 A user updating a real bundle to `0.1.0-beta.15` on Claude Code 2.1.181 hit

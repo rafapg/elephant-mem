@@ -5,7 +5,7 @@
 *an elephant never forgets*
 
 ![license](https://img.shields.io/badge/license-MIT-black?style=flat-square)
-![elephant-mem](https://img.shields.io/badge/elephant--mem-v0.1.0--beta.16-black?style=flat-square)
+![elephant-mem](https://img.shields.io/badge/elephant--mem-v0.1.0--beta.17-black?style=flat-square)
 ![elephant-wiki](https://img.shields.io/badge/elephant--wiki-v0.1.0--beta.4-black?style=flat-square)
 ![claude code](https://img.shields.io/badge/claude--code-plugin-black?style=flat-square)
 ![ci](https://img.shields.io/github/actions/workflow/status/rafapg/elephant-mem/ci.yml?branch=main&style=flat-square&label=ci)
@@ -29,7 +29,7 @@ database, no cloud, no embeddings — just files you can read, grep, and version
 Three lanes, routed by lifetime, reached through entities:
 
 - **durable facts** — atomic, one claim per file, that stay true over time.
-- **open loops** — commitments and action items that eventually close.
+- **open loops**: commitments the owner owes or is owed, which eventually close.
 - **episodic sources** — the raw provenance every fact was extracted from.
 
 Entities (people, projects, tools, concepts) are the **navigation spine**: facts
@@ -118,8 +118,8 @@ or run unattended):
 | `push-start-day` | post the morning orientation to your Slack self-DM | `/elephant-mem:push-start-day` |
 | `ingest-audio` | transcribe a voice recording and ingest it | `/elephant-mem:ingest-audio` |
 | `maintain` | resolve conflicts, consolidate, decay, drift-check | `/elephant-mem:maintain` |
-| `close-loops` | examine a bounded slice of open loops and close the ones the evidence shows delivered | `/elephant-mem:close-loops` |
-| `decay` | expire open loops that went quiet, once `close-loops` has examined them and found nothing | `/elephant-mem:decay` |
+| `close-loops` | optional daily sweep: close or drop open loops the evidence shows delivered or obsolete | `/elephant-mem:close-loops` |
+| `decay` | expire open loops silent for 30 days, and loops that are not the owner's | `/elephant-mem:decay` |
 | `review` | clear the low-confidence needs-review queue | `/elephant-mem:review` |
 | `expand` | propose derived facts, relations, and promotions | `/elephant-mem:expand` |
 | `update` | check for a newer release and re-sync bundle scripts/templates | `/elephant-mem:update` |
