@@ -98,7 +98,26 @@ re-syncs `elephant.json`; moving it to 30 is a manual edit.
   `rename-entity.py --merge`. On a copy of the owner's bundle taken on 2026-09-28, neither
   addition moved a loop: the out-of-scope set was the same 700 paths with and
   without them, and none of those carried the owner's name or aliases in the
-  three fields.
+  three fields. A second review found the duplicate reading could arm the
+  guard it sat under. With `owner.slug` naming the wrong entity, titled "Alex", and a
+  third party carrying "Alex" as an alias, that third party's one loop counted
+  as naming the owner, the rule switched on, and a reproduction's `--apply`
+  expired all three loops the owner really owed. A duplicate now only keeps
+  its own loop in and never counts toward the guard. The same review found the
+  list reader taking the apostrophe in a plain item (`[O'Neil, Kit]`) for an
+  opening quote, so it read the last item with the `]` glued on, and an owner
+  whose aliases held an apostrophe before the alias a duplicate carried lost
+  that match, which is the case the duplicate test exists for. A quote now opens
+  an item only where an item starts, which is YAML's flow rule, in the copies in
+  `decay-loops.py`, `close-loops.py`, `build-index.py` and `validate-okf.py`;
+  `briefing.py`, `snapshot-drift.py`, `entity-drift.py` and `rename-entity.py`
+  keep the old scan for now. Duplicate detection no longer loses the whole scan
+  to one unreadable entity file, which it now skips with a note, and no longer
+  reads two folded (`>-`) titles as one name. The entity-link floor now also
+  ends a link on `)`, so a markdown link to the owner under a key the scope
+  test does not read keeps the loop in, as a plain link there already did. On
+  the same kind of copy, taken again on 2026-09-28, these fixes moved no loop:
+  700 out of scope and 45 stale, the same paths before and after.
   Out-of-scope candidates are listed ahead of stale ones, so the dry run and the
   review batches group the two kinds. A snooze cannot save one, so rejecting
   it at the interactive gate has its own meaning: when the owner owes it or is
@@ -112,7 +131,11 @@ re-syncs `elephant.json`; moving it to 30 is a manual edit.
   out-of-scope ones, so a snoozed stale loop whose `updated:` edit came out
   wrong was listed again and expired in the run that had just rejected it.
   The flag can only keep a loop open, so it reads link spellings leniently,
-  and a link that matches no candidate prints a note.
+  and a link to a loop that is no longer a candidate prints a note. A typo
+  printed the same note, which the procedure reads as a snooze or claim having
+  taken, and `--apply` expired the loop the owner had just rejected. A link
+  that names no loop file now ends the run with exit 2 before anything is
+  scanned or written.
 - **Closure signal history.** A source that speaks to the commitment can now
   refine its `**Closure signal:**` (a deadline moved, the scope shrank, the
   deliverable changed), and never silently: the previous version is kept in a
@@ -179,7 +202,11 @@ re-syncs `elephant.json`; moving it to 30 is a manual edit.
   block sequence at column 0 and a list with a comment between items came out
   empty, and an inline list wrapped across lines came out as one broken item.
   It now reads all three, and on a copy of the owner's bundle with PyYAML
-  forced off its output is byte-identical to the previous parser's.
+  forced off its output is byte-identical to the previous parser's. The
+  apostrophe fix above reached this parser too, where a one-line list holding
+  one and followed by a comment still read as a wrapped list, and a wrapped
+  list holding one kept the `]` on its last item; its output on the same copy
+  is still byte-identical.
 - **`tests/test_loop_lifecycle.py` (87 checks)**, with its own `- run:` line in
   `ci.yml`. It pins the ingest core's loop rules to the step that carries them,
   `ingest-audio`'s summary of those steps, the history format, the absence of
@@ -188,8 +215,8 @@ re-syncs `elephant.json`; moving it to 30 is a manual edit.
   phrases about the sweep gate or the two writers of `updated:` survives under
   `plugin/`, `docs/` or the README, naming the file when one does. It also
   checks that its own `ci.yml` line is still there.
-  `tests/test_decay.py` grew to 217 checks, with the six gate tests deleted;
-  `tests/test_close_loops.py` went to 151, `tests/test_index.py` to 120 and
+  `tests/test_decay.py` grew to 239 checks, with the six gate tests deleted;
+  `tests/test_close_loops.py` went to 151, `tests/test_index.py` to 125 and
   `tests/test_templates.py` to 32.
 
 ### Changed

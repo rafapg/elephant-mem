@@ -42,10 +42,10 @@ note on stderr, rather than expiring every loop as naming nobody, in three
 cases: there is no `owner.slug`; it names no entity file under
 `knowledge/entities/` (`rename-entity.py` rewrites the loops' links and never
 `elephant.json`, so a renamed or merged owner leaves a stale slug behind); or no
-open loop names the owner at all. And a loop is only out of scope on a positive
-reading: an entity link to the owner anywhere in its frontmatter, the owner's
-slug as a token anywhere in those three fields, or a link to another entity
-carrying one of the owner's names (a duplicate of the owner) keeps it in.
+open loop names the owner's own entity at all. And a loop is only out of scope
+on a positive reading: an entity link to the owner anywhere in its frontmatter,
+the owner's slug as a token anywhere in those three fields, or a link to another
+entity carrying one of the owner's names (a duplicate of the owner) keeps it in.
 
 Default mode is DRY-RUN: prints one candidate per line (bundle-absolute path
 and its label: out of scope, or the age in days) plus a trailing count split by
@@ -69,16 +69,20 @@ and the paths in it are the content, and its owner can rewrite the sentence.
 loops out of this run, in the dry run and on `--apply`: it is how the
 interactive review gate keeps every candidate the owner rejected out of the
 `--apply` re-scan, which would otherwise list an unclaimed out-of-scope loop
-again, and a snoozed stale one again if its `updated:` bump went wrong.
+again, and a snoozed stale one again if its `updated:` bump went wrong. A
+link that names no loop file ends the run with exit 2 before anything is
+written; a link to a loop that is no longer a candidate prints a note.
 
 `--skip-sweep` is a deprecated no-op. This script no longer reads
 `state/closure-sweep.json`; the flag is still accepted so a schedule or a habit
 that passes it does not make argparse exit 2 and quietly stop expiry.
 
 Exit code is 0 whenever the script completed a run, whether or not it found
-candidates — non-zero only on a hard, unexpected error. After `--apply` the
-caller is expected to run `build-index.py` (this script does not — it only
-touches loop files).
+candidates — non-zero only on a hard, unexpected error, or 2 when an
+`--except` link names no loop file, checked before anything is scanned or
+written: a typo there would otherwise let the loop it meant to keep expire.
+After `--apply` the caller is expected to run `build-index.py` (this script
+does not — it only touches loop files).
 """
 import argparse
 import datetime
@@ -184,7 +188,10 @@ def _closing_bracket(v):
     depth, i, n = 0, 0, len(v)
     while i < n:
         c = v[i]
-        if c in "\"'":
+        # A quote opens a quoted item only where an item starts, after the `[`
+        # or a `,` (YAML's flow rule); inside a plain item it is content, so the
+        # apostrophe of `[O'Brien, me]` does not swallow the `]`.
+        if c in "\"'" and v[:i].rstrip()[-1:] in ("[", ","):
             end = _closing_quote(v[i:])
             if end < 0:
                 return -1
@@ -302,7 +309,11 @@ def _cut_line_comment(v):
     i, n = 0, len(v)
     while i < n:
         c = v[i]
-        if c in "\"'":
+        # As in _closing_bracket(), a quote opens a quoted item only where an
+        # item starts: the start of the line, a block item's `-`, or after a
+        # `[` or a `,`. `O'Neil,  # x` is a plain item and then a comment.
+        prev = v[:i].rstrip()
+        if c in "\"'" and (prev in ("", "-") or prev[-1] in "[,"):
             end = _closing_quote(v[i:])
             if end < 0:
                 return v
@@ -431,17 +442,41 @@ def owner_entity_exists(owner):
     return any(p.stem.lower() == owner for p in root.rglob("*.md"))
 
 
+BLOCK_SCALAR = re.compile(r"^[|>][-+0-9]*$")
+
+
+def _title(block):
+    """The entity's `title`, with a block scalar (`title: >-` then indented
+    lines) read as its lines joined by one space rather than as the bare
+    indicator: two unrelated entities whose titles are both folded would
+    otherwise share the "name" `>-` and read as duplicates of each other."""
+    value = field(block, "title")
+    if value is None or not BLOCK_SCALAR.match(value):
+        return value
+    lines = block.splitlines()
+    head = re.compile(r"^title[ \t]*:")
+    for i, ln in enumerate(lines):
+        if head.match(ln):
+            body = []
+            for nxt in lines[i + 1:]:
+                if nxt.strip() and not nxt[:1].isspace():
+                    break
+                body.append(nxt.strip())
+            return " ".join(x for x in body if x) or None
+    return None
+
+
+def _norm_name(name):
+    """A name as the duplicate test compares it: unquoted, lowercased, with
+    `-`, `_` and runs of whitespace read as one space."""
+    return " ".join(re.sub(r"[-_]", " ", unquote(name.strip())).lower().split())
+
+
 def _names(block):
-    """The names an entity's frontmatter gives it, normalized for comparison:
-    its `title` and every `aliases` item, lowercased, with `-`, `_` and runs of
-    whitespace read as one space."""
-    raw = [field(block, "title") or ""] + list_field(block, "aliases")
-    out = set()
-    for name in raw:
-        n = " ".join(re.sub(r"[-_]", " ", unquote(name.strip())).lower().split())
-        if n:
-            out.add(n)
-    return out
+    """The names an entity's frontmatter gives it, normalized (_norm_name()):
+    its `title` and every `aliases` item."""
+    raw = [_title(block) or ""] + list_field(block, "aliases")
+    return {n for n in (_norm_name(x) for x in raw) if n}
 
 
 def owner_duplicates(owner):
@@ -454,30 +489,50 @@ def owner_duplicates(owner):
     loops linking the duplicate would expire as out of scope. A loop linking
     one of these is read as naming the owner instead, which only ever keeps a
     loop in the lane, on the 30-day clock. `*.facts-archive.md` and the other
-    dotted stems are not entities and are skipped. Never raises."""
+    dotted stems are not entities and are skipped, and so is a directory
+    whose name ends in `.md`.
+
+    Never raises, and never loses the whole scan to one file: an entity file
+    that cannot be read is skipped on its own, with one stderr note counting
+    them, since a duplicate among them goes undetected and a loop linking it
+    can then expire as out of scope."""
     root = KNOWLEDGE / "entities"
     try:
-        files = [p for p in root.rglob("*.md") if "." not in p.stem]
-        own, others = set(), []
-        for p in files:
-            m = FM.match(p.read_text(encoding="utf-8", errors="replace"))
-            names = _names(m.group(1)) if m else set()
-            names.add(" ".join(re.sub(r"[-_]", " ", p.stem.lower()).split()))
-            if p.stem.lower() == owner:
-                own |= names
-            else:
-                others.append((p.stem.lower(), names))
-        own.add(" ".join(re.sub(r"[-_]", " ", owner).split()))
-        return sorted({stem for stem, names in others if names & own})
-    except Exception:  # noqa: BLE001, a guard that fails only loses the guard
+        files = sorted(p for p in root.rglob("*.md") if "." not in p.stem)
+    except Exception as exc:  # noqa: BLE001
+        print(f"note: knowledge/entities/ could not be listed ({exc}), so no "
+              "duplicate of the owner's entity is detected this run.", file=sys.stderr)
         return []
+    own, others, skipped = set(), [], []
+    for p in files:
+        if p.is_dir():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001, one unreadable file skips only itself
+            skipped.append(p)
+            continue
+        m = FM.match(text)
+        names = _names(m.group(1)) if m else set()
+        names.add(_norm_name(p.stem))
+        if p.stem.lower() == owner:
+            own |= names
+        else:
+            others.append((p.stem.lower(), names))
+    if skipped:
+        print(f"note: {len(skipped)} entity file(s) could not be read (first: "
+              f"/{skipped[0].relative_to(KNOWLEDGE).as_posix()}), so a duplicate of "
+              "the owner's entity among them is not detected this run.", file=sys.stderr)
+    own.add(_norm_name(owner))
+    return sorted({stem for stem, names in others if names & own})
 
 
 def owner_link_pattern(owner):
     """An entity link to the owner, `.../entities/<kind>/<owner>[.md]`, as it
-    may appear anywhere in raw frontmatter text."""
+    may appear anywhere in raw frontmatter text, a markdown link's `(...)`
+    included: `[Me](/entities/person/me.md)` ends the link on a `)`."""
     return re.compile(
-        rf"entities/[^/\s\"'\[\],]+/{re.escape(owner)}(?:\.md)?(?=[\s\]\"',#]|$)",
+        rf"entities/[^/\s\"'\[\],]+/{re.escape(owner)}(?:\.md)?(?=[\s\]\"',#)]|$)",
         re.IGNORECASE | re.MULTILINE,
     )
 
@@ -766,7 +821,9 @@ def find_candidates(expiry_days, owner):
 
     **A partial duplicate is covered loop by loop** (owner_duplicates()): a
     loop linking another entity that carries one of the owner's names is read
-    as naming the owner, with one note on stderr naming those entities.
+    as naming the owner, with one note on stderr naming those entities. A
+    duplicate never counts toward the guard above: it can only keep a loop in
+    the lane, never switch the rule on.
 
     A loop whose `updated:` is present but no date is not a stale candidate,
     with one note on stderr naming it (unreadable_updated()).
@@ -791,8 +848,13 @@ def find_candidates(expiry_days, owner):
               f"linking them is read as naming the owner and does not expire as out "
               f"of scope. If they are duplicates of the owner, merge them with "
               f"rename-entity.py --merge.", file=sys.stderr)
+    # The guard reads the owner's own slug only, never `also`: a duplicate
+    # can keep its own loop in the lane, but it must not be what switches the
+    # rule on. An `owner.slug` naming the wrong entity, whose title a third
+    # party carries as an alias, would otherwise arm the rule on that third
+    # party's loop and expire every loop the owner really owes.
     if owner is not None and opened and not any(
-            in_scope(m.group(1), owner, also) for _p, _t, m in opened):
+            in_scope(m.group(1), owner) for _p, _t, m in opened):
         print(f"note: no open loop names the owner (/entities/person/{owner}.md) in "
               f"owner, owed_to or entities, so the out-of-scope rule is skipped this "
               f"run rather than expiring all {len(opened)}; check elephant.json -> "
@@ -876,15 +938,29 @@ def main():
               f"candidates.", file=sys.stderr)
         owner = None
 
-    candidates = find_candidates(expiry_days, owner)
-
-    # --except: drop the named loops from this run before anything is printed
-    # or written, so they are counted in neither split.
+    # --except: a link that names no loop file at all is a typo, not a loop
+    # that stopped being a candidate, and the loop it meant to keep open would
+    # expire in this very run. Refuse before anything is scanned or written.
     excepted = []
     for raw in args.except_links:
         link = normalize_link(raw)
         if link not in excepted:
             excepted.append(link)
+    if excepted:
+        known = {bundle_link(p) for p in loop_files()}
+        unknown = [link for link in excepted if link not in known]
+        if unknown:
+            for link in unknown:
+                print(f"error: --except {link} names no loop file (no "
+                      f"knowledge{link} under tracking/loops/). Nothing was "
+                      "scanned or written; fix the link and run again.",
+                      file=sys.stderr)
+            return 2
+
+    candidates = find_candidates(expiry_days, owner)
+
+    # --except: drop the named loops from this run before anything is printed
+    # or written, so they are counted in neither split.
     if excepted:
         found = {bundle_link(c["path"]) for c in candidates}
         for link in excepted:

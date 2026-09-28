@@ -147,10 +147,13 @@ run's report when it left one.
    unclaimed out-of-scope loop would be listed again, since the scope test
    reads no date, and a snoozed stale one would be too if its `updated:` edit
    came out wrong. A reject never becomes an expiry in the run that collected
-   it. A snoozed or claimed loop the re-scan no longer lists prints
-   `--except <link> matches no candidate this run`: that note is the edit
-   having taken. A snoozed or claimed loop without it was still a candidate,
-   so its edit went wrong: tell the user which, and fix the line.
+   it. A link that names no loop file, a typo in the path, makes the script
+   exit 2 before it scans or writes anything: nothing expired, so fix the
+   link and run this step again. A snoozed or claimed loop the re-scan no
+   longer lists prints `--except <link> matches no candidate this run`, which
+   the script prints only for a link naming a real loop file: that note is
+   the edit having taken. A snoozed or claimed loop without it was still a
+   candidate, so its edit went wrong: tell the user which, and fix the line.
    `--skip-sweep` is accepted and ignored: this script no longer reads
    `state/closure-sweep.json`.
 

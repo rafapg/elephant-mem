@@ -265,7 +265,10 @@ def _closing_bracket(v):
     depth, i, n = 0, 0, len(v)
     while i < n:
         c = v[i]
-        if c in "\"'":
+        # A quote opens a quoted item only where an item starts, after the `[`
+        # or a `,` (YAML's flow rule); inside a plain item it is content, so the
+        # apostrophe of `[O'Brien, me]` does not swallow the `]`.
+        if c in "\"'" and v[:i].rstrip()[-1:] in ("[", ","):
             end = _closing_quote(v[i:])
             if end < 0:
                 return -1
@@ -353,7 +356,11 @@ def _cut_line_comment(v):
     i, n = 0, len(v)
     while i < n:
         c = v[i]
-        if c in "\"'":
+        # As in _closing_bracket(), a quote opens a quoted item only where an
+        # item starts: the start of the line, a block item's `-`, or after a
+        # `[` or a `,`. `O'Neil,  # x` is a plain item and then a comment.
+        prev = v[:i].rstrip()
+        if c in "\"'" and (prev in ("", "-") or prev[-1] in "[,"):
             end = _closing_quote(v[i:])
             if end < 0:
                 return v

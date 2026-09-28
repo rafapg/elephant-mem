@@ -187,7 +187,10 @@ def _closing_bracket(v):
     depth, i, n = 0, 0, len(v)
     while i < n:
         c = v[i]
-        if c in "\"'":
+        # A quote opens a quoted item only where an item starts, after the `[`
+        # or a `,` (YAML's flow rule); inside a plain item it is content, so the
+        # apostrophe of `[O'Brien, me]` does not swallow the `]`.
+        if c in "\"'" and v[:i].rstrip()[-1:] in ("[", ","):
             end = _closing_quote(v[i:])
             if end < 0:
                 return -1

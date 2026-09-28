@@ -734,6 +734,25 @@ def test_regex_readers_share_the_rule(root):
             got = fn(raw)
             record(f"{name}: {why}", got == want, f"raw={raw!r}\nwant={want!r}\ngot ={got!r}")
 
+    # A quote opens a quoted item only where an item starts (after `[` or
+    # `,`), so an apostrophe inside a plain item is content and the list still
+    # ends at its `]`. Only the four copies that read loop and entity lists for
+    # the manifest, the validator and the loop scripts carry this rule so far;
+    # briefing.py, snapshot-drift.py, entity-drift.py and rename-entity.py
+    # still scan the old way, a follow-up with its own tests.
+    apostrophe = [("[O'Neil, Kit]  # nick", "[O'Neil, Kit]",
+                   "an apostrophe inside a plain item is content, the comment still goes"),
+                  ("['O''Neil', Kit]  # nick", "['O''Neil', Kit]",
+                   "a quoted item that opens an item is still skipped whole")]
+    for name, fn in copies:
+        if name not in ("build-index.py", "validate-okf.py", "decay-loops.py",
+                        "close-loops.py"):
+            continue
+        for raw, want, why in apostrophe:
+            got = fn(raw)
+            record(f"{name}: {why}", got == want,
+                   f"raw={raw!r}\nwant={want!r}\ngot ={got!r}")
+
     # split_comment() is a split, not a strip: the two halves must rebuild the
     # line, or rename-entity.py would drop the comment every time it rewrites.
     bad = [raw for raw, _w, _y in STRIP_CASES

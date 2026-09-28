@@ -366,14 +366,39 @@ def test_parse_fm_fallback_loop_party_shapes(root):
         fm = mod.parse_fm(block)
         record(f"build-index.py: fallback parser reads {label_} as YAML does",
                fm.get("owed_to") == expected and fm.get("status") == "open", fm)
-    # An apostrophe in a plain item reads as an unclosed quote to the bracket
-    # scan; a one-line list must not be taken for a wrapped one (a live bundle
-    # carries `aliases: [rua tracker, issue tracker (Holanda's)]`).
-    fm = mod.parse_fm("aliases: [rua tracker, issue tracker (Holanda's)]\nkind: tool\n")
-    record("build-index.py: fallback parser reads a one-line list holding an "
-           "apostrophe unchanged",
-           fm.get("aliases") == ["rua tracker", "issue tracker (Holanda's)"]
-           and fm.get("kind") == "tool", fm)
+    # An apostrophe inside a plain item is content: a quote opens a quoted
+    # item only where an item starts. The bracket scan used to take it for an
+    # unclosed quote, so a one-line list read as a wrapped one and swallowed
+    # what followed up to the next key. A blank line or a comment line before
+    # that key is where it showed: a key right after the list stops the join
+    # anyway. The names are fictional.
+    alias_shapes = [
+        ("followed by a blank line",
+         "aliases: [bug tracker, issue tracker (Morgan's)]\n\nkind: tool\n",
+         ["bug tracker", "issue tracker (Morgan's)"]),
+        ("followed by a comment line",
+         "aliases: [bug tracker, issue tracker (Morgan's)]\n# note\nkind: tool\n",
+         ["bug tracker", "issue tracker (Morgan's)"]),
+        ("with a trailing comment",
+         "aliases: [O'Neil, Kit]  # nick\n\nkind: tool\n", ["O'Neil", "Kit"]),
+        ("wrapped across lines",
+         "aliases: [O'Neil,\n  Kit]\n\nkind: tool\n", ["O'Neil", "Kit"]),
+        ("wrapped, with a comment on the first line",
+         "aliases: [O'Neil,  # x\n  Kit]\n\nkind: tool\n", ["O'Neil", "Kit"]),
+    ]
+    for label_, block, expected in alias_shapes:
+        fm = mod.parse_fm(block)
+        record(f"build-index.py: fallback parser reads a list holding an apostrophe, "
+               f"{label_}, as YAML does",
+               fm.get("aliases") == expected and fm.get("kind") == "tool", fm)
+    # Not valid YAML, so there is no right reading, only a contained one: a
+    # quote that opens an item and never closes, on a line ending in `]`, is
+    # kept to that line (the `not INLINE_LIST` guard) instead of joining the
+    # comment line after it and leaving the `]` glued to the last item.
+    fm = mod.parse_fm("aliases: [Kit, 'unclosed]\n# c\nkind: tool\n")
+    record("build-index.py: fallback parser keeps a list whose quote never closes "
+           "to its own line, with no `]` glued to the last item",
+           fm.get("aliases") == ["Kit", "'unclosed"] and fm.get("kind") == "tool", fm)
 
 
 # ---------------------------------------------------------------------------

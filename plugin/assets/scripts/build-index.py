@@ -197,7 +197,10 @@ def _closing_bracket(v):
     depth, i, n = 0, 0, len(v)
     while i < n:
         c = v[i]
-        if c in "\"'":
+        # A quote opens a quoted item only where an item starts, after the `[`
+        # or a `,` (YAML's flow rule); inside a plain item it is content, so the
+        # apostrophe of `[O'Brien, me]` does not swallow the `]`.
+        if c in "\"'" and v[:i].rstrip()[-1:] in ("[", ","):
             end = _closing_quote(v[i:])
             if end < 0:
                 return -1
@@ -264,7 +267,11 @@ def _cut_line_comment(v):
     i, n = 0, len(v)
     while i < n:
         c = v[i]
-        if c in "\"'":
+        # As in _closing_bracket(), a quote opens a quoted item only where an
+        # item starts: the start of the line, a block item's `-`, or after a
+        # `[` or a `,`. `O'Neil,  # x` is a plain item and then a comment.
+        prev = v[:i].rstrip()
+        if c in "\"'" and (prev in ("", "-") or prev[-1] in "[,"):
             end = _closing_quote(v[i:])
             if end < 0:
                 return v
@@ -365,9 +372,10 @@ def parse_fm(block, path=None):
                 break
             data[key] = items if items else ""
             continue
-        # `not INLINE_LIST`: an apostrophe in a plain item (`[Holanda's
-        # tracker]`) reads to _closing_bracket() as an unclosed quote, but a
-        # line that already ends in `]` has not wrapped.
+        # `not INLINE_LIST`: a line that already ends in `]` has not wrapped.
+        # _closing_bracket() now reads an apostrophe inside a plain item
+        # (`[Morgan's tracker]`) as content; this still holds a quote that
+        # opens an item and never closes to its own line.
         if val.startswith("[") and _closing_bracket(val) < 0 and not INLINE_LIST.match(val):
             val = _cut_line_comment(line.partition(":")[2])
             while _closing_bracket(val) < 0 and i < n and not TOP_KEY.match(lines[i]):
