@@ -15,8 +15,8 @@ sentences that carry the contract:
       backwards, and the `**Closure signal history:**` format;
   (b) every loop write happens at step 7, and the `--review` batches show
       each loop action, so the gate gates them too;
-  (c) `catch-up`, `capture` and `init` inherit the core instead of carrying
-      their own copy of the rules;
+  (c) `catch-up`, `capture`, `ingest-audio` and `init` inherit the core
+      instead of carrying their own copy of the rules;
   (d) `core.md` and the docs name the writers as they now are, with
       `close-loops` optional and `decay` acting on silence and scope alone;
   (e) the daily routines (`start-day`, `end-day`, `push-start-day`) carry no
@@ -40,6 +40,7 @@ DOCS = REPO_ROOT / "docs"
 INGEST = SKILLS / "ingest" / "procedure.md"
 CATCH_UP = SKILLS / "catch-up" / "procedure.md"
 CAPTURE = SKILLS / "capture" / "SKILL.md"
+INGEST_AUDIO = SKILLS / "ingest-audio" / "procedure.md"
 CORE = SKILLS / "_shared" / "core.md"
 INIT = SKILLS / "init" / "procedure.md"
 SEED_CONFIG = PLUGIN / "assets" / "seed" / "config.md"
@@ -150,12 +151,22 @@ def test_ingest_core():
                            '"it gets done"'])
     check_contains("the loop bar, filter 3: a re-mention is matched in step 4",
                    step2, ["matched in step 4"])
+    check_contains("step 2's skip-rules carry a chase or delivery to step 4 even when it "
+                   "yields no fact",
+                   step2, ["delivers, chases, reschedules, reports blocked or cancels a "
+                           "commitment that may already be an open loop is not a restatement",
+                           "as a loop-action candidate, even when it yields no fact"])
 
     # step 3 confirms the lane on resolved entities
     step3 = st.get(3, "")
     check_contains("step 3 confirms the lane on links (owner or owed_to, else a fact)",
                    step3, ["/entities/person/<owner.slug>.md", "`owner`", "`owed_to`",
                            "the candidate is filed as a fact"])
+    check_contains("step 3: without a usable owner.slug the owner resolves by owner.name, "
+                   "and the log says so",
+                   step3, ["When `owner.slug` is absent from `elephant.json`, or names no roster row",
+                           "the row the roster resolves for `owner.name`",
+                           "the loop lane was skipped for want of an owner entity"])
 
     # the **Open loops** block sits in step 4, after its marker and before 5.
     step4 = st.get(4, "")
@@ -173,6 +184,19 @@ def test_ingest_core():
                            "does not count as shared",
                            "a candidate naming no one but the owner is compared with the open "
                            "loops that likewise name no one else"])
+    check_contains("loops filed earlier in the same run are matched too, held like the roster",
+                   step4, ["Loops filed earlier in this run are matched too",
+                           "as the roster is held in step 3"])
+    check_contains("an old manifest is rewritten by the update re-sync, not the step 3 "
+                   "freshness rule",
+                   step4, ["the `update` re-sync that installs this release runs "
+                           "`build-index.py`, which rewrites it"])
+    check_absent("step 4 no longer credits the freshness rule with rewriting an old manifest",
+                 step4, ["freshness rule's one `build-index.py` run rewrites it"])
+    check_contains("an unsure loop action is not taken, and catch-up's write-anyway rule "
+                   "does not reach it",
+                   step4, ["An action you are unsure of is not taken: the loop stays exactly as it is",
+                           "write-anyway rule for guessed items does not apply to loop actions"])
     check_contains("sibling tasks are separate loops, never merged",
                    step4, ["Sibling tasks", "never merged"])
     check_contains("a terminal loop is never matched, so a re-raised commitment opens a new one",
@@ -261,6 +285,16 @@ def test_inheritors():
                               "the capture record is `closed_by`", "the date is today"])
         check_contains("capture's recap names loops closed, dropped, bumped or refined",
                        body, ["any open-loop opened, closed, dropped, bumped or refined"])
+
+    # ingest-audio runs the core's loop actions and recaps them
+    raw = read(INGEST_AUDIO)
+    if record(f"{rel(INGEST_AUDIO)} exists", bool(raw)):
+        st = steps(raw)
+        check_contains("ingest-audio step 6 runs the core's loop bar and step 4 loop actions",
+                       st.get(6, ""), ["../ingest/procedure.md", "open-loops by the loop bar",
+                                       "act on them by ingest step 4 (close, drop, bump or refine"])
+        check_contains("ingest-audio's recap names loops opened, closed, dropped, bumped or refined",
+                       st.get(8, ""), ["open-loops opened, closed, dropped, bumped or refined"])
 
     # init seeds its example loop with the owner in owner
     body = flat(read(INIT))

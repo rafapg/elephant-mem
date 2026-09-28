@@ -15,7 +15,10 @@ Candidate = `status: open` AND its last-activity date (the max of
 `elephant.json` -> `decay.loop_expiry_days` days back or more (default 30; the
 comparison is `>=`, so a loop exactly that old expires — same defensive
 fallback pattern as build-index.py's `hub_max_facts`: missing file, missing
-key, or malformed JSON all fall back to the default instead of crashing).
+key, or malformed JSON all fall back to the default instead of crashing, and a
+value that is not a positive whole number does too, with a note on stderr). A
+loop whose `updated:` is present but reads as no date is not a candidate, with
+a note naming it: read past, it would age from `opened`.
 
 The citation date is the fourth date and nothing more. `updated` says a source
 re-raised the loop; a citation says the owner's own answers still reach for it,
@@ -40,7 +43,9 @@ cases: there is no `owner.slug`; it names no entity file under
 `knowledge/entities/` (`rename-entity.py` rewrites the loops' links and never
 `elephant.json`, so a renamed or merged owner leaves a stale slug behind); or no
 open loop names the owner at all. And a loop is only out of scope on a positive
-reading: an entity link to the owner anywhere in its frontmatter keeps it in.
+reading: an entity link to the owner anywhere in its frontmatter, the owner's
+slug as a token anywhere in those three fields, or a link to another entity
+carrying one of the owner's names (a duplicate of the owner) keeps it in.
 
 Default mode is DRY-RUN: prints one candidate per line (bundle-absolute path
 and its label: out of scope, or the age in days) plus a trailing count split by
@@ -62,8 +67,9 @@ and the paths in it are the content, and its owner can rewrite the sentence.
 
 `--except <link>` (repeatable, a bundle-absolute loop path) keeps the named
 loops out of this run, in the dry run and on `--apply`: it is how the
-interactive review gate leaves open an out-of-scope loop the owner rejected
-without claiming it, which the `--apply` re-scan would otherwise list again.
+interactive review gate keeps every candidate the owner rejected out of the
+`--apply` re-scan, which would otherwise list an unclaimed out-of-scope loop
+again, and a snoozed stale one again if its `updated:` bump went wrong.
 
 `--skip-sweep` is a deprecated no-op. This script no longer reads
 `state/closure-sweep.json`; the flag is still accepted so a schedule or a habit
@@ -127,15 +133,25 @@ def loop_expiry_days():
     """Read `decay.loop_expiry_days` from elephant.json. Defensive by design
     (mirrors ingest-audio.py's config reader / build-index.py's hub_max_facts):
     a missing file, missing key, non-dict `decay`, or malformed JSON all fall
-    back to DEFAULT_EXPIRY_DAYS instead of crashing."""
+    back to DEFAULT_EXPIRY_DAYS instead of crashing.
+
+    A key that is present but not a positive whole number falls back too, and
+    says so on stderr, since its owner meant some window and is not getting it.
+    `true` is the case that needed a rule of its own: JSON's boolean is a
+    Python `int`, so it passed as a 1-day window and every loop quiet since
+    yesterday was a candidate. `"60"` and `60.0` are not whole numbers either;
+    they take the default rather than a guess at what was meant."""
     try:
         with open(BUNDLE / "elephant.json", encoding="utf-8") as fh:
             data = json.load(fh)
         decay_cfg = data.get("decay")
-        if isinstance(decay_cfg, dict):
-            v = decay_cfg.get("loop_expiry_days")
-            if isinstance(v, int) and v > 0:
+        if isinstance(decay_cfg, dict) and "loop_expiry_days" in decay_cfg:
+            v = decay_cfg["loop_expiry_days"]
+            if isinstance(v, int) and not isinstance(v, bool) and v > 0:
                 return v
+            print(f"note: elephant.json -> decay.loop_expiry_days is {json.dumps(v)}, "
+                  f"not a positive whole number of days, so the default "
+                  f"{DEFAULT_EXPIRY_DAYS} is used this run.", file=sys.stderr)
     except Exception:
         pass
     return DEFAULT_EXPIRY_DAYS
@@ -272,6 +288,32 @@ def unquote(s):
     return "".join(out)
 
 
+def _cut_line_comment(v):
+    """One physical line of an inline list that wraps, without its YAML comment.
+
+    strip_comment() leaves a comment on a line whose `[` has not closed yet,
+    because it looks for the comment outside the list and that line has no
+    outside. A comment still ends at the end of its own line, list or not, so
+    this cuts at the first `#` that starts the line or follows a space, skipping
+    quoted items (`"a #b"` is content). Brackets are not tracked: on a wrapped
+    line they no longer delimit where a comment may sit. Mirrors close-loops.py's
+    function of the same name."""
+    v = v.strip()
+    i, n = 0, len(v)
+    while i < n:
+        c = v[i]
+        if c in "\"'":
+            end = _closing_quote(v[i:])
+            if end < 0:
+                return v
+            i += end + 1
+            continue
+        if c == "#" and (i == 0 or v[i - 1] in " \t"):
+            return v[:i].rstrip()
+        i += 1
+    return v
+
+
 # A top-level `key:` line, which is where a wrapped inline list that never
 # closed has certainly ended.
 TOP_KEY = re.compile(r"^[A-Za-z_][\w-]*[ \t]*:(?:\s|$)")
@@ -301,9 +343,11 @@ def list_field(block, key):
             continue
         val = strip_comment(m.group(1))
         if val.startswith("["):
+            if _closing_bracket(val) < 0:
+                val = _cut_line_comment(m.group(1))
             j = i + 1
             while _closing_bracket(val) < 0 and j < len(lines) and not TOP_KEY.match(lines[j]):
-                val = val + " " + strip_comment(lines[j])
+                val = val + " " + _cut_line_comment(lines[j])
                 j += 1
             end = _closing_bracket(val)
             inner = (val[1:end] if end > 0 else val[1:]).strip()
@@ -387,6 +431,48 @@ def owner_entity_exists(owner):
     return any(p.stem.lower() == owner for p in root.rglob("*.md"))
 
 
+def _names(block):
+    """The names an entity's frontmatter gives it, normalized for comparison:
+    its `title` and every `aliases` item, lowercased, with `-`, `_` and runs of
+    whitespace read as one space."""
+    raw = [field(block, "title") or ""] + list_field(block, "aliases")
+    out = set()
+    for name in raw:
+        n = " ".join(re.sub(r"[-_]", " ", unquote(name.strip())).lower().split())
+        if n:
+            out.add(n)
+    return out
+
+
+def owner_duplicates(owner):
+    """Slugs of the other entity files that carry one of the owner entity's
+    names (its slug, title or an alias) as their own slug, title or alias.
+
+    The "no open loop names the owner" guard is all or nothing. A lane where
+    only *some* loops link a duplicate of the owner's entity (an ingest that
+    resolved a nickname to a new entity file instead of the owner) passes it, and the
+    loops linking the duplicate would expire as out of scope. A loop linking
+    one of these is read as naming the owner instead, which only ever keeps a
+    loop in the lane, on the 30-day clock. `*.facts-archive.md` and the other
+    dotted stems are not entities and are skipped. Never raises."""
+    root = KNOWLEDGE / "entities"
+    try:
+        files = [p for p in root.rglob("*.md") if "." not in p.stem]
+        own, others = set(), []
+        for p in files:
+            m = FM.match(p.read_text(encoding="utf-8", errors="replace"))
+            names = _names(m.group(1)) if m else set()
+            names.add(" ".join(re.sub(r"[-_]", " ", p.stem.lower()).split()))
+            if p.stem.lower() == owner:
+                own |= names
+            else:
+                others.append((p.stem.lower(), names))
+        own.add(" ".join(re.sub(r"[-_]", " ", owner).split()))
+        return sorted({stem for stem, names in others if names & own})
+    except Exception:  # noqa: BLE001, a guard that fails only loses the guard
+        return []
+
+
 def owner_link_pattern(owner):
     """An entity link to the owner, `.../entities/<kind>/<owner>[.md]`, as it
     may appear anywhere in raw frontmatter text."""
@@ -396,21 +482,50 @@ def owner_link_pattern(owner):
     )
 
 
-def in_scope(block, owner):
+def scope_text(block):
+    """The raw text of the `owner`, `owed_to` and `entities` values, each from
+    the text after its key's colon up to the next top-level key, joined, with
+    each line's comment removed (the template glues a sentence of prose to
+    each of these lines)."""
+    keys = re.compile(rf"^(?:{'|'.join(SCOPE_FIELDS)})[ \t]*:(.*)$")
+    out, on = [], False
+    for ln in block.splitlines():
+        m = keys.match(ln)
+        if m:
+            on = True
+            out.append(_cut_line_comment(m.group(1)))
+        elif TOP_KEY.match(ln):
+            on = False
+        elif on:
+            out.append(_cut_line_comment(ln))
+    return "\n".join(out)
+
+
+def in_scope(block, owner, also=()):
     """True iff the owner's slug is among the slugs of any of `owner`,
     `owed_to`, `entities`, or an entity link to the owner appears anywhere in
-    the frontmatter. `owner` must not be None: the caller skips the scope rule
-    entirely when there is no owner to test for.
+    the frontmatter, or the owner's slug appears as a whole token anywhere in
+    the raw text of those three fields. `also` holds more slugs read as the
+    owner's (owner_duplicates()). `owner` must not be None: the caller skips
+    the scope rule entirely when there is no owner to test for.
 
-    The second test is a floor under the parser. Out of scope is only ever
-    declared on a positive reading that the owner is absent, since the expiry
-    it leads to is final: a spelling list_field() does not know (a YAML tag, an
-    anchor, a shape nobody has written yet) keeps the loop in the lane, where
-    the 30-day clock still reaches it, instead of expiring it the day it was
-    opened."""
-    if any(owner in slugs(list_field(block, key)) for key in SCOPE_FIELDS):
-        return True
-    return bool(owner_link_pattern(owner).search(block))
+    The second and third tests are a floor under the parser. Out of scope is
+    only ever declared on a positive reading that the owner is absent, since
+    the expiry it leads to is final: a spelling list_field() does not know (a
+    YAML tag, an anchor, a markdown link, a wrapped list whose first line
+    carries a comment, a shape nobody has written yet) keeps the loop in the
+    lane, where the 30-day clock still reaches it, instead of expiring it the
+    day it was opened. The token test reads only the three fields, never the
+    description, where a short slug like `me` is an ordinary word."""
+    raw = scope_text(block)
+    for name in (owner, *also):
+        if any(name in slugs(list_field(block, key)) for key in SCOPE_FIELDS):
+            return True
+        if owner_link_pattern(name).search(block):
+            return True
+        if re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", raw, re.IGNORECASE):
+            return True
+    return False
 
 
 def recall_lookup():
@@ -449,10 +564,53 @@ def recall_lookup():
     return lambda link: recall.last_cited(data, link)
 
 
+def field_values(block, key):
+    """Every `key: value` scalar in a frontmatter block, in file order, each
+    without its trailing comment and its quotes. A blank value, `""`, `null`
+    and `~` are no value and are left out."""
+    out = []
+    for m in re.finditer(rf"^{re.escape(key)}[ \t]*:[ \t]*(.*)$", block, re.MULTILINE):
+        v = unquote(strip_comment(m.group(1))).strip()
+        if v and v.lower() not in ("null", "~"):
+            out.append(v)
+    return out
+
+
+def parse_date(v):
+    m = DATE.search(v or "")
+    if not m:
+        return None
+    try:
+        return datetime.date.fromisoformat(m.group(0))
+    except ValueError:
+        return None
+
+
+def unreadable_updated(block):
+    """The first `updated:` value that is present but reads as no date
+    (`2026-9-25`, `25/09/2026`, `2026-13-01`), or None when every one parses.
+
+    `updated:` is the one date a model rewrites over a loop's life (every
+    ingest bump, the gate's snooze and claim), so it is the one a slip lands
+    in. Skipped as if absent, the loop fell back to `opened`/`created` and
+    expired on the next run as silent since the day it was opened, the loop
+    that had just been re-raised or snoozed."""
+    for v in field_values(block, "updated"):
+        if parse_date(v) is None:
+            return v
+    return None
+
+
 def last_activity(block, cited=None):
     """Max of `updated`/`opened`/`created` and `cited` (whichever parse as a
     date), or None if none of the four are present/parseable — treated as
     "can't tell, not a candidate" rather than an error.
+
+    Also None when an `updated:` line is present but unreadable
+    (unreadable_updated()): a re-mention nobody can date is still a re-mention,
+    and reading past it is the destructive side. Every line of each key is
+    read, so a bump appended as a second `updated:` rather than edited in place
+    counts; the max is the same whichever line is newer.
 
     `cited` is the ISO date `state/recall.json` holds for this loop's
     bundle-absolute path, from `recall.py`'s `last_cited()`. Passing None is
@@ -460,18 +618,14 @@ def last_activity(block, cited=None):
     `recall.py` at all all arrive here as None and leave the three file dates
     deciding on their own.
     """
+    if unreadable_updated(block) is not None:
+        return None
     dates = []
     for key in ("updated", "opened", "created"):
-        v = field(block, key)
-        if not v:
-            continue
-        m = DATE.search(v)
-        if not m:
-            continue
-        try:
-            dates.append(datetime.date.fromisoformat(m.group(0)))
-        except ValueError:
-            continue
+        for v in field_values(block, key):
+            d = parse_date(v)
+            if d is not None:
+                dates.append(d)
     if cited:
         m = DATE.search(cited)
         if m:
@@ -609,6 +763,13 @@ def find_candidates(expiry_days, owner):
     file) than that the owner has no commitment left, and expiring all of it
     on that reading cannot be undone. Skipped, those loops still decay on the
     stale test.
+
+    **A partial duplicate is covered loop by loop** (owner_duplicates()): a
+    loop linking another entity that carries one of the owner's names is read
+    as naming the owner, with one note on stderr naming those entities.
+
+    A loop whose `updated:` is present but no date is not a stale candidate,
+    with one note on stderr naming it (unreadable_updated()).
     """
     today = datetime.date.today()
     cutoff = today - datetime.timedelta(days=expiry_days)
@@ -622,8 +783,16 @@ def find_candidates(expiry_days, owner):
         if loop_status(m.group(1)) != "open":
             continue
         opened.append((path, text, m))
+    also = owner_duplicates(owner) if owner is not None and opened else []
+    if also:
+        print("note: " + ", ".join(f"/entities/*/{s}.md" for s in also)
+              + f" carry one of the owner's names (title or alias of "
+              f"/entities/person/{owner}.md) without being that entity, so a loop "
+              f"linking them is read as naming the owner and does not expire as out "
+              f"of scope. If they are duplicates of the owner, merge them with "
+              f"rename-entity.py --merge.", file=sys.stderr)
     if owner is not None and opened and not any(
-            in_scope(m.group(1), owner) for _p, _t, m in opened):
+            in_scope(m.group(1), owner, also) for _p, _t, m in opened):
         print(f"note: no open loop names the owner (/entities/person/{owner}.md) in "
               f"owner, owed_to or entities, so the out-of-scope rule is skipped this "
               f"run rather than expiring all {len(opened)}; check elephant.json -> "
@@ -633,13 +802,20 @@ def find_candidates(expiry_days, owner):
     out_of_scope, stale = [], []
     for path, text, m in opened:
         block = m.group(1)
-        if owner is not None and not in_scope(block, owner):
+        if owner is not None and not in_scope(block, owner, also):
             out_of_scope.append({"path": path, "text": text, "match": m,
                                  "kind": "out-of-scope", "age": None,
                                  "activity": None})
             continue
         activity = last_activity(block, cited_on(bundle_link(path)))
-        if activity is None or activity > cutoff:
+        if activity is None:
+            bad = unreadable_updated(block)
+            if bad is not None:
+                print(f"note: {bundle_link(path)} has `updated: {bad}`, which is no "
+                      "YYYY-MM-DD date, so it is not a stale candidate until that "
+                      "line is fixed.", file=sys.stderr)
+            continue
+        if activity > cutoff:
             continue
         stale.append({"path": path, "text": text, "match": m, "kind": "stale",
                       "age": (today - activity).days, "activity": activity})

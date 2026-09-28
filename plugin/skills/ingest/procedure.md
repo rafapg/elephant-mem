@@ -48,6 +48,12 @@ It touches entities — also load `../_shared/entity-resolution.md`.
    - unverifiable speculation presented as fact (unless you mark it `low` and
      say so in the provenance note).
 
+   One exception: a message that delivers, chases, reschedules, reports
+   blocked or cancels a commitment that may already be an open loop is not a
+   restatement and not chatter. Carry it through steps 3 and 4 as a loop-action
+   candidate, even when it yields no fact: step 4 matches it and acts on the
+   loop.
+
    Filter on **signal, not relevance.** The owner may span multiple teams or
    projects, so a distant team's problem may still be an input for their own
    work — keep every durable item from any channel/team and only drop
@@ -123,7 +129,12 @@ It touches entities — also load `../_shared/entity-resolution.md`.
    entity (`/entities/person/<owner.slug>.md`) in `owner` ("I owe") or in
    `owed_to` ("owed to me", with the other party in `owner`). If resolution
    leaves the owner's entity in neither, the candidate is filed as a fact, its
-   people in `entities`.
+   people in `entities`. When `owner.slug` is absent from `elephant.json`, or
+   names no roster row (a `rename-entity.py` never rewrites `elephant.json`),
+   the owner's entity is the row the roster resolves for `owner.name`; say so
+   in this run's `log.md` entry. When that resolves nothing either, every
+   commitment is filed as a fact and the `log.md` entry says the loop lane was
+   skipped for want of an owner entity.
 4. **Dedup** (5-dimension scoring vs. existing facts — load only likely
    matches): (1) the claim, (2) the why/root, (3) entities + referenced things,
    (4) tags, (5) source overlap.
@@ -154,9 +165,13 @@ It touches entities — also load `../_shared/entity-resolution.md`.
      would load the whole lane. Match on the other parties (the counterpart in
      `owner` or `owed_to`) and on the projects in `entities`; a candidate
      naming no one but the owner is compared with the open loops that likewise
-     name no one else. A manifest built
-     before this release has no `owner`/`owed_to` keys on its rows; the step 3
-     freshness rule's one `build-index.py` run rewrites it. Same deliverable
+     name no one else. Loops filed earlier in this run are matched too: the
+     manifest on disk is only rebuilt at the end of the run (step 8 here,
+     step 7 in `catch-up`), so hold each loop you file
+     with the manifest rows, as the roster is held in step 3. A manifest built
+     before this release has no `owner`/`owed_to` keys on its rows; the
+     `update` re-sync that installs this release runs `build-index.py`, which
+     rewrites it. Same deliverable
      and same parties is the same commitment, and this source acts on that
      loop (below) instead of filing a new one. Sibling tasks (same project,
      distinct deliverables) are separate loops, never merged; when a candidate
@@ -172,7 +187,10 @@ It touches entities — also load `../_shared/entity-resolution.md`.
      never today's; for `capture`, the user in the conversation is the source
      and the date is today.
    - **What a source does to it.** One of four actions, decided here and
-     written at step 7:
+     written at step 7. An action you are unsure of is not taken: the loop
+     stays exactly as it is, since every terminal status is final.
+     `catch-up` step 5's write-anyway rule for guessed items does not apply
+     to loop actions.
      - **Delivered** -> `status: done`, `closed: <source date>`,
        `closed_by: <the source record step 1 created>`, and a
        `**Resolution:**` paragraph appended at the end of the body, after any

@@ -141,7 +141,10 @@ data). Fully annotated example with **fictional** data:
   `knowledge/entities/`, or when no open loop names it at all. So after
   renaming or merging the owner's own entity with `rename-entity.py`, which
   rewrites every link but never `elephant.json`, set `slug` to the new name:
-  until then the rule stays off.
+  until then the rule stays off. A loop linking another entity whose slug,
+  title or an alias is one of the owner entity's names (a duplicate of the
+  owner) counts as naming the owner, and `decay` notes those entities so they
+  can be merged.
 
 **`knowledge_language`** (default `"en"`) — language every fact/entity/source file
 is written in. One stable language for the whole bundle.
@@ -155,9 +158,10 @@ query answers. May differ from `knowledge_language`.
 **`decay`** (optional) — settings for the `decay` mode.
 - `loop_expiry_days` (default `30`) — the silence window: an open loop with no
   activity (`updated`, `opened`, `created`, or a citation in
-  `state/recall.json`) for this many days or more is expired. A bundle that sets
-  it keeps its value across updates, since `update` never re-syncs
-  `elephant.json`.
+  `state/recall.json`) for this many days or more is expired. A positive whole
+  number: any other value (`true`, `"60"`, `60.0`, `0`) takes the default, with
+  a note on stderr. A bundle that sets it keeps its value across updates, since
+  `update` never re-syncs `elephant.json`.
 
 **`sources`** (optional) — configures automatic ingestion. Absent/empty means the
 bundle is manual-ingest only; `catch-up` and `push-start-day` have nothing to do

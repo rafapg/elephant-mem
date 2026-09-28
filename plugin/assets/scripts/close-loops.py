@@ -340,6 +340,31 @@ def field(block, key):
     return unquote(strip_comment(m.group(1))) or None
 
 
+def _cut_line_comment(v):
+    """One physical line of an inline list that wraps, without its YAML comment.
+
+    strip_comment() leaves a comment on a line whose `[` has not closed yet,
+    because it looks for the comment outside the list and that line has no
+    outside. A comment still ends at the end of its own line, list or not, so
+    this cuts at the first `#` that starts the line or follows a space, skipping
+    quoted items (`"a #b"` is content). Brackets are not tracked: on a wrapped
+    line they no longer delimit where a comment may sit."""
+    v = v.strip()
+    i, n = 0, len(v)
+    while i < n:
+        c = v[i]
+        if c in "\"'":
+            end = _closing_quote(v[i:])
+            if end < 0:
+                return v
+            i += end + 1
+            continue
+        if c == "#" and (i == 0 or v[i - 1] in " \t"):
+            return v[:i].rstrip()
+        i += 1
+    return v
+
+
 # A top-level `key:` line, which is where a wrapped inline list that never
 # closed has certainly ended.
 TOP_KEY = re.compile(r"^[A-Za-z_][\w-]*[ \t]*:(?:\s|$)")
@@ -368,9 +393,11 @@ def list_field(block, key):
             continue
         val = strip_comment(m.group(1))
         if val.startswith("["):
+            if _closing_bracket(val) < 0:
+                val = _cut_line_comment(m.group(1))
             j = i + 1
             while _closing_bracket(val) < 0 and j < len(lines) and not TOP_KEY.match(lines[j]):
-                val = val + " " + strip_comment(lines[j])
+                val = val + " " + _cut_line_comment(lines[j])
                 j += 1
             end = _closing_bracket(val)
             inner = (val[1:end] if end > 0 else val[1:]).strip()
@@ -414,8 +441,11 @@ def slugs(links):
 
 def newest_date(block, keys):
     """The newest of `keys` that parses as a date, as an ISO string, or None.
-    Same tolerance as decay-loops.py's last_activity(): an unparseable or
-    missing field is simply not a date, never an error."""
+    An unparseable or missing field is simply not a date, never an error. That
+    tolerance is no longer decay-loops.py's: there an `updated:` that does not
+    parse makes the loop no stale candidate, since expiry is final, while here
+    the date only orders the queue and re-queues a loop active since it was
+    examined."""
     dates = []
     for key in keys:
         v = field(block, key)

@@ -392,6 +392,30 @@ def test_custom_threshold(root):
            "young.md" in result_lowered.stdout, result_lowered.stdout)
 
 
+def test_invalid_threshold_values(root):
+    """A `loop_expiry_days` that is present but not a positive whole number
+    takes the default, with a note. `true` is the one that mattered: JSON's
+    boolean is a Python int, so it read as a 1-day window and a loop 5 days
+    quiet was a candidate."""
+    for tag, value in (("bool", True), ("string", "60"), ("float", 60.0), ("zero", 0)):
+        bundle = new_bundle(root, "threshold-invalid-" + tag, expiry_days=value)
+        write_loop(bundle, "five-days.md", "5-day-old loop",
+                   opened=days_ago(5), created=days_ago(5), updated=days_ago(5))
+        write_loop(bundle, "forty-days.md", "40-day-old loop",
+                   opened=days_ago(40), created=days_ago(40), updated=days_ago(40))
+        dry = run_script(bundle, "decay-loops.py")
+        record(f"loop_expiry_days {json.dumps(value)}: the default 30 is used "
+               "(the 5-day loop is no candidate, the 40-day one is), with one note",
+               "five-days.md" not in dry.stdout and "forty-days.md" in dry.stdout
+               and "stale >= 30d" in dry.stdout
+               and dry.stderr.count("decay.loop_expiry_days is") == 1,
+               dry.stdout + dry.stderr)
+    valid = new_bundle(root, "threshold-valid-quiet", expiry_days=45)
+    dry = run_script(valid, "decay-loops.py")
+    record("…while a valid value prints no such note",
+           "decay.loop_expiry_days is" not in dry.stderr, dry.stderr)
+
+
 # ---------------------------------------------------------------------------
 # 7. build-index.py, run after --apply, drops expired loops from the counts
 # ---------------------------------------------------------------------------
@@ -1079,6 +1103,16 @@ def test_scope_link_shapes(root):
         # A spelling list_field() does not parse at all: the raw link scan is
         # the floor that keeps it in scope.
         ("yaml-tag", "owner", f" !!seq [{ME}]"),
+        ("markdown-link", "owner", f' ["[Me]({ME})"]'),
+        ("yaml-tag-bare-slug", "owner", " !!seq [me]"),
+        # The first line of a wrapped list carries a comment, and the owner is
+        # a bare slug on the next: the comment used to be glued to it.
+        ("wrapped-list-comment-bare-slug", "owner", f" [{JANE},  # x\n  me]"),
+        # A bare slug in each of the other two fields: the full-path link is
+        # caught by the raw scan whatever SCOPE_FIELDS holds, a bare slug only
+        # by the field itself being read.
+        ("owed-to-bare-slug", "owed_to", " [me]"),
+        ("entities-bare-slug", "entities", " [me]"),
     ]
     for owner_slug in ("me", "ME", ME):
         tag = {"me": "plain", "ME": "upper", ME: "path"}[owner_slug]
@@ -1097,6 +1131,17 @@ def test_scope_link_shapes(root):
         write_loop(bundle, "lookalike.md", "A slug the owner's is a prefix of",
                    opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
                    owner=["/entities/person/meyer.md"])
+        # The slug as an ordinary word outside the three fields' values: in the
+        # description, and in a comment on a scope line. Neither is a link.
+        write_loop(bundle, "word-in-description.md", "Jane to send me the deck",
+                   opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                   owner=[JANE])
+        write_loop(bundle, "word-in-comment.md", "Jane's, commented",
+                   opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                   owner=f" [{JANE}]   # not me")
+        write_loop(bundle, "word-in-item-comment.md", "Jane's, a commented item",
+                   opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                   owner=f"\n  - {JANE}  # not me")
         dry = run_script(bundle, "decay-loops.py")
         names = [name for name, _k, _r in in_scope_shapes] + ["spaced-colon"]
         missed = [name for name in names if f"/{name}.md" in dry.stdout]
@@ -1104,12 +1149,15 @@ def test_scope_link_shapes(root):
                "every shape (quoted, block sequence at any indent or with a comment "
                "line, a wrapped inline list, bare scalar, bare slug, uppercase, "
                "another kind directory, owed_to, a trailing comment, `owner :`, a "
-               "YAML tag)",
+               "YAML tag, a markdown link, a bare slug in owed_to or entities)",
                not missed, f"listed as candidates: {missed}\n{dry.stdout}")
-        record(f"owner.slug given as {owner_slug!r}: …and the rule is still on, a "
-               "lookalike slug is no match",
-               "lookalike.md  (out of scope" in dry.stdout
-               and "1 candidate(s) for decay (1 out of scope" in dry.stdout, dry.stdout)
+        record(f"owner.slug given as {owner_slug!r}: …and the rule is still on: a "
+               "lookalike slug, the slug as a word in the description or in a "
+               "comment, are no match",
+               all(f"{n}.md  (out of scope" in dry.stdout
+                   for n in ("lookalike", "word-in-description", "word-in-comment",
+                             "word-in-item-comment"))
+               and "4 candidate(s) for decay (4 out of scope" in dry.stdout, dry.stdout)
 
 
 RAFA_OLD = "/entities/person/rafael-girolineto.md"
@@ -1220,6 +1268,106 @@ def test_no_loop_names_the_owner_skips_scope_rule(root):
            dry.stdout + dry.stderr)
 
 
+def write_named_entity(bundle, entity_slug, title, aliases=()):
+    """An entity file with a given title and aliases, for the duplicate test."""
+    path = write_entity(bundle, entity_slug)
+    text = path.read_text(encoding="utf-8")
+    text = text.replace(f'title: "{entity_slug}"', f'title: "{title}"').replace(
+        "aliases: []", "aliases: [" + ", ".join(aliases) + "]")
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_partial_owner_duplicate(root):
+    """The "no open loop names the owner" guard is all or nothing. With a
+    duplicate of the owner's entity that only some loops link, it does not
+    fire, and those loops used to expire as out of scope. A loop linking an
+    entity carrying one of the owner's names is read as naming the owner."""
+    bundle = new_bundle(root, "owner-partial-duplicate", owner_slug="rafael-girolineto",
+                        owner_entity=False)
+    write_named_entity(bundle, "rafael-girolineto", "Rafael Girolineto", ["Giro", "rafapg"])
+    write_named_entity(bundle, "giro", "Giro")                  # the duplicate, by alias
+    write_named_entity(bundle, "rafael-g", "Rafael Girolineto")  # the duplicate, by title
+    write_named_entity(bundle, "zelda-girolineto", "Zelda Girolineto")
+    write_named_entity(bundle, "jane", "Jane")
+    mine = write_loop(bundle, "mine.md", "Mine", owner=[RAFA_OLD],
+                      opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    dup_alias = write_loop(bundle, "dup-alias.md", "Mine, linked to the duplicate",
+                           owner=["/entities/person/giro.md"],
+                           opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    dup_title = write_loop(bundle, "dup-title.md", "Owed to me, linked to the duplicate",
+                           owner=[JANE], owed_to=["/entities/person/rafael-g.md"],
+                           opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    write_loop(bundle, "relative.md", "A relative's, not the owner's",
+               owner=["/entities/person/zelda-girolineto.md"],
+               opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    write_loop(bundle, "third.md", "Jane's", owner=[JANE],
+               opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    dry = run_script(bundle, "decay-loops.py")
+    record("a loop linking a duplicate of the owner (same alias or same title) is no "
+           "out-of-scope candidate",
+           "dup-alias.md" not in dry.stdout and "dup-title.md" not in dry.stdout
+           and "mine.md" not in dry.stdout, dry.stdout)
+    record("…while a relative sharing a surname, and a third party, still are",
+           "relative.md  (out of scope" in dry.stdout and "third.md  (out of scope" in dry.stdout
+           and "2 candidate(s) for decay (2 out of scope" in dry.stdout, dry.stdout)
+    record("…and one stderr note names the duplicates and the merge that fixes them",
+           dry.stderr.count("carry one of the owner's names") == 1
+           and "/entities/*/giro.md" in dry.stderr and "/entities/*/rafael-g.md" in dry.stderr
+           and "zelda" not in dry.stderr and "rename-entity.py --merge" in dry.stderr,
+           dry.stderr)
+    run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply leaves the loops linking a duplicate open",
+           all("status: open" in p.read_text(encoding="utf-8")
+               for p in (mine, dup_alias, dup_title)), dry.stdout)
+
+
+def test_unreadable_updated_is_no_candidate(root):
+    """An `updated:` line that is present but no YYYY-MM-DD date (a pt-BR date,
+    an unpadded one, a month 13) used to be skipped as if absent: the loop fell
+    back to `opened`, 89 days back, and expired as silent the run after it was
+    re-raised. And of two `updated:` lines only the first was read."""
+    bundle = new_bundle(root, "unreadable-updated")
+    recent = TODAY - datetime.timedelta(days=1)
+    spellings = {
+        "pt-br": recent.strftime("%d/%m/%Y"),
+        "month-13": f"{recent.year}-13-{recent.day:02d}",
+        "words": "yesterday",
+    }
+    loops = {}
+    for tag, value in spellings.items():
+        path = write_loop(bundle, f"bad-{tag}.md", f"Re-raised, updated as {tag}",
+                          opened=days_ago(89), created=days_ago(89))
+        path.write_text(path.read_text(encoding="utf-8").replace(
+            f"updated: {days_ago(89)}", f"updated: {value}"), encoding="utf-8")
+        loops[tag] = path
+    dup = write_loop(bundle, "dup-updated.md", "Bumped by appending a second line",
+                     opened=days_ago(89), created=days_ago(89), updated=days_ago(89))
+    dup.write_text(dup.read_text(encoding="utf-8").replace(
+        f"updated: {days_ago(89)}\n", f"updated: {days_ago(89)}\nupdated: {days_ago(1)}\n"),
+        encoding="utf-8")
+    old = write_loop(bundle, "old.md", "Silent, readable dates",
+                     opened=days_ago(89), created=days_ago(89), updated=days_ago(89))
+    record("the fixture holds: each bad loop carries its unreadable `updated:`",
+           all(f"updated: {spellings[t]}\n" in p.read_text(encoding="utf-8")
+               for t, p in loops.items()), "")
+    dry = run_script(bundle, "decay-loops.py")
+    record("an unreadable `updated:` makes no stale candidate, whatever `opened` says",
+           not any(p.name in dry.stdout for p in loops.values())
+           and "old.md  (89d stale)" in dry.stdout
+           and "1 candidate(s) for decay (0 out of scope, 1 stale" in dry.stdout, dry.stdout)
+    record("…with one stderr note per such loop, naming it and the value",
+           all(dry.stderr.count(f"/tracking/loops/{p.name} has `updated: {spellings[t]}`") == 1
+               for t, p in loops.items()), dry.stderr)
+    record("of two `updated:` lines the newer one counts", "dup-updated.md" not in dry.stdout,
+           dry.stdout)
+    run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply expires only the loop whose dates all read",
+           "status: expired" in old.read_text(encoding="utf-8")
+           and all("status: open" in p.read_text(encoding="utf-8")
+                   for p in (*loops.values(), dup)), "")
+
+
 def load_script(name):
     """A shipped script loaded in-process from plugin/assets/scripts/, to reach
     its pure functions. The checkout refusal is guarded on __main__."""
@@ -1256,6 +1404,9 @@ def test_list_field_mirrors_close_loops(root):
         ("another key's prefix is not the key", "owner",
          f"owner_note: [{JANE}]\nowner: [{ME}]\n", [ME]),
         ("missing", "owed_to", f"owner: [{ME}]\n", []),
+        ("comment inside a wrapped inline list", "owner",
+         f"owner: [{JANE}  # the counterpart\n  , {ME}]  # and the owner\nstatus: open\n",
+         [JANE, ME]),
     ]
     for label_, key, block, expected in shapes:
         got_d, got_c = decay.list_field(block, key), close.list_field(block, key)
@@ -1464,6 +1615,20 @@ def test_decay_prose_contract(root):
            "never moved backwards" in both or "never backwards" in both)
     record("procedure.md's step 5 log line splits the kinds",
            "**Decay**: N loops expired (M out of scope, K >=Xd stale)" in proc, "")
+    record("procedure.md passes every rejected candidate, stale or out of scope, as "
+           "`--except`, so a reject never becomes an expiry in its own run, and "
+           "reads the script's `matches no candidate` note as the edit having taken",
+           "Pass every candidate rejected in step 2, stale or out of scope" in proc
+           and "Pass every out-of-scope candidate rejected without a claim" not in proc
+           and "`--except <link> matches no candidate this run`" in proc
+           and "--except {link} matches no candidate this run" in
+           (ASSETS / "scripts" / "decay-loops.py").read_text(encoding="utf-8"), "")
+    record("procedure.md: a failed recall roll ends the run before the scan, and "
+           "unattended it is an environment failure filed to the backlog",
+           "ends the run before the scan" in proc
+           and "**Decay**: environment failure (recall roll failed)" in proc
+           and "backlog.py add decay-recall-roll-failed" in proc
+           and "a failure is not fatal" not in proc, "")
 
 
 def guarded(fn, root):
@@ -1489,6 +1654,7 @@ def main():
         test_other_statuses_untouched,
         test_expired_field_written,
         test_custom_threshold,
+        test_invalid_threshold_values,
         test_build_index_excludes_expired_after_apply,
         test_template_shaped_loop_decays,
         test_status_spelling_agrees_with_build_index,
@@ -1507,6 +1673,8 @@ def main():
         test_scope_link_shapes,
         test_unresolvable_owner_skips_scope_rule,
         test_no_loop_names_the_owner_skips_scope_rule,
+        test_partial_owner_duplicate,
+        test_unreadable_updated_is_no_candidate,
         test_list_field_mirrors_close_loops,
         test_legacy_loop_without_owed_to,
         test_dry_run_labels_and_split,

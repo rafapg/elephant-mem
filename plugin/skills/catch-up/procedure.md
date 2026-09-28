@@ -346,7 +346,10 @@ on to step 1, and carry the check's one line into this run's `log.md` entry
    name/entity, ambiguous tool, weak single-mention signal): write it anyway
    with `confidence: low` + tag `needs-review`, and append a line to
    `state/needs-review.md` (`- [ ] <date> <path> — <the question>`). Do not
-   block the run.
+   block the run. A loop action (close, drop, bump, refine) is not such an
+   item: one you are unsure of is not taken and the loop stays exactly as it
+   is (`../ingest/procedure.md` step 4, **Open loops**), since every terminal
+   status is final.
    **The `needs-review` tag and its queue line are ONE unit — never write one
    without the other.** This holds for extraction subagents too: a subagent that
    tags an item `needs-review` MUST return its queue line so the consolidator

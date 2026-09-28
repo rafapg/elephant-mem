@@ -32,8 +32,16 @@ were cited on 2026-09-05 and reach 30 days of silence around 2026-10-05 unless
 they are cited or re-raised again. The way to claim loops before that happens
 is an interactive `elephant-mem:decay` before the schedule's next run, knowing
 it reviews the whole candidate list in batches, several hundred loops on a
-bundle like the owner's. A bundle whose `elephant.json` sets
-`decay.loop_expiry_days` explicitly keeps that value, since `update` never
+bundle like the owner's. This section is the only place that says so: `update`
+shows the version delta and the files it syncs, and the scheduled `decay --yes`
+approves every candidate. The batch lands as one `decay: N loops expired …`
+commit in the bundle, so a `git revert` of it restores the loops, though the
+next run lists the out-of-scope ones again until each is claimed. The
+out-of-scope rule, 740 of the 776, has no setting; it is skipped only when
+`owner.slug` is missing, names no entity file, or is named by no open loop.
+The window has one, and
+`init` never writes `decay.loop_expiry_days`, so most bundles take the new 30,
+and one that sets the key explicitly keeps its value, since `update` never
 re-syncs `elephant.json`; moving it to 30 is a manual edit.
 
 ### Added
@@ -74,8 +82,23 @@ re-syncs `elephant.json`; moving it to 30 is a manual edit.
   column 0, PyYAML's own dump style; an inline list wrapped across lines; a
   comment between items; `owner :`) and would have expired those loops the day
   they were opened. The fix went into `close-loops.py`'s copy too, and a test
-  holds the two to the same answers. An entity link to the owner anywhere in
-  the frontmatter also keeps a loop in, for spellings nobody has written yet.
+  holds the two to the same answers. A review of that mirror found one more: a
+  comment on the first line of a wrapped list was glued to the next item, so
+  `[jane.md,  # x` then `me]` read as `jane.md` and `# x me`. Both copies now
+  cut each physical line at its own comment. Under the parser sits a floor for
+  spellings nobody has written yet: an entity link to the owner anywhere in the
+  frontmatter keeps a loop in, and so does the owner's slug as a whole token in
+  the raw text of `owner`, `owed_to` or `entities`, which covers a markdown
+  link and `!!seq [me]`. The token test never reads the description, where a
+  short slug like `me` is an ordinary word. The all-or-nothing guard above
+  misses a lane where only some loops link a duplicate of the owner's entity,
+  an ingest that resolved the owner's nickname to a new entity, so a loop
+  linking an entity whose slug, title or alias is one of the owner entity's
+  names is read as naming the owner, with a stderr note suggesting
+  `rename-entity.py --merge`. On a copy of the owner's bundle taken on 2026-09-28, neither
+  addition moved a loop: the out-of-scope set was the same 700 paths with and
+  without them, and none of those carried the owner's name or aliases in the
+  three fields.
   Out-of-scope candidates are listed ahead of stale ones, so the dry run and the
   review batches group the two kinds. A snooze cannot save one, so rejecting
   it at the interactive gate has its own meaning: when the owner owes it or is
@@ -84,8 +107,12 @@ re-syncs `elephant.json`; moving it to 30 is a manual edit.
   is not expired this run, and the next unattended run expires it.
 - **`decay-loops.py --except LINK`**, repeatable, which is what keeps a
   rejected loop out of this run's `--apply`, since the re-scan would list it
-  again. The flag can only keep a loop open, so it reads link spellings
-  leniently, and a link that matches no candidate prints a note.
+  again. The procedure passes every candidate rejected at the gate, stale or
+  out of scope, claimed or not: its first wording passed only unclaimed
+  out-of-scope ones, so a snoozed stale loop whose `updated:` edit came out
+  wrong was listed again and expired in the run that had just rejected it.
+  The flag can only keep a loop open, so it reads link spellings leniently,
+  and a link that matches no candidate prints a note.
 - **Closure signal history.** A source that speaks to the commitment can now
   refine its `**Closure signal:**` (a deadline moved, the scope shrank, the
   deliverable changed), and never silently: the previous version is kept in a
@@ -93,7 +120,9 @@ re-syncs `elephant.json`; moving it to 30 is a manual edit.
   bundle-absolute link of the source that changed it. `close-loops.py` still
   reads only the current signal, because its regex already stops at a blank
   line or at the next bolded lead-in, which the history heading is; a test pins
-  both shapes. A `**Resolution:**` written later goes at the end of the body,
+  each terminator on its own, since the first fixtures all ended at a lead-in
+  and deleting the blank-line branch of the regex failed none of them. A
+  `**Resolution:**` written later goes at the end of the body,
   after any history, and `tracking/resolved-loops.md` prints its first sentence
   as before.
 - **`dropped` by evidence.** `status: dropped` had been a hand-set state, and 8
@@ -124,21 +153,43 @@ re-syncs `elephant.json`; moving it to 30 is a manual edit.
   dropped for relevance and only the lane changes. Every terminal status is
   final: a re-mention of an expired loop files a new one. Every loop write the
   core decides (new loop, close, drop, bump, refine) happens at step 7, so
-  `--review` gates them too.
+  `--review` gates them too. A review of the core's prose found four ways a
+  re-mention still missed its loop, and each now has a rule. A chase that
+  yields no new fact was dropped by step 2's skip rules as a restatement
+  before it reached the match, so a message that delivers, chases,
+  reschedules, reports blocked or cancels a commitment now goes through steps
+  3 and 4 as a loop-action candidate. The match read only `manifest.jsonl`,
+  which is rebuilt at the end of the run, so a loop filed earlier in the same
+  run was invisible to later candidates and could be filed twice; those loops
+  are now held with the manifest rows. An action the model is unsure of is not
+  taken and the loop stays as it is, since `catch-up` step 5 otherwise says to
+  write a guessed item anyway and a guessed `done` could never be reopened.
+  And with `owner.slug` absent or stale after a rename, nothing said which
+  entity was the owner's; the core now falls back to the roster row for
+  `owner.name`, and when that resolves nothing too it files every commitment
+  as a fact and says in `log.md` that the loop lane was skipped.
 - **`owner` and `owed_to` on the open-loop rows of `manifest.jsonl`.** The
   re-mention lookup reads the manifest, whose rows carried `entities` only, so
   an "owed to me" loop with the counterpart in `owner` and the owner only in
   `owed_to` would have been invisible to it, and every re-mention would have
   filed a duplicate instead of bumping or closing it. Fact rows gained no key.
-- **`tests/test_loop_lifecycle.py` (78 checks)**, with its own `- run:` line in
+  A manifest built before this release is rewritten by the `update` re-sync
+  that installs it, which runs `build-index.py`. Without PyYAML, that
+  script's fallback parser read three valid shapes of these lists wrong: a
+  block sequence at column 0 and a list with a comment between items came out
+  empty, and an inline list wrapped across lines came out as one broken item.
+  It now reads all three, and on a copy of the owner's bundle with PyYAML
+  forced off its output is byte-identical to the previous parser's.
+- **`tests/test_loop_lifecycle.py` (87 checks)**, with its own `- run:` line in
   `ci.yml`. It pins the ingest core's loop rules to the step that carries them,
-  the history format, the absence of any expiry notice in `start-day`,
+  `ingest-audio`'s summary of those steps, the history format, the absence of
+  any expiry notice in `start-day`,
   `end-day` and `push-start-day`, and, repo-wide, that none of the retired
   phrases about the sweep gate or the two writers of `updated:` survives under
   `plugin/`, `docs/` or the README, naming the file when one does. It also
   checks that its own `ci.yml` line is still there.
-  `tests/test_decay.py` grew to 200 checks, with the six gate tests deleted;
-  `tests/test_close_loops.py` went to 148, `tests/test_index.py` to 114 and
+  `tests/test_decay.py` grew to 217 checks, with the six gate tests deleted;
+  `tests/test_close_loops.py` went to 151, `tests/test_index.py` to 120 and
   `tests/test_templates.py` to 32.
 
 ### Changed
@@ -168,7 +219,10 @@ re-syncs `elephant.json`; moving it to 30 is a manual edit.
   The re-mention bar is unchanged: chasing, rescheduling or reporting a
   commitment blocked counts, while merely naming the same people or project does
   not. The docs that said `updated:` had exactly two writers, or that `capture`
-  was not one, were rewritten.
+  was not one, were rewritten, and so were `ingest-audio`'s own summary of the
+  ingest steps and its recap, which still described a meeting that only opens
+  loops; they now say the meeting's loops are closed, dropped, bumped or
+  refined by the confirmed meeting date.
 - **`close-loops` is optional.** It stays a daily sweep hunting loops that are
   done or obsolete, and `state/closure-sweep.json` is now only its own queue
   control; `decay` runs independently of it. `close-loops.py` does not skip
@@ -190,6 +244,28 @@ re-syncs `elephant.json`; moving it to 30 is a manual edit.
   clock, the opposite of what the bump exists for. A re-raising source older
   than the current `updated:` now bumps nothing, and neither does a source with
   no date, except under `capture`, whose date is today.
+- **An `updated:` that was not a date aged the loop from the day it was
+  opened.** `decay-loops.py` skipped `updated: 25/09/2026` or `2026-9-25` as if
+  the line were absent and fell back to `opened`, so a loop just re-raised or
+  snoozed read as silent since the day it was opened, and when a bump was
+  appended as a second `updated:` line only the first was read. `updated:` is the date a model
+  rewrites over a loop's life, so it is where a slip lands. A present but
+  unreadable `updated:` now makes the loop no stale candidate, with one stderr
+  note naming it, and every line of `updated`, `opened` and `created` is read,
+  taking the newest. On a copy of the owner's bundle taken on 2026-09-28,
+  none of its 952 open loops was affected.
+- **`"loop_expiry_days": true` was a one-day window.** JSON's boolean is a
+  Python `int`, so it passed the type check and every loop quiet since
+  yesterday became a candidate. Any value that is present but not a positive
+  whole number (`true`, `"60"`, `60.0`, `0`) now takes the default of 30, with
+  one stderr note, and `docs/configuration.md` states the rule.
+- **A failed `recall.py roll` let `decay` scan on a stale citation record.**
+  The procedure called the failure not fatal, but an unrolled citation makes a
+  loop the owner's answers keep citing read as stale, and the expiry is final.
+  Any non-zero exit from the roll now ends the run before the scan: an
+  interactive run relays the error and stops, and an unattended one takes the
+  environment-failure path, a `log.md` line and a backlog item, committing only
+  those two files.
 
 ## [0.1.0-beta.16] - 2026-09-10
 

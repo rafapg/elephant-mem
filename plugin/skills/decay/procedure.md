@@ -54,17 +54,27 @@ run's report when it left one.
    `python3 scripts/recall.py roll`. It folds every consumption line written
    since the last roll into `state/recall.json`'s buckets — that record is an
    input to the scan below, so rolling here is what keeps it fresh where it is
-   read. It writes no record when the log is empty or absent, and a failure is
-   not fatal to this run: carry on and let the scan read the record as it
-   stands (an unrolled line only makes a loop look less recently cited than it
-   is). It also appends the `state/` ignore rules to `<bundle>/.gitignore` when
-   a bundle predates them, so this run's own `git add -A` cannot commit the
-   record of which people were looked up and when. If it cannot confirm those
-   rules it writes nothing and exits non-zero. That one is not the ordinary
-   failure above: the scan still runs and still reads the record as it stands,
-   but nothing in this run may commit until the `.gitignore` is fixed, so stop
-   before the write step and report the refusal with the reason the roll
-   printed.
+   read. It writes no record when the log is empty or absent, which is not a
+   failure. It also appends the `state/` ignore rules to `<bundle>/.gitignore`
+   when a bundle predates them, so this run's own `git add -A` cannot commit
+   the record of which people were looked up and when. If it cannot confirm
+   those rules it writes nothing and exits non-zero.
+
+   **A non-zero exit from the roll, for any reason, ends the run before the
+   scan.** An unrolled line makes a loop look less recently cited than it is,
+   and a loop the owner's answers keep citing then reads as stale: the scan
+   lists it, and its expiry is final. Stopping costs one cadence.
+   - **Interactive:** relay the roll's stderr in `conversation_language`, say
+     that nothing was scanned or expired, and stop.
+   - **Unattended:** take the environment-failure path of **Preflight** above,
+     with the roll as the failure. Scan nothing, expire nothing. Append one
+     dated line to `knowledge/log.md` as `**Decay**: environment failure
+     (recall roll failed)`, with the reason the roll printed; run `python3
+     scripts/backlog.py add decay-recall-roll-failed --summary … --evidence …`
+     and read its exit code; then commit **only** that log line and the
+     backlog file, message `decay: environment failure (recall roll failed)`.
+     Never `git add -A` here: when the roll refused over the `.gitignore`,
+     that is the commit it refused.
 
    Then run `python3 scripts/decay-loops.py`. It scans every `status: open`
    loop and lists two kinds of candidate. First, at any age, every open loop
@@ -76,14 +86,20 @@ run's report when it left one.
    stderr saying so, and likewise when `owner.slug` names no entity file (the
    owner's entity was renamed or merged and `elephant.json` still has the old
    slug) or when no open loop names the owner at all. Relay that note to the
-   user: until `owner.slug` is fixed, only stale loops expire. Then, for every other open loop, it computes its
+   user: until `owner.slug` is fixed, only stale loops expire. A loop linking
+   another entity that carries one of the owner's names (a duplicate of the
+   owner's entity) is read as naming the owner, with a note naming those
+   entities; relay it too, since merging them is the fix. Then, for every other open loop, it computes its
    last-activity date (the max of `updated` / `opened` / `created`, whichever
    are present, and the date `state/recall.json` last records the loop as
    cited by an answer), and lists every one whose last activity is
    `elephant.json` -> `decay.loop_expiry_days` days back or more (default 30;
    the comparison is `>=`, so a loop exactly that old is a candidate, with the
-   same defensive fallback as `hub_max_facts`) as a stale candidate, one per
-   line with its age in days. The trailing count splits out of scope from
+   same defensive fallback as `hub_max_facts`; a value that is not a positive
+   whole number takes the default with a note) as a stale candidate, one per
+   line with its age in days. A loop whose `updated:` is present but not a
+   `YYYY-MM-DD` date is no stale candidate, with a note naming it: fix the
+   line, since a bump nobody can date is still a bump. The trailing count splits out of scope from
    stale. The scan is read-only, and the roll before it writes only
    `state/recall.json` — no knowledge file changes yet.
 
@@ -125,11 +141,18 @@ run's report when it left one.
    the same way. It never deletes a file and never touches `done` /
    `dropped` / already-`expired` loops.
 
-   Pass every out-of-scope candidate rejected without a claim in step 2 as
-   `--except <link>` (its bundle-absolute path, one flag per loop), so this
-   `--apply` leaves it open and untouched: the re-scan would otherwise list it
-   again, since the scope test reads no date. `--skip-sweep` is accepted and
-   ignored: this script no longer reads `state/closure-sweep.json`.
+   Pass every candidate rejected in step 2, stale or out of scope, claimed or
+   not, as `--except <link>` (its bundle-absolute path, one flag per loop), so
+   this `--apply` leaves it open and untouched whatever the re-scan reads: an
+   unclaimed out-of-scope loop would be listed again, since the scope test
+   reads no date, and a snoozed stale one would be too if its `updated:` edit
+   came out wrong. A reject never becomes an expiry in the run that collected
+   it. A snoozed or claimed loop the re-scan no longer lists prints
+   `--except <link> matches no candidate this run`: that note is the edit
+   having taken. A snoozed or claimed loop without it was still a candidate,
+   so its edit went wrong: tell the user which, and fix the line.
+   `--skip-sweep` is accepted and ignored: this script no longer reads
+   `state/closure-sweep.json`.
 
 4. **Rebuild + validate.** `python3 scripts/build-index.py` then
    `python3 scripts/validate-okf.py` — both must pass. This is what actually

@@ -341,6 +341,41 @@ def test_parse_fm_fallback_block_lists(root):
         )
 
 
+def test_parse_fm_fallback_loop_party_shapes(root):
+    """The manifest's `owner` / `owed_to` on an open-loop row are what the
+    ingest core's re-mention lookup matches on, and close-loops.py /
+    decay-loops.py's list_field() read these shapes as YAML does. Without
+    PyYAML the fallback read the first two as empty and the last three as one
+    broken item, so a hand-edited "owed to me" loop left the lookup and a
+    re-mention filed a duplicate. build-index.py only: briefing.py carries its
+    own copy of the parser."""
+    mod = load_module_forcing_no_yaml("build-index.py")
+    me, jane = "/entities/person/me.md", "/entities/person/jane.md"
+    shapes = [
+        ("a block sequence at column 0", f"owed_to:\n- {me}\nstatus: open\n", [me]),
+        ("a comment line between block items",
+         f"owed_to:\n  - {jane}\n  # next\n  - {me}\nstatus: open\n", [jane, me]),
+        ("an inline list wrapped across lines",
+         f"owed_to: [{jane},\n  {me}]\nstatus: open\n", [jane, me]),
+        ("a comment on the line an inline list has not closed on",
+         f"owed_to: [{jane},  # waiting\n  {me}]  # tail\nstatus: open\n", [jane, me]),
+        ("an inline list never closed, which ends at the next key",
+         f"owed_to: [{me},\nstatus: open\n", [me]),
+    ]
+    for label_, block, expected in shapes:
+        fm = mod.parse_fm(block)
+        record(f"build-index.py: fallback parser reads {label_} as YAML does",
+               fm.get("owed_to") == expected and fm.get("status") == "open", fm)
+    # An apostrophe in a plain item reads as an unclosed quote to the bracket
+    # scan; a one-line list must not be taken for a wrapped one (a live bundle
+    # carries `aliases: [rua tracker, issue tracker (Holanda's)]`).
+    fm = mod.parse_fm("aliases: [rua tracker, issue tracker (Holanda's)]\nkind: tool\n")
+    record("build-index.py: fallback parser reads a one-line list holding an "
+           "apostrophe unchanged",
+           fm.get("aliases") == ["rua tracker", "issue tracker (Holanda's)"]
+           and fm.get("kind") == "tool", fm)
+
+
 # ---------------------------------------------------------------------------
 # 1b. block-style YAML sequences — end-to-end via build-index.py
 # ---------------------------------------------------------------------------
@@ -1380,6 +1415,7 @@ def main():
 
     for fn in (
         test_parse_fm_fallback_block_lists,
+        test_parse_fm_fallback_loop_party_shapes,
         test_block_style_entities,
         test_marker_injection,
         test_hub_sharding,

@@ -254,6 +254,33 @@ def strip_comment(v):
     return (v[:end + 1] + rest.split(" #", 1)[0]).rstrip()
 
 
+def _cut_line_comment(v):
+    """One physical line of an inline list that wraps, without its YAML comment.
+    strip_comment() keeps a comment on a line whose `[` has not closed yet (that
+    line has no outside), but a comment ends at the end of its line regardless.
+    Cuts at the first `#` that starts the line or follows a space, skipping
+    quoted items. Same function as close-loops.py's."""
+    v = v.strip()
+    i, n = 0, len(v)
+    while i < n:
+        c = v[i]
+        if c in "\"'":
+            end = _closing_quote(v[i:])
+            if end < 0:
+                return v
+            i += end + 1
+            continue
+        if c == "#" and (i == 0 or v[i - 1] in " \t"):
+            return v[:i].rstrip()
+        i += 1
+    return v
+
+
+# A top-level `key:` line, which is where a wrapped inline list that never
+# closed has certainly ended. Same as close-loops.py's.
+TOP_KEY = re.compile(r"^[A-Za-z_][\w-]*[ \t]*:(?:\s|$)")
+
+
 def unquote(s):
     """Unwrap a quoted scalar the fallback parser read, undoing the two escapes
     that quoting a free-text value actually produces.
@@ -303,6 +330,11 @@ def parse_fm(block, path=None):
     #   key:
     #     - a
     #     - b
+    # The block sequence may sit at column 0 and carry comment lines between
+    # its items, and an inline list may wrap across lines, read until its `]`:
+    # the same shapes close-loops.py / decay-loops.py's list_field() read, so the
+    # manifest's `owner` / `owed_to` (the re-mention lookup's keys) agree with
+    # them on a hand-edited loop.
     # A trailing YAML comment is stripped from every value, quotes and inline
     # lists honored (see strip_comment) — the templates document each field with
     # one, so keeping it fed the comment into the roster and the surfaces.
@@ -323,16 +355,29 @@ def parse_fm(block, path=None):
             while i < n:
                 nxt = lines[i]
                 stripped = nxt.strip()
-                if not stripped:
+                if not stripped or stripped.startswith("#"):
                     i += 1
                     continue
-                if nxt[0] in " \t" and stripped.startswith("- "):
+                if stripped.startswith("- "):
                     items.append(unquote(strip_comment(stripped[2:])))
                     i += 1
                     continue
                 break
             data[key] = items if items else ""
             continue
+        # `not INLINE_LIST`: an apostrophe in a plain item (`[Holanda's
+        # tracker]`) reads to _closing_bracket() as an unclosed quote, but a
+        # line that already ends in `]` has not wrapped.
+        if val.startswith("[") and _closing_bracket(val) < 0 and not INLINE_LIST.match(val):
+            val = _cut_line_comment(line.partition(":")[2])
+            while _closing_bracket(val) < 0 and i < n and not TOP_KEY.match(lines[i]):
+                val = val + " " + _cut_line_comment(lines[i])
+                i += 1
+            end = _closing_bracket(val)
+            if end > 0:
+                val = val[:end + 1]
+            elif not val.endswith("]"):
+                val += "]"
         m = INLINE_LIST.match(val)
         if m:
             inner = m.group(1).strip()

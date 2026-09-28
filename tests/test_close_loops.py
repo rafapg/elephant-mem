@@ -1101,6 +1101,34 @@ def test_owner_is_what_the_file_declares(root):
                        for c in lp["evidence"]]))
 
 
+def test_comment_inside_a_wrapped_list(root):
+    """A YAML comment on a line whose inline list has not closed yet ends at
+    that line, as it does anywhere else: PyYAML reads `owner:
+    [/entities/person/x.md  # c` + `]` as `[x]`. Before the fix the first line
+    reached the join whole, so `owner` came out as `x.md  # c` in the proposal
+    and in `--json`, a party nobody is."""
+    bundle = make_bundle(root, "wrapped-comment")
+    path = write_loop(bundle, "wrapped", description="Ship it", owed_to=("bob",))
+    text = path.read_text(encoding="utf-8")
+    owner_line = next(ln for ln in text.splitlines() if ln.startswith("owner:"))
+    owed_line = next(ln for ln in text.splitlines() if ln.startswith("owed_to:"))
+    text = text.replace(owner_line, f"owner: [{entity_link(OWNER)}  # the bundle owner\n  ]")
+    text = text.replace(owed_line, f"owed_to: [{entity_link('bob')},  # waiting\n"
+                                   f"  {entity_link('carol')}]  # tail")
+    path.write_text(text, encoding="utf-8")
+
+    payload, result = proposal(bundle)
+    if payload is None:
+        record("close-loops.py runs over a loop with a comment in a wrapped list",
+               False, f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+        return
+    lp = payload["loops"][0] if payload["loops"] else {}
+    record("a comment inside a wrapped inline list is cut at its own line: "
+           "`owner` and `owed_to` read as YAML reads them",
+           lp.get("owner") == [OWNER] and lp.get("owed_to") == ["bob", "carol"],
+           json.dumps({k: lp.get(k) for k in ("owner", "owed_to")}))
+
+
 def test_history_is_not_the_criterion(root):
     """E23: a refined loop's `**Closure signal history:**` is not the criterion.
 
@@ -1123,6 +1151,11 @@ def test_history_is_not_the_criterion(root):
                after=history, opened="2026-01-01")
     write_loop(bundle, "next-line", description="Ship it", signal=current,
                after=tight, opened="2026-01-02")
+    # A plain paragraph, no bolded lead-in: only the blank line ends the
+    # criterion here, so this is the sensor for that half of the terminator.
+    write_loop(bundle, "plain-paragraph", description="Ship it", signal=current,
+               after="\n\nNotes from the call: zeppelin quokka.",
+               opened="2026-01-03")
     # Pooled through the owner only, so each scores on words alone: the history
     # word would score 1 if it leaked into `terms`, and the current-criterion
     # word does score 1, which proves the pool reaches both facts.
@@ -1137,9 +1170,9 @@ def test_history_is_not_the_criterion(root):
                False, f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
         return
     by_path = {lp["path"]: lp for lp in payload["loops"]}
-    for name in ("blank-line", "next-line"):
+    for name in ("blank-line", "next-line", "plain-paragraph"):
         lp = by_path.get(f"/tracking/loops/{name}.md", {})
-        record(f"E23: with the history section after a {name.replace('-', ' ')}, "
+        record(f"E23: with a {name.replace('-', ' ')} after the signal, "
                "the criterion is the current signal alone, read from the "
                "`**Closure signal:**` section",
                lp.get("criterion") == current
@@ -1147,9 +1180,9 @@ def test_history_is_not_the_criterion(root):
                json.dumps({"criterion": lp.get("criterion"),
                            "source": lp.get("criterion_source")}))
         order = [c["path"] for c in lp.get("evidence", [])]
-        record(f"…and ({name.replace('-', ' ')}) a fact sharing only a history "
-               "word does not rank, while one sharing a current-criterion word "
-               "does",
+        record(f"…and ({name.replace('-', ' ')}) a fact sharing only a word "
+               "after the signal does not rank, while one sharing a "
+               "current-criterion word does",
                "/facts/history-word.md" not in order
                and "/facts/current-word.md" in order, order)
 
@@ -1625,6 +1658,7 @@ def main():
                      test_named_loop_bypasses_the_queue,
                      test_max_is_refused_at_the_boundary,
                      test_owner_is_what_the_file_declares,
+                     test_comment_inside_a_wrapped_list,
                      test_history_is_not_the_criterion,
                      test_owed_to_is_read, test_out_of_scope_is_queued,
                      test_sweep_recipe_writes_what_the_script_reads,
