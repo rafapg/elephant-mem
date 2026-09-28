@@ -257,11 +257,12 @@ These are orthogonal, and it's worth understanding why:
 Don't raise the cadence to "cover" being offline — it can't. The cursor already
 handles it.
 
-Run `close-loops` daily and unattended, in the same shape as `catch-up`
-(permissive permission mode, worktree off, one "Run once" to pre-approve the
-prompts) — it examines a bounded slice of the open loops and closes the ones
-the evidence shows delivered. Run `decay` every three days, after it, so it
-only ever expires loops `close-loops` has already read. Run `maintain` on a
+Optionally, run `close-loops` daily and unattended, in the same shape as
+`catch-up` (permissive permission mode, worktree off, one "Run once" to
+pre-approve the prompts) — it examines a bounded slice of the open loops and
+closes or drops the ones the evidence shows delivered or obsolete. Run `decay`
+every three days; it expires on silence and scope alone and does not wait for
+`close-loops`. Run `maintain` on a
 slower cadence (e.g. daily) and `review` whenever the `needs-review` queue
 grows.
 
@@ -319,8 +320,9 @@ sweep, since it can mean a much larger first run.
 
 Now `catch-up` sweeps Linear alongside Slack and Calendar: durable facts (a
 project's scope changed, an owner was reassigned) become `type: fact` files
-stamped `channel: linear`; commitments (an assigned, open issue) can become open
-loops. `briefing --channel linear` then filters to just that source.
+stamped `channel: linear`; commitments the owner owes or is owed (an open issue
+assigned to them, or one they are waiting on) can become open loops, and anyone
+else's become facts. `briefing --channel linear` then filters to just that source.
 
 The same pattern fits an **email** source, a ticketing system, a docs tool — any
 MCP-backed connector. If you build a tested recipe for one, **PRs adding

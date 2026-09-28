@@ -41,7 +41,7 @@ Give a short (≈10 lines) plain-language intro, then continue. Cover:
   machine — `cat`-readable, diffable, and private. No database, no cloud, no
   embeddings.
 - It has **three lanes**: **durable facts** (things that stay true), **open
-  loops** (commitments/action items that eventually close), and **episodic
+  loops** (commitments the owner owes or is owed, which eventually close), and **episodic
   sources** (the raw provenance each fact came from).
 - Retrieval is **entity-centric** — people, projects, tools, and concepts are the
   navigation spine, and facts hang off them. You ask "what do we know about X"
@@ -293,7 +293,8 @@ the bundle isn't empty and the shapes are visible. Tag every example
    **bundle-absolute** links (`/entities/org/acme-corp.md`, `/sources/…`). For
    example: "Acme Corp is a fictional example entity used to demonstrate the
    elephant-mem fact shape." Optionally one **example open-loop** in
-   `tracking/loops/`.
+   `tracking/loops/`, with the owner's entity in `owner` (a loop naming the
+   owner nowhere is expired by `decay` as out of scope).
 
 Tell the user these are placeholders: `elephant-mem:capture` and
 `elephant-mem:ingest` add real knowledge, and the examples can be removed any time

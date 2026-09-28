@@ -55,12 +55,18 @@ Why three lanes instead of one big pile:
   in the **episodic** lane, which is never loaded to answer a question — it exists
   for provenance and audit.
 - **A durable fact and a commitment are different things.** A fact ("the billing
-  service runs on Acme Cloud") stays true; a commitment ("Jane will draft the
+  service runs on Acme Cloud") stays true; a commitment ("the owner will draft the
   migration plan") *completes*. Open loops carry a `status` (`open | done |
-  dropped | expired`) and a **closure signal**; `close-loops` reads that signal
-  against the evidence and flips the loop to `done`, and `decay` flips one that
-  went quiet and survived examination to `expired`. Those two are the writers —
-  `maintain` never touches a loop. The lane is what lets you answer "what got
+  dropped | expired`) and a **closure signal**, and a loop is the owner's: owed
+  by them (`owner`) or to them (`owed_to`). The ingest core, on every ingest
+  path, closes (`done`) or drops (`dropped`) a loop a new source shows
+  delivered or obsolete, bumps `updated` when a source re-raises it, and
+  refines its closure signal with history; `close-loops`, optional, closes
+  (`done`) or drops (`dropped`) by evidence over the backlog, and never bumps
+  or refines a loop it leaves open; `decay` expires a loop silent for
+  `decay.loop_expiry_days` (default 30) or naming the owner nowhere; `dropped`
+  can also be set by hand. `maintain` never touches a loop, and every terminal
+  status is final. The lane is what lets you answer "what got
   done vs. what's still hanging".
 
 ### event time vs. record time
@@ -93,8 +99,10 @@ in the read modes (`query`, `briefing`, `start-day`, `end-day`) is the owner's
 entity plus their projects and team — expressed as `--entity <owner.slug>`.
 
 This is deliberate: **capture keeps everything**, from every channel and every
-team, without judging relevance. Relevance is applied only at **retrieval** (the
-owner lens) and at **decay** (distant, never-referenced facts age out faster).
+team, without judging relevance. The owner decides only the lane a commitment
+takes: a loop when the owner owes it or is owed it, a fact otherwise. Relevance
+is applied only at **retrieval** (the owner lens) and, for facts, at **decay**
+in `maintain` (distant, never-referenced facts age out faster).
 Filtering at capture time would silently throw away the fact you need six months
 later; filtering at retrieval time keeps it available but out of your face.
 

@@ -27,13 +27,14 @@ through the entity pages that link them. So this script regenerates:
                                       active fact / open loop, carrying only the
                                       fields needed to DECIDE what to read in
                                       full (path, type, desc, entities, tags,
-                                      occurred, confidence, status). It is NOT
-                                      cheap to load: it grows with every fact and
-                                      is already megabytes on a mature bundle, so
-                                      a consumer hands it to a subagent and
-                                      pre-filters with `rg` rather than reading
-                                      it whole — see the delegation rule in
-                                      skills/_shared/whole-field-scan.md.
+                                      occurred, confidence, status and, on
+                                      open-loop rows, owner and owed_to). It is
+                                      NOT cheap to load: it grows with every
+                                      fact and is already megabytes on a mature
+                                      bundle, so a consumer hands it to a
+                                      subagent and pre-filters with `rg` rather
+                                      than reading it whole — see the delegation
+                                      rule in skills/_shared/whole-field-scan.md.
   6. knowledge/entities/roster.tsv  — the RESOLUTION surface: one self-contained
                                       tab-separated row per active entity (slug,
                                       kind, title, aliases), so an extraction run
@@ -196,7 +197,12 @@ def _closing_bracket(v):
     depth, i, n = 0, 0, len(v)
     while i < n:
         c = v[i]
-        if c in "\"'":
+        # A quote opens a quoted item only where an item starts, after the `[`
+        # or a `,`; inside a plain item it is content, so the apostrophe of
+        # `[O'Brien, me]` does not swallow the `]`. An approximation of YAML's
+        # flow rule: a node may also start after a tag or anchor (`!!str 'a'`,
+        # `&x 'a'`) or after a flow mapping's `:`, and those are not handled.
+        if c in "\"'" and v[:i].rstrip()[-1:] in ("[", ","):
             end = _closing_quote(v[i:])
             if end < 0:
                 return -1
@@ -210,6 +216,31 @@ def _closing_bracket(v):
                 return i
         i += 1
     return -1
+
+
+def _split_items(inner):
+    """The items of an inline list, given the text between its `[` and `]`,
+    split at the commas that sit outside a quoted item and stripped, empty ones
+    dropped. As in _closing_bracket(), a quote opens a quoted item only where
+    an item starts, so `"Doe, Jane"` is one item while the apostrophe of
+    `O'Neil, Kit` is content; a quote that never closes is content too, so
+    the rest of the list still splits. The items keep their quotes, for the
+    caller to unquote. Same function in decay-loops.py, close-loops.py,
+    build-index.py and validate-okf.py."""
+    items, start, i, n = [], 0, 0, len(inner)
+    while i < n:
+        c = inner[i]
+        if c in "\"'" and not inner[start:i].strip():
+            end = _closing_quote(inner[i:])
+            if end >= 0:
+                i += end + 1
+                continue
+        if c == ",":
+            items.append(inner[start:i])
+            start = i + 1
+        i += 1
+    items.append(inner[start:])
+    return [x.strip() for x in items if x.strip()]
 
 
 def strip_comment(v):
@@ -251,6 +282,37 @@ def strip_comment(v):
     if not rest.strip() or rest.lstrip().startswith("#"):
         return v[:end + 1]
     return (v[:end + 1] + rest.split(" #", 1)[0]).rstrip()
+
+
+def _cut_line_comment(v):
+    """One physical line of an inline list that wraps, without its YAML comment.
+    strip_comment() keeps a comment on a line whose `[` has not closed yet (that
+    line has no outside), but a comment ends at the end of its line regardless.
+    Cuts at the first `#` that starts the line or follows a space, skipping
+    quoted items. Same function as close-loops.py's."""
+    v = v.strip()
+    i, n = 0, len(v)
+    while i < n:
+        c = v[i]
+        # As in _closing_bracket(), a quote opens a quoted item only where an
+        # item starts: the start of the line, a block item's `-`, or after a
+        # `[` or a `,`. `O'Neil,  # x` is a plain item and then a comment.
+        prev = v[:i].rstrip()
+        if c in "\"'" and (prev in ("", "-") or prev[-1] in "[,"):
+            end = _closing_quote(v[i:])
+            if end < 0:
+                return v
+            i += end + 1
+            continue
+        if c == "#" and (i == 0 or v[i - 1] in " \t"):
+            return v[:i].rstrip()
+        i += 1
+    return v
+
+
+# A top-level `key:` line, which is where a wrapped inline list that never
+# closed has certainly ended. Same as close-loops.py's.
+TOP_KEY = re.compile(r"^[A-Za-z_][\w-]*[ \t]*:(?:\s|$)")
 
 
 def unquote(s):
@@ -302,6 +364,11 @@ def parse_fm(block, path=None):
     #   key:
     #     - a
     #     - b
+    # The block sequence may sit at column 0 and carry comment lines between
+    # its items, and an inline list may wrap across lines, read until its `]`:
+    # the same shapes close-loops.py / decay-loops.py's list_field() read, so the
+    # manifest's `owner` / `owed_to` (the re-mention lookup's keys) agree with
+    # them on a hand-edited loop.
     # A trailing YAML comment is stripped from every value, quotes and inline
     # lists honored (see strip_comment) — the templates document each field with
     # one, so keeping it fed the comment into the roster and the surfaces.
@@ -322,20 +389,34 @@ def parse_fm(block, path=None):
             while i < n:
                 nxt = lines[i]
                 stripped = nxt.strip()
-                if not stripped:
+                if not stripped or stripped.startswith("#"):
                     i += 1
                     continue
-                if nxt[0] in " \t" and stripped.startswith("- "):
+                if stripped.startswith("- "):
                     items.append(unquote(strip_comment(stripped[2:])))
                     i += 1
                     continue
                 break
             data[key] = items if items else ""
             continue
+        # `not INLINE_LIST`: a line that already ends in `]` has not wrapped.
+        # _closing_bracket() now reads an apostrophe inside a plain item
+        # (`[Morgan's tracker]`) as content; this still holds a quote that
+        # opens an item and never closes to its own line.
+        if val.startswith("[") and _closing_bracket(val) < 0 and not INLINE_LIST.match(val):
+            val = _cut_line_comment(line.partition(":")[2])
+            while _closing_bracket(val) < 0 and i < n and not TOP_KEY.match(lines[i]):
+                val = val + " " + _cut_line_comment(lines[i])
+                i += 1
+            end = _closing_bracket(val)
+            if end > 0:
+                val = val[:end + 1]
+            elif not val.endswith("]"):
+                val += "]"
         m = INLINE_LIST.match(val)
         if m:
             inner = m.group(1).strip()
-            data[key] = [unquote(x.strip()) for x in inner.split(",") if x.strip()] if inner else []
+            data[key] = [unquote(x) for x in _split_items(inner)]
         else:
             data[key] = unquote(val)
     return data
@@ -372,9 +453,10 @@ def resolution_sentence(body):
 
     The resolution is prose in the body, never a frontmatter field — a sentence
     of judgment carries `: ` and sometimes ` #`, which the loop template warns
-    breaks or silently truncates an unquoted value. Both writers put the
-    sentence that stands alone first (`close-loops` by hand, decay-loops.py's
-    resolution_paragraph()) precisely because this is where it lands.
+    breaks or silently truncates an unquoted value. Every writer puts the
+    sentence that stands alone first (the ingest core and `close-loops` by
+    hand, decay-loops.py's resolution_paragraph()) precisely because this is
+    where it lands.
 
     Split on `. ` only, so `elephant.json` and `decay.loop_expiry_days` are not
     sentence ends. A paragraph wrapped across lines is collapsed first.
@@ -771,19 +853,32 @@ def main():
         if path.endswith(ARCHIVE_SUFFIX) and path not in archives_written:
             os.remove(path)
 
-    # 5. manifest.jsonl — ultra-slim triage surface (active facts + open loops)
+    # 5. manifest.jsonl — ultra-slim triage surface (active facts + open loops).
+    # An open-loop row also carries `owner` and `owed_to`: the ingest core's
+    # re-mention lookup matches a candidate against open loops on this file,
+    # and an "owed to me" loop names the counterpart only in `owner` and the
+    # bundle owner only in `owed_to`, possibly with nobody in `entities`. On
+    # `entities` alone that loop is invisible to the lookup, so every re-mention
+    # would file a duplicate instead of bumping or closing it. Fact rows gain
+    # neither key.
     manifest = []
     for c in sorted(active(facts) + open_loops, key=occ, reverse=True):
-        manifest.append(json.dumps({
+        row = {
             "path": c["link"],
             "type": c["type"],
             "desc": c["description"] or c["title"],
             "entities": as_list(c["fm"].get("entities")),
+        }
+        if c["type"] == "open-loop":
+            row["owner"] = as_list(c["fm"].get("owner"))
+            row["owed_to"] = as_list(c["fm"].get("owed_to"))
+        row.update({
             "tags": as_list(c["fm"].get("tags")),
             "occurred": occ(c),
             "confidence": str(c["fm"].get("confidence", "")),
             "status": c["status"],
-        }, ensure_ascii=False, separators=(",", ":")))
+        })
+        manifest.append(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
     write("manifest.jsonl", manifest)
 
     print(f"Rebuilt: {len(active(entities))} entities, {len(active(facts))} facts, "

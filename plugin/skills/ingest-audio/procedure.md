@@ -117,13 +117,15 @@ this mode:
      - `occurred:` the confirmed meeting date.
      - a concise summary written in `knowledge_language` — a pointer, not a
        copy.
-   - Then run ingest steps 2–8: extract atomic facts / open-loops, resolve &
-     dedup entities (**merge**, don't duplicate, against same-day chat
-     echoes of the same meeting — this is a **primary** transcript and wins
-     wording conflicts over secondary chat reports), assign confidence,
-     persist, then `build-index.py` + `validate-okf.py` + append to
-     `log.md` + local commit (`ingest: <slug> meeting transcript (+N facts,
-     ~M updated)`).
+   - Then run ingest steps 2–8: extract atomic facts / open-loops by the
+     loop bar, resolve & dedup entities (**merge**, don't duplicate, against
+     same-day chat echoes of the same meeting — this is a **primary**
+     transcript and wins wording conflicts over secondary chat reports),
+     match the open loops the meeting speaks to and act on them by ingest
+     step 4 (close, drop, bump or refine, dated by the confirmed meeting
+     date), assign confidence, persist, then `build-index.py` +
+     `validate-okf.py` + append to `log.md` + local commit
+     (`ingest: <slug> meeting transcript (+N facts, ~M updated)`).
 
 7. **Retention.** After a successful ingest+commit: **delete the audio** (the
    inbox copy and the landing-dir original) and the WhisperX scratch in
@@ -133,9 +135,9 @@ this mode:
 
 8. **Recap** (in `conversation_language`). Close with a short recap: the
    meeting + headline, the speaker map you used (and anything flagged
-   low-confidence), key facts/decisions and open-loops, notable
-   dedup/correlation with existing knowledge, new entities, and that the
-   audio was deleted / transcript kept.
+   low-confidence), key facts/decisions, open-loops opened, closed,
+   dropped, bumped or refined, notable dedup/correlation with existing
+   knowledge, new entities, and that the audio was deleted / transcript kept.
 
 **Multiple recordings:** process them one at a time through steps 3–7 (each
 is its own source + commit), then give one combined recap.

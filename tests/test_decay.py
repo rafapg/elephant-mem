@@ -6,18 +6,23 @@ Covers: dry-run makes no changes; --apply expires only stale `status: open`
 loops; a recent `updated` (re-mention resets the clock) protects an
 otherwise-old loop; `done`/`dropped`/already-`expired` loops are never
 touched; the `expired: YYYY-MM-DD` field is stamped correctly; the default
-45-day threshold vs. a custom `elephant.json` -> `decay.loop_expiry_days`;
+30-day threshold vs. a custom `elephant.json` -> `decay.loop_expiry_days`;
 that `build-index.py`, run after `--apply`, drops the newly-expired loops
-from the open-loop count/board/manifest; that `--apply` refuses a candidate
-`state/closure-sweep.json` does not show `close-loops` examining after its own
-last activity, names it, prints the command that would examine it and still
-exits 0, while `--skip-sweep` bypasses that gate; that every expiry writes a
-`**Resolution:**` paragraph in the same shape a closure does; and that a recent
-citation in
-`state/recall.json` counts as a fourth activity date while every degraded
-shape of that record — absent, empty, malformed, no entry for this loop, no
-`recall.py` in the bundle at all — leaves the scan behaving exactly as it did
-before recall existed.
+from the open-loop count/board/manifest; that `--apply` expires on silence
+alone and never reads `state/closure-sweep.json`, with `--skip-sweep` kept as
+a deprecated no-op; that an open loop naming the bundle owner (`elephant.json`
+-> `owner.slug`) in none of `owner`, `owed_to`, `entities` is an out-of-scope
+candidate at any age, compared by slug in every link shape, and that the rule
+is skipped with a note when there is no `owner.slug`, or when only a
+duplicate of the owner's entity is linked; that `--except` keeps a named loop
+out of the run, and refuses the run when it names no loop file or a loop
+that is not open; that every expiry writes a `**Resolution:**`
+paragraph in the same shape a closure does, naming which kind of expiry it
+was; that a recent citation in `state/recall.json` counts as a fourth activity
+date while every degraded shape of that record — absent, empty, malformed, no
+entry for this loop, no `recall.py` in the bundle at all — leaves the scan
+behaving exactly as it did before recall existed; and that the `decay` skill's
+prose says what the script now does.
 
 Pure stdlib, Python 3.10+, same scaffolding style as tests/smoke.py and
 tests/test_index.py: every check builds its own throwaway bundle under a
@@ -27,6 +32,7 @@ shell-outs, no third-party deps.
 Exit code 0 only if every check below passes.
 """
 import datetime
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -69,7 +75,38 @@ def days_ahead(n):
     return (TODAY + datetime.timedelta(days=n)).isoformat()
 
 
-def new_bundle(root, name, expiry_days=None, with_recall=True):
+def slug_of(value):
+    """The slug decay-loops.py's slug() reads out of `value`: last path
+    segment, `.md` stripped, lowercased."""
+    s = value.rsplit("/", 1)[-1]
+    return (s[:-3] if s.endswith(".md") else s).lower()
+
+
+def write_entity(bundle, entity_slug, kind="person"):
+    """A minimal, valid entity file at knowledge/entities/<kind>/<slug>.md."""
+    path = bundle / "knowledge" / "entities" / kind / f"{entity_slug}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    day = TODAY.isoformat()
+    path.write_text(
+        "---\n"
+        "type: entity\n"
+        f"kind: {kind}\n"
+        f'title: "{entity_slug}"\n'
+        'description: "An entity."\n'
+        "aliases: []\n"
+        "tags: []\n"
+        f"created: {day}\n"
+        f"updated: {day}\n"
+        f"timestamp: {day}\n"
+        "---\n\n"
+        f"{entity_slug}.\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def new_bundle(root, name, expiry_days=None, with_recall=True, owner_slug=None,
+               owner_entity=True):
     """Minimal throwaway bundle: decay-loops.py + build-index.py (the latter
     only needed by the cross-script integration check) + recall.py (the sibling
     decay reads the citation date through), a reserved log.md, and an empty
@@ -77,7 +114,13 @@ def new_bundle(root, name, expiry_days=None, with_recall=True):
     against ~/elephant-mem.
 
     `with_recall=False` builds the bundle an installed user has when `update`
-    has not yet re-synced `scripts/`: decay is there, its sibling is not."""
+    has not yet re-synced `scripts/`: decay is there, its sibling is not.
+
+    `owner_slug` writes `owner.slug` into `elephant.json`, which switches the
+    out-of-scope rule on. The default stays None, so every check that predates
+    the rule keeps its `owner: []` loops in play as stale candidates only.
+    With it, the owner's entity file is written too, since a slug naming no
+    entity switches the rule off; `owner_entity=False` builds that bundle."""
     bundle = root / name
     (bundle / "scripts").mkdir(parents=True, exist_ok=True)
     scripts = ["decay-loops.py", "build-index.py", "validate-okf.py"]
@@ -85,17 +128,35 @@ def new_bundle(root, name, expiry_days=None, with_recall=True):
         scripts.append("recall.py")
     for f in scripts:
         shutil.copy2(ASSETS / "scripts" / f, bundle / "scripts" / f)
+    config = {}
     if expiry_days is not None:
-        (bundle / "elephant.json").write_text(
-            json.dumps({"decay": {"loop_expiry_days": expiry_days}}) + "\n", encoding="utf-8"
-        )
+        config["decay"] = {"loop_expiry_days": expiry_days}
+    if owner_slug is not None:
+        config["owner"] = {"slug": owner_slug}
+    if config:
+        (bundle / "elephant.json").write_text(json.dumps(config) + "\n", encoding="utf-8")
     (bundle / "knowledge" / "tracking" / "loops").mkdir(parents=True, exist_ok=True)
     (bundle / "knowledge" / "log.md").write_text("# Log\n", encoding="utf-8")
+    if owner_slug is not None and owner_entity and slug_of(owner_slug):
+        write_entity(bundle, slug_of(owner_slug))
     return bundle
 
 
+def link_list(value):
+    """The text after `key:` for one of a loop's link lists. A sequence is
+    written as an inline list; a string is written verbatim, so a check can
+    spell the other shapes itself (`" /x.md"` for a bare scalar, `"\\n  - /x.md"`
+    for a block sequence)."""
+    if isinstance(value, str):
+        return value
+    return " [" + ", ".join(value) + "]"
+
+
 def write_loop(bundle, name, desc, status="open", opened=None, created=None,
-               updated=None, extra="", signal=None):
+               updated=None, extra="", signal=None, owner=(), owed_to=None,
+               entities=()):
+    """One loop file. `owed_to=None` writes no `owed_to:` line at all, the
+    shape of every loop filed before the field existed."""
     opened = opened or TODAY.isoformat()
     created = created or opened
     updated = updated or created
@@ -103,9 +164,10 @@ def write_loop(bundle, name, desc, status="open", opened=None, created=None,
         "---\n"
         "type: open-loop\n"
         f"description: {desc}\n"
-        "owner: []\n"
-        f"status: {status}\n"
-        "entities: []\n"
+        f"owner:{link_list(owner)}\n"
+        + (f"owed_to:{link_list(owed_to)}\n" if owed_to is not None else "")
+        + f"status: {status}\n"
+        f"entities:{link_list(entities)}\n"
         "sources: []\n"
         f"opened: {opened}\n"
         "closed:\n"
@@ -155,15 +217,15 @@ def write_recall(bundle, cited, raw=None):
 
 
 def write_sweep(bundle, entries, raw=None):
-    """Write `state/closure-sweep.json`, the record `close-loops` keeps and
-    `decay-loops.py --apply` gates on. `entries` maps a loop's bundle-absolute
+    """Write `state/closure-sweep.json`, the record `close-loops` keeps as its
+    own queue control and `decay-loops.py` must ignore. `entries` maps a loop's bundle-absolute
     path to its examination date, or to an `(examined, outcome)` pair; `raw`
     overrides the whole file with a literal string, for the malformed shape.
 
     Hand-built rather than produced by running the `close-loops` routine: the
     routine writes this file from prose (its `procedure.md` -> "The sweep
     record"), and tests/test_close_loops.py owns whether that recipe writes what
-    this script reads. What this suite pins is decay's reading of it.
+    its script reads. What this suite pins is that decay reads none of it.
     """
     state = bundle / "state"
     state.mkdir(parents=True, exist_ok=True)
@@ -217,10 +279,7 @@ def test_apply_expires_only_old_open(root):
     fresh = write_loop(bundle, "fresh.md", "Fresh loop",
                         opened=days_ago(2), created=days_ago(2), updated=days_ago(2))
 
-    # --skip-sweep because this check is about the dates, not about the sweep
-    # gate: with the gate on, neither loop would be expirable and the check
-    # would pass for the wrong reason.
-    result = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    result = run_script(bundle, "decay-loops.py", ["--apply"])
     record("--apply exits 0", result.returncode == 0, result.stdout + result.stderr)
 
     old_text = old.read_text(encoding="utf-8")
@@ -246,10 +305,10 @@ def test_recent_update_protects(root):
            "reopened.md" not in result.stdout, result.stdout)
     record("dry-run reports 0 candidates", "0 candidate(s)" in result.stdout, result.stdout)
 
-    run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    run_script(bundle, "decay-loops.py", ["--apply"])
     text = p.read_text(encoding="utf-8")
-    record("--apply leaves the recently-updated loop untouched even with the "
-           "sweep gate off — it is the date that protects it",
+    record("--apply leaves the recently-updated loop untouched: it is the date "
+           "that protects it",
            "status: open" in text and "expired" not in text, text)
 
 
@@ -275,7 +334,7 @@ def test_other_statuses_untouched(root):
     record("dry-run lists none of done/dropped/already-expired as candidates",
            all(p.name not in dry.stdout for p in watched), dry.stdout)
 
-    apply_result = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    apply_result = run_script(bundle, "decay-loops.py", ["--apply"])
     record("--apply exits 0 with nothing to do",
            apply_result.returncode == 0, apply_result.stdout + apply_result.stderr)
 
@@ -292,7 +351,7 @@ def test_expired_field_written(root):
     p = write_loop(bundle, "old.md", "Old stale loop",
                     opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
 
-    run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    run_script(bundle, "decay-loops.py", ["--apply"])
     text = p.read_text(encoding="utf-8")
     record(f"expired: {TODAY.isoformat()} field stamped", f"expired: {TODAY.isoformat()}" in text, text)
     record("status flipped to expired", "status: expired" in text, text)
@@ -300,24 +359,30 @@ def test_expired_field_written(root):
 
 
 # ---------------------------------------------------------------------------
-# 6. default 45d threshold vs. a custom elephant.json -> decay.loop_expiry_days
+# 6. default 30d threshold vs. a custom elephant.json -> decay.loop_expiry_days
 # ---------------------------------------------------------------------------
 
 def test_custom_threshold(root):
-    # 50 days old IS a candidate under the default (no elephant.json) 45d threshold.
+    # 35 days old IS a candidate under the default (no elephant.json) 30d
+    # threshold, and 20 days old is not.
     bundle_default = new_bundle(root, "threshold-default")
-    write_loop(bundle_default, "borderline.md", "50-day-old loop",
-               opened=days_ago(50), created=days_ago(50), updated=days_ago(50))
+    write_loop(bundle_default, "borderline.md", "35-day-old loop",
+               opened=days_ago(35), created=days_ago(35), updated=days_ago(35))
+    write_loop(bundle_default, "recent.md", "20-day-old loop",
+               opened=days_ago(20), created=days_ago(20), updated=days_ago(20))
     result_default = run_script(bundle_default, "decay-loops.py")
-    record("50-day-old loop IS a candidate under the default 45d threshold",
+    record("35-day-old loop IS a candidate under the default 30d threshold",
            "borderline.md" in result_default.stdout, result_default.stdout)
+    record("…while a 20-day-old loop is not",
+           "recent.md" not in result_default.stdout
+           and "1 candidate(s)" in result_default.stdout, result_default.stdout)
 
-    # Raising the threshold via elephant.json protects the same-age loop.
+    # Raising the threshold via elephant.json protects the same-age loop (E12).
     bundle_raised = new_bundle(root, "threshold-raised", expiry_days=60)
-    write_loop(bundle_raised, "borderline.md", "50-day-old loop",
-               opened=days_ago(50), created=days_ago(50), updated=days_ago(50))
+    write_loop(bundle_raised, "borderline.md", "35-day-old loop",
+               opened=days_ago(35), created=days_ago(35), updated=days_ago(35))
     result_raised = run_script(bundle_raised, "decay-loops.py")
-    record("same 50-day-old loop is NOT a candidate once elephant.json raises the threshold to 60d",
+    record("same 35-day-old loop is NOT a candidate once elephant.json raises the threshold to 60d",
            "borderline.md" not in result_raised.stdout, result_raised.stdout)
 
     # Lowering the threshold via elephant.json catches a loop the default would miss.
@@ -327,6 +392,30 @@ def test_custom_threshold(root):
     result_lowered = run_script(bundle_lowered, "decay-loops.py")
     record("20-day-old loop becomes a candidate once elephant.json lowers the threshold to 10d",
            "young.md" in result_lowered.stdout, result_lowered.stdout)
+
+
+def test_invalid_threshold_values(root):
+    """A `loop_expiry_days` that is present but not a positive whole number
+    takes the default, with a note. `true` is the one that mattered: JSON's
+    boolean is a Python int, so it read as a 1-day window and a loop 5 days
+    quiet was a candidate."""
+    for tag, value in (("bool", True), ("string", "60"), ("float", 60.0), ("zero", 0)):
+        bundle = new_bundle(root, "threshold-invalid-" + tag, expiry_days=value)
+        write_loop(bundle, "five-days.md", "5-day-old loop",
+                   opened=days_ago(5), created=days_ago(5), updated=days_ago(5))
+        write_loop(bundle, "forty-days.md", "40-day-old loop",
+                   opened=days_ago(40), created=days_ago(40), updated=days_ago(40))
+        dry = run_script(bundle, "decay-loops.py")
+        record(f"loop_expiry_days {json.dumps(value)}: the default 30 is used "
+               "(the 5-day loop is no candidate, the 40-day one is), with one note",
+               "five-days.md" not in dry.stdout and "forty-days.md" in dry.stdout
+               and "stale >= 30d" in dry.stdout
+               and dry.stderr.count("decay.loop_expiry_days is") == 1,
+               dry.stdout + dry.stderr)
+    valid = new_bundle(root, "threshold-valid-quiet", expiry_days=45)
+    dry = run_script(valid, "decay-loops.py")
+    record("…while a valid value prints no such note",
+           "decay.loop_expiry_days is" not in dry.stderr, dry.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -339,9 +428,6 @@ def test_build_index_excludes_expired_after_apply(root):
                opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
     write_loop(bundle, "fresh.md", "Fresh loop stays open",
                opened=days_ago(2), created=days_ago(2), updated=days_ago(2))
-    # The full path, gate included: `close-loops` examined the stale loop after
-    # its last activity and left it open, which is what clears it for expiry.
-    write_sweep(bundle, {"/tracking/loops/old.md": days_ago(3)})
 
     result_pre = run_script(bundle, "build-index.py")
     if not record("build-index.py exits 0 (pre-decay)", result_pre.returncode == 0,
@@ -413,7 +499,7 @@ def test_template_shaped_loop_decays(root):
            "candidate — the reader did not simply learn to match everything",
            "done.md" not in result.stdout, result.stdout)
 
-    run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    run_script(bundle, "decay-loops.py", ["--apply"])
     status_line = next(ln for ln in old.read_text(encoding="utf-8").splitlines()
                        if ln.startswith("status:"))
     record("--apply expires it and keeps the vocabulary comment on the line — "
@@ -470,7 +556,7 @@ def test_status_spelling_agrees_with_build_index(root):
            "normalized, not taught to match everything",
            "done.md" not in dry.stdout, dry.stdout)
 
-    apply_result = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    apply_result = run_script(bundle, "decay-loops.py", ["--apply"])
     record("--apply expires all three, so the reader and the writer accept the "
            "same spellings", "3 loop(s) expired" in apply_result.stdout,
            apply_result.stdout + apply_result.stderr)
@@ -517,7 +603,7 @@ def test_recall_citation_protects(root):
            "uncited.md" in result.stdout and "1 candidate(s)" in result.stdout,
            result.stdout)
 
-    run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    run_script(bundle, "decay-loops.py", ["--apply"])
     record("--apply leaves the cited loop open",
            "status: open" in cited.read_text(encoding="utf-8"),
            cited.read_text(encoding="utf-8"))
@@ -587,16 +673,26 @@ def test_recall_degraded_shapes(root):
            result.returncode == 0, result.stdout + result.stderr)
     record("no recall.py in the bundle: the stale loop is still a candidate",
            "old.md" in result.stdout and "1 candidate(s)" in result.stdout, result.stdout)
-    record("no recall.py in the bundle: and the scan says nothing about it",
-           result.stderr.strip() == "", result.stderr)
+    lines = [ln for ln in result.stderr.splitlines() if ln.strip()]
+    record("no recall.py in the bundle: and the scan says nothing about it — "
+           "the only stderr is the owner.slug note this ownerless bundle earns",
+           "recall.py" not in result.stderr
+           and all(ln.startswith("note: elephant.json has no owner.slug") for ln in lines),
+           result.stderr)
 
 
 # ---------------------------------------------------------------------------
-# 10. the sweep gate: --apply only expires what close-loops has examined
+# 10. no sweep gate: decay expires on silence alone
 # ---------------------------------------------------------------------------
-# Expiry is a verdict of silence. Silence nothing has read is not evidence, so
-# `--apply` consults `state/closure-sweep.json` per loop and refuses a candidate
-# `close-loops` has not examined after that loop's own last activity.
+# `decay` used to expire only what `close-loops` had examined and left open,
+# which paced expiry by a routine whose verdict was almost always "open". The
+# gate is gone: `state/closure-sweep.json` is `close-loops`' own queue control,
+# and nothing it says, or fails to say, reaches this script.
+
+ME = "/entities/person/me.md"
+JANE = "/entities/person/jane.md"
+BOB = "/entities/person/bob.md"
+NO_OWNER_NOTE = "note: elephant.json has no owner.slug"
 
 
 def sentences(paragraph):
@@ -614,119 +710,81 @@ def resolution_of(path):
     return ""
 
 
-def test_gate_refuses_the_unexamined(root):
-    """E15: a candidate no sweep entry covers is refused by name, the command
-    that would examine it is printed, and the run still exits 0."""
-    bundle = new_bundle(root, "gate-unexamined")
-    p = write_loop(bundle, "old.md", "Old stale loop",
-                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
-    before = p.read_text(encoding="utf-8")
-
-    dry = run_script(bundle, "decay-loops.py")
-    record("dry-run still lists the unexamined candidate, marked held back",
-           "old.md" in dry.stdout and "held back" in dry.stdout, dry.stdout)
-
-    result = run_script(bundle, "decay-loops.py", ["--apply"])
-    record("--apply over an unexamined candidate exits 0 — a lane nothing has "
-           "read is not an error", result.returncode == 0,
-           f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
-    record("…names the loop it refused", "/tracking/loops/old.md" in result.stdout,
-           result.stdout)
-    record("…prints the close-loops command that would examine it",
-           "scripts/close-loops.py" in result.stdout, result.stdout)
-    record("…and reports 0 expired", "0 loop(s) expired" in result.stdout, result.stdout)
-    record("the refused loop is byte-identical after the run",
-           p.read_text(encoding="utf-8") == before, p.read_text(encoding="utf-8"))
-
-
-def test_gate_expires_the_examined(root):
-    """H8: examined after its own last activity, left open — expirable."""
-    bundle = new_bundle(root, "gate-examined")
-    cleared = write_loop(bundle, "cleared.md", "Examined and still silent",
-                         opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
-    stale_exam = write_loop(bundle, "stale-exam.md", "Examined before it last moved",
-                            opened=days_ago(200), created=days_ago(200), updated=days_ago(60))
-    closed = write_loop(bundle, "closed.md", "Examined and closed",
-                        opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
-    write_sweep(bundle, {
-        "/tracking/loops/cleared.md": days_ago(4),
-        "/tracking/loops/stale-exam.md": days_ago(90),
-        "/tracking/loops/closed.md": (days_ago(4), "done"),
-    })
-
-    result = run_script(bundle, "decay-loops.py", ["--apply"])
-    record("--apply exits 0 with a sweep record present", result.returncode == 0,
-           result.stdout + result.stderr)
-    record("a loop examined after its last activity and left open is expired",
-           "status: expired" in cleared.read_text(encoding="utf-8"),
-           cleared.read_text(encoding="utf-8"))
-    record("a loop whose last activity is newer than its examination is held back "
-           "— it moved after the routine read it",
-           "status: open" in stale_exam.read_text(encoding="utf-8")
-           and "stale-exam.md" in result.stdout,
-           stale_exam.read_text(encoding="utf-8") + "\n---\n" + result.stdout)
-    record("a loop the sweep records as closed is not decay's to expire",
-           "status: open" in closed.read_text(encoding="utf-8"),
-           closed.read_text(encoding="utf-8"))
-    record("…and the run reports one expiry and two held back",
-           "1 loop(s) expired" in result.stdout and "2 candidate(s) held back" in result.stdout,
-           result.stdout)
-
-
-def test_skip_sweep_bypasses_the_gate(root):
-    """E16: `--apply --skip-sweep` over the same unexamined lane expires it."""
-    bundle = new_bundle(root, "gate-skipped")
-    a = write_loop(bundle, "a.md", "Old stale loop",
-                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
-    b = write_loop(bundle, "b.md", "Another old stale loop",
-                   opened=days_ago(120), created=days_ago(120), updated=days_ago(120))
-
-    result = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
-    record("--apply --skip-sweep exits 0", result.returncode == 0,
-           result.stdout + result.stderr)
-    record("every candidate expires with the gate bypassed, examined or not",
-           "status: expired" in a.read_text(encoding="utf-8")
-           and "status: expired" in b.read_text(encoding="utf-8")
-           and "2 loop(s) expired" in result.stdout, result.stdout)
-    record("…and nothing is reported as held back",
-           "held back" not in result.stdout, result.stdout)
-    record("the resolution of a loop no examination reached says exactly that, "
-           "rather than claiming one",
-           "no `close-loops` examination is on record" in resolution_of(a)
-           and "--skip-sweep" in resolution_of(a), resolution_of(a))
-
-
-def test_lost_sweep_parks_decay(root):
-    """E18: absent or malformed, the record reads as empty — every loop reads as
-    never examined and nothing expires, rather than everything expiring."""
-    for label, raw in (("malformed", "{ not json at all\n"),
-                       ("empty object", "{}\n"),
-                       ("no loops key", '{"schema": 1}\n')):
-        bundle = new_bundle(root, "gate-lost-" + label.replace(" ", "-"))
+def test_sweep_is_not_read(root):
+    """E11: absent, malformed, or recording the loop as `done`, the sweep
+    record changes nothing: the stale loop expires, and nothing on stderr so
+    much as names the file."""
+    shapes = [
+        ("absent", None),
+        ("malformed", "raw"),
+        ("recording it as done", "done"),
+    ]
+    for label, shape in shapes:
+        bundle = new_bundle(root, "sweep-ignored-" + label.replace(" ", "-"))
         p = write_loop(bundle, "old.md", "Old stale loop",
                        opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
-        write_sweep(bundle, {}, raw=raw)
+        if shape == "raw":
+            write_sweep(bundle, {}, raw="{ not json at all\n")
+        elif shape == "done":
+            write_sweep(bundle, {"/tracking/loops/old.md": (days_ago(4), "done")})
 
+        dry = run_script(bundle, "decay-loops.py")
         result = run_script(bundle, "decay-loops.py", ["--apply"])
-        record(f"closure-sweep.json {label}: --apply exits 0",
-               result.returncode == 0, result.stdout + result.stderr)
-        record(f"closure-sweep.json {label}: nothing expires — expiry is parked, "
-               "not corrupted",
-               "status: open" in p.read_text(encoding="utf-8")
-               and "0 loop(s) expired" in result.stdout,
-               result.stdout + "\n---\n" + p.read_text(encoding="utf-8"))
-        if label == "malformed":
-            record("closure-sweep.json malformed: one warning on stderr, no crash",
-                   "closure-sweep.json is unreadable" in result.stderr, result.stderr)
+        record(f"closure-sweep.json {label}: --apply exits 0 and expires the stale loop",
+               result.returncode == 0
+               and "status: expired" in p.read_text(encoding="utf-8")
+               and "1 loop(s) expired" in result.stdout,
+               result.stdout + result.stderr)
+        record(f"closure-sweep.json {label}: no output, dry run or --apply, names "
+               "the file, and nothing is held back",
+               "closure-sweep.json" not in dry.stdout + dry.stderr
+               + result.stdout + result.stderr
+               and "held back" not in dry.stdout + result.stdout,
+               dry.stdout + dry.stderr + result.stdout + result.stderr)
 
-    # …and the way out is the flag, not a hand-repaired record.
-    bundle = new_bundle(root, "gate-lost-escape")
-    p = write_loop(bundle, "old.md", "Old stale loop",
-                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
-    write_sweep(bundle, {}, raw="{ not json at all\n")
-    result = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
-    record("--skip-sweep is the deliberate way out of a lost record",
-           "status: expired" in p.read_text(encoding="utf-8"), result.stdout)
+
+def test_skip_sweep_is_a_noop(root):
+    """E10: `--skip-sweep` is accepted, prints one deprecation note on stderr,
+    and changes nothing else: two identical bundles, one run with the flag and
+    one without, end byte-identical."""
+    runs = {}
+    for flag in (False, True):
+        bundle = new_bundle(root, "skip-sweep-" + ("on" if flag else "off"))
+        a = write_loop(bundle, "a.md", "Old stale loop",
+                       opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+        b = write_loop(bundle, "b.md", "Fresh loop",
+                       opened=days_ago(2), created=days_ago(2), updated=days_ago(2))
+        extra = ["--skip-sweep"] if flag else []
+        dry = run_script(bundle, "decay-loops.py", extra)
+        applied = run_script(bundle, "decay-loops.py", ["--apply"] + extra)
+        runs[flag] = (dry, applied, a.read_text(encoding="utf-8"),
+                      b.read_text(encoding="utf-8"))
+
+    dry_on, applied_on, a_on, b_on = runs[True]
+    dry_off, applied_off, a_off, b_off = runs[False]
+    note = ("note: --skip-sweep is deprecated and does nothing: decay no longer "
+            "reads state/closure-sweep.json.")
+    record("--skip-sweep is accepted: the dry run and --apply both exit 0, not "
+           "argparse's 2",
+           dry_on.returncode == 0 and applied_on.returncode == 0,
+           f"{dry_on.returncode} {applied_on.returncode}\n{dry_on.stderr}{applied_on.stderr}")
+    record("…with exactly one deprecation note on stderr per run",
+           dry_on.stderr.count(note) == 1 and applied_on.stderr.count(note) == 1,
+           dry_on.stderr + applied_on.stderr)
+    record("…and a stdout identical to the run without it, dry run and --apply",
+           dry_on.stdout == dry_off.stdout and applied_on.stdout == applied_off.stdout,
+           f"with:\n{dry_on.stdout}{applied_on.stdout}\nwithout:\n"
+           f"{dry_off.stdout}{applied_off.stdout}")
+    record("…and the loop files end byte-identical to the run without it",
+           a_on == a_off and b_on == b_off and "status: expired" in a_on
+           and "status: open" in b_on, a_on + "\n---\n" + a_off)
+    record("without the flag there is no deprecation note",
+           "deprecated" not in dry_off.stderr + applied_off.stderr,
+           dry_off.stderr + applied_off.stderr)
+    help_out = run_script(new_bundle(root, "skip-sweep-help"), "decay-loops.py", ["--help"])
+    record("--help describes --skip-sweep as deprecated, with no effect",
+           "deprecated, no effect" in " ".join(help_out.stdout.split()),
+           help_out.stdout)
 
 
 # ---------------------------------------------------------------------------
@@ -741,7 +799,6 @@ def test_expiry_writes_a_resolution(root):
     p = write_loop(bundle, "old.md", "Ship the quarterly export",
                    opened=days_ago(100), created=days_ago(100), updated=days_ago(100),
                    signal="a source showing the export was delivered.")
-    write_sweep(bundle, {"/tracking/loops/old.md": days_ago(6)})
 
     result = run_script(bundle, "decay-loops.py", ["--apply"])
     text = p.read_text(encoding="utf-8")
@@ -764,17 +821,14 @@ def test_expiry_writes_a_resolution(root):
     record("…two to four sentences, like the closure it mirrors",
            2 <= len(parts) <= 4, f"{len(parts)}: {parts}")
     first = parts[0] if parts else ""
-    record("…whose first sentence stands alone: it dates the expiry, gives the "
-           "silence in days and says the examination found nothing, so "
-           "resolved-loops.md can print it and nothing else",
+    record("…whose first sentence stands alone: it dates the expiry and gives "
+           "the silence in days, so resolved-loops.md can print it and nothing else",
            first.startswith("**Resolution:**") and TODAY.isoformat() in first
-           and "100 days" in first and "close-loops" in first, first)
+           and "100 days" in first and "silence" in first, first)
     record("…and names the last-activity date and the window it fell past",
-           days_ago(100) in para and "45-day" in para, para)
-    record("…referring to state/closure-sweep.json without a leading slash — a "
-           "bundle-absolute link there would point outside knowledge/",
-           "state/closure-sweep.json" in para and "/state/closure-sweep.json" not in para,
-           para)
+           days_ago(100) in para and "30-day" in para, para)
+    record("…and says nothing about state/closure-sweep.json, which decay no "
+           "longer reads", "closure-sweep.json" not in para, para)
 
     index = run_script(bundle, "build-index.py")
     valid = run_script(bundle, "validate-okf.py")
@@ -785,217 +839,55 @@ def test_expiry_writes_a_resolution(root):
            f"valid={valid.returncode}\n{valid.stdout}\n{valid.stderr}")
 
 
-def test_gate_reads_the_file_dates_not_the_citation(root):
-    """The gate compares the examination against the loop's **file** dates, the
-    only ones `close-loops.py` reads, and not against the citation-inclusive
-    date that decided candidacy.
-
-    Comparing against the citation deadlocked a whole class of loop: stale by
-    its file dates, cited inside the recall record but longer ago than the
-    window (so still a candidate), and examined after its file activity (so
-    settled for `close-loops`, which never reads the citation). Neither lane
-    would touch it again, and the `close-loops` command decay prints to unstick
-    it was inert for exactly these loops. No check combined `write_recall` with
-    `write_sweep` before this one, which is why the deadlock shipped.
-    """
-    bundle = new_bundle(root, "gate-citation-deadlock")
-    deadlocked = write_loop(bundle, "deadlocked.md", "Stale, cited long ago, examined since",
-                            opened=days_ago(200), created=days_ago(200), updated=days_ago(200))
-    write_recall(bundle, {"/tracking/loops/deadlocked.md": days_ago(60)})
-    write_sweep(bundle, {"/tracking/loops/deadlocked.md": days_ago(100)})
-
-    dry = run_script(bundle, "decay-loops.py")
-    record("a loop cited longer ago than the window is still a candidate, aged "
-           "from the citation", "deadlocked.md" in dry.stdout and "60d stale" in dry.stdout,
-           dry.stdout)
-    record("…and the gate clears it: the examination is after the file activity "
-           "the close-loops queue reads, so the loop already left that queue",
-           "— cleared:" in dry.stdout and "and 0 held back" in dry.stdout, dry.stdout)
-
-    result = run_script(bundle, "decay-loops.py", ["--apply"])
-    record("--apply expires it instead of parking it in both lanes forever",
-           "status: expired" in deadlocked.read_text(encoding="utf-8")
-           and "1 loop(s) expired" in result.stdout, result.stdout)
-
-    para = resolution_of(deadlocked)
-    record("…and its resolution does not claim no answer ever cited it — recall "
-           "holds a citation, it is simply older than the window",
-           "no answer cited it" not in para and f"after {days_ago(60)}" in para, para)
-
-
-def test_gate_clears_a_same_day_examination(root):
-    """`examined == last_activity` is the deciding case of the on-or-after rule
-    and nothing exercised it: mutating `<` to `<=` in `gate()` left the whole
-    suite green, so a maintainer reading "after" somewhere could invert the
-    boundary of an irreversible operation without a red check."""
-    bundle = new_bundle(root, "gate-same-day")
-    p = write_loop(bundle, "same-day.md", "Examined the day it last moved",
-                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
-    write_sweep(bundle, {"/tracking/loops/same-day.md": days_ago(100)})
-
-    result = run_script(bundle, "decay-loops.py", ["--apply"])
-    record("a loop examined on the very day of its last activity is cleared — "
-           "on or after, not strictly after",
-           "status: expired" in p.read_text(encoding="utf-8")
-           and "1 loop(s) expired" in result.stdout,
-           result.stdout + "\n---\n" + p.read_text(encoding="utf-8"))
-
-
-def test_gate_refuses_an_unvalidated_examination(root):
-    """The gate used to accept any ten digits shaped like a date, and only
-    *forward* junk cleared it — `resolution_paragraph()` then wrote that junk
-    verbatim into the loop file and `build-index.py` printed it onto
-    `tracking/resolved-loops.md`. Each shape below must park its loop.
-
-    Validating the matched group closed the forward half only: a *past* date
-    sitting in prose still parsed, so `"could not decide on 2026-09-02"`, the
-    shape a human writing a refusal into the record leaves behind, expired the
-    loop irreversibly and had the resolution paragraph assert that an
-    examination on that date did not close it, which never happened. Same for
-    two dates in one value, where the first won silently. Anchoring the match at
-    the start and allowing only a time of day after it is what refuses those,
-    and the two kept shapes below are the ceiling on that strictness."""
-    refused = [
-        ("impossible", "an impossible date", "2026-99-99"),
-        ("future", "a future date", days_ahead(30)),
-        ("forward-prose", "forward junk sitting in prose",
-         f"see notes {days_ahead(400)}"),
-        ("past-prose", "a past date sitting in prose",
-         f"could not decide on {days_ago(4)}"),
-        ("two-dates", "two dates in one value",
-         f"{days_ago(4)} then {days_ago(400)}"),
-    ]
-    for slug, label, examined in refused:
-        bundle = new_bundle(root, "gate-junk-" + slug)
-        p = write_loop(bundle, "old.md", "Old stale loop",
-                       opened=days_ago(120), created=days_ago(120), updated=days_ago(120))
-        write_sweep(bundle, {"/tracking/loops/old.md": examined})
-        before = p.read_text(encoding="utf-8")
-
-        result = run_script(bundle, "decay-loops.py", ["--apply"])
-        after = p.read_text(encoding="utf-8")
-        record(f"an examination recorded as {label} reads as never examined",
-               "status: open" in after and "0 loop(s) expired" in result.stdout,
-               result.stdout + "\n---\n" + after)
-        # Not just "the junk is absent": a date read out of prose reaches the
-        # file as the date alone, so the value being missing proves nothing.
-        # The whole file has to be untouched.
-        record(f"…so neither {label} nor any date read out of it reaches the "
-               "loop file, which is byte-for-byte what it was",
-               after == before and examined not in after, after)
-
-    # The shape tolerances survive: a bare date and an ISO *datetime* are both
-    # valid records, which is why the date is validated on the matched group and
-    # not on the whole value, and why the anchor allows a time of day after it.
-    kept = [
-        ("bare-date", "a bare ISO date", days_ago(4),
-         "a bare date is what the record normally holds — the anchor must not "
-         "have made the ordinary shape unreadable"),
-        ("iso-datetime", "an ISO datetime", days_ago(4) + "T09:00:00-03:00",
-         "an ISO datetime is still read as its date — validating the whole "
-         "value would have rejected the shape load_sweep() tolerates on purpose"),
-    ]
-    for slug, label, examined, why in kept:
-        bundle = new_bundle(root, "gate-" + slug)
-        p = write_loop(bundle, "old.md", "Old stale loop",
-                       opened=days_ago(120), created=days_ago(120), updated=days_ago(120))
-        write_sweep(bundle, {"/tracking/loops/old.md": examined})
-        result = run_script(bundle, "decay-loops.py", ["--apply"])
-        record(why,
-               "status: expired" in p.read_text(encoding="utf-8")
-               and "1 loop(s) expired" in result.stdout,
-               f"{label}: {examined}\n" + result.stdout)
-
-
-def test_gate_outcome_is_a_whitelist(root):
-    """Only a recorded `outcome: open` clears the gate. It was a blacklist of the
-    single literal `done`, so `closed`, `resolved` and the `done=extra` the step-4
-    recipe accepts all expired the loop, and the tolerated bare-ISO-string entry
-    carries no outcome at all, so that half vanished silently."""
-    for label, outcome in (("closed", "closed"), ("resolved", "resolved"),
-                            ("done=extra", "done=extra")):
-        bundle = new_bundle(root, "gate-outcome-" + label.replace("=", "-"))
-        p = write_loop(bundle, "old.md", "Old stale loop",
-                       opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
-        write_sweep(bundle, {"/tracking/loops/old.md": (days_ago(4), outcome)})
-
-        result = run_script(bundle, "decay-loops.py", ["--apply"])
-        record(f"an off-vocabulary outcome (`{label}`) holds the loop back rather "
-               "than expiring it on a verdict this script did not understand",
-               "status: open" in p.read_text(encoding="utf-8")
-               and "0 loop(s) expired" in result.stdout,
-               result.stdout + "\n---\n" + p.read_text(encoding="utf-8"))
-
-    bundle = new_bundle(root, "gate-outcome-missing")
-    p = write_loop(bundle, "old.md", "Old stale loop",
-                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
-    write_sweep(bundle, {"/tracking/loops/old.md": (days_ago(4), None)})
-    result = run_script(bundle, "decay-loops.py", ["--apply"])
-    record("an entry carrying no outcome at all is parked too — the shape is "
-           "tolerated, the missing verdict is not",
-           "status: open" in p.read_text(encoding="utf-8")
-           and "0 loop(s) expired" in result.stdout, result.stdout)
-
-    # …and the whitelist still lets the ordinary record through.
-    bundle = new_bundle(root, "gate-outcome-open")
-    p = write_loop(bundle, "old.md", "Old stale loop",
-                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
-    write_sweep(bundle, {"/tracking/loops/old.md": (days_ago(4), "open")})
-    result = run_script(bundle, "decay-loops.py", ["--apply"])
-    record("a recorded `open` still clears — the whitelist did not close the gate "
-           "on everything", "status: expired" in p.read_text(encoding="utf-8"),
-           result.stdout)
-
-
 def test_expiry_boundary_day(root):
     """`activity > cutoff` skips, so a loop exactly `loop_expiry_days` old IS
-    expired. The magnitude was sensed and the boundary day was not: both
+    expired (E13). The magnitude was sensed and the boundary day was not: both
     `> -> >=` and `days=expiry_days -> expiry_days - 1` survived the suite, and
-    the run's own message said `stale > 45d` for a comparison that is `>=`."""
+    the run's own message once said `stale > N` for a comparison that is `>=`."""
     bundle = new_bundle(root, "boundary")
-    write_loop(bundle, "exactly-45.md", "Exactly at the window",
-               opened=days_ago(45), created=days_ago(45), updated=days_ago(45))
+    write_loop(bundle, "exactly-30.md", "Exactly at the window",
+               opened=days_ago(30), created=days_ago(30), updated=days_ago(30))
     write_loop(bundle, "one-day-short.md", "One day inside the window",
-               opened=days_ago(44), created=days_ago(44), updated=days_ago(44))
+               opened=days_ago(29), created=days_ago(29), updated=days_ago(29))
 
     result = run_script(bundle, "decay-loops.py")
-    record("a loop exactly 45 days old IS a candidate under the default window",
-           "exactly-45.md" in result.stdout, result.stdout)
-    record("…while one 44 days old is not, so the window is 45 and not 44",
+    record("a loop exactly 30 days old IS a candidate under the default window",
+           "exactly-30.md" in result.stdout, result.stdout)
+    record("…while one 29 days old is not, so the window is 30 and not 29",
            "one-day-short.md" not in result.stdout
            and "1 candidate(s)" in result.stdout, result.stdout)
-    record("…and the run says `stale >= 45d`, which is what the comparison does",
-           "stale >= 45d" in result.stdout and "stale > 45d" not in result.stdout,
+    record("…and the run says `stale >= 30d`, which is what the comparison does",
+           "stale >= 30d" in result.stdout and "stale > 30d" not in result.stdout,
            result.stdout)
 
-    applied = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    applied = run_script(bundle, "decay-loops.py", ["--apply"])
     record("--apply reports the same boundary it applied",
-           "stale >= 45d" in applied.stdout and "1 loop(s) expired" in applied.stdout,
+           "stale >= 30d" in applied.stdout and "1 loop(s) expired" in applied.stdout,
            applied.stdout)
 
 
 def test_resolution_states_only_what_decay_checked(root):
-    """The first sentence is the only one `resolved-loops.md` prints, and it used
-    to assert three absolutes decay never checks. Every claim is window-relative
-    now, `--skip-sweep` no longer blanks an examination that is on record, and
-    nothing promises a reopen no procedure performs."""
+    """The first sentence is the only one `resolved-loops.md` prints, and it
+    used to assert absolutes decay never checks. Every claim is window-relative,
+    nothing promises a reopen no procedure performs, and a sweep record left on
+    purpose in the bundle, examining the loop 6 days ago, reaches none of it:
+    decay no longer reads that file, so its paragraph cannot cite it."""
     bundle = new_bundle(root, "resolution-honesty")
     p = write_loop(bundle, "old.md", "Ship the quarterly export",
                    opened=days_ago(100), created=days_ago(100), updated=days_ago(100),
                    signal="a source showing the export was delivered.")
     write_sweep(bundle, {"/tracking/loops/old.md": days_ago(6)})
 
-    result = run_script(bundle, "decay-loops.py", ["--apply", "--skip-sweep"])
+    result = run_script(bundle, "decay-loops.py", ["--apply"])
     para = resolution_of(p)
-    record("--apply --skip-sweep exits 0 with a sweep record present",
+    record("--apply exits 0 with a sweep record present",
            result.returncode == 0, result.stdout + result.stderr)
-    record("--skip-sweep no longer blanks an examination that IS on record — the "
-           "flag decides whether the gate is consulted, not whether one happened",
-           days_ago(6) in para
-           and "no `close-loops` examination is on record" not in para, para)
-    record("…and it credits the flag rather than the examination it did not consult",
-           "--skip-sweep" in para and "cleared it for expiry is recorded" not in para,
-           para)
+    record("the sweep's examination date reaches no part of the paragraph",
+           days_ago(6) not in para, para)
+    record("…and neither does the sweep itself: no examination, no "
+           "closure-sweep.json, no --skip-sweep",
+           "examination" not in para and "closure-sweep.json" not in para
+           and "--skip-sweep" not in para, para)
     record("no sentence promises that a later source reopens the loop — nothing "
            "reopens an expired loop, and this text is written permanently into "
            "every expired file", "reopen" not in para, para)
@@ -1004,10 +896,6 @@ def test_resolution_states_only_what_decay_checked(root):
            "no answer cited it" not in para
            and "no later source re-raised it" not in para
            and f"nothing re-raised or cited it after {days_ago(100)}" in para, para)
-    record("…and it says the examination did not close the loop, which is true "
-           "both when close-loops found no candidates and when it could not "
-           "decide — the sweep records `outcome: open` for both",
-           "did not close it" in para and "found no evidence" not in para, para)
 
     parts = sentences(para)
     record("…still two to four sentences with the first standing alone",
@@ -1019,6 +907,1098 @@ def test_resolution_states_only_what_decay_checked(root):
     record("build-index.py and validate-okf.py still pass over the rewritten loop",
            index.returncode == 0 and valid.returncode == 0,
            f"index={index.returncode}\n{index.stderr}\nvalid={valid.returncode}\n{valid.stderr}")
+
+
+# ---------------------------------------------------------------------------
+# 12. the out-of-scope rule: a loop that is not the owner's leaves the lane
+# ---------------------------------------------------------------------------
+# A loop exists only when it relates to the bundle owner: the owner owes it
+# (`owner`), is owed it (`owed_to`), or at least appears in `entities`. An
+# open loop naming the owner in none of the three is a commitment between other
+# people, and decay expires it at any age.
+
+
+def fm_of(path):
+    return path.read_text(encoding="utf-8").split("---\n", 2)[1]
+
+
+def test_out_of_scope_expires_at_any_age(root):
+    """H10, H11, E3, E4, E7."""
+    bundle = new_bundle(root, "scope-any-age", owner_slug="me")
+    third = write_loop(bundle, "third.md", "Jane sends Bob the deck",
+                       opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                       owner=[JANE], owed_to=[BOB], entities=[BOB])
+    mine = write_loop(bundle, "mine.md", "I send the deck",
+                      opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                      owner=[ME], owed_to=[])
+    owed = write_loop(bundle, "owed.md", "Jane sends me the deck",
+                      opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                      owner=[JANE], owed_to=[ME])
+    ent = write_loop(bundle, "ent.md", "Jane ships it, I am named",
+                     opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                     owner=[JANE], owed_to=[], entities=[ME])
+    ent_old = write_loop(bundle, "ent-old.md", "Jane ships it, I am named, long ago",
+                         opened=days_ago(40), created=days_ago(40), updated=days_ago(40),
+                         owner=[JANE], entities=[ME])
+    both = write_loop(bundle, "both.md", "Jane and Bob, long ago",
+                      opened=days_ago(100), created=days_ago(100), updated=days_ago(100),
+                      owner=[JANE], entities=[BOB])
+
+    dry = run_script(bundle, "decay-loops.py")
+    record("a 1-day-old loop naming the owner nowhere is a candidate",
+           "third.md" in dry.stdout, dry.stdout)
+    record("the owner in `owner`, in `owed_to` only, or in `entities` only: none "
+           "of those 1-day-old loops is a candidate (E3, E4)",
+           all(n not in dry.stdout for n in ("mine.md", "owed.md", "/ent.md")),
+           dry.stdout)
+    record("…while the owner-in-entities loop 40 days silent is a stale "
+           "candidate, on the 30-day clock (E3)",
+           "ent-old.md  (40d stale)" in dry.stdout, dry.stdout)
+    record("a loop both out of scope and stale is listed once, as out of scope (E7)",
+           dry.stdout.count("both.md") == 1
+           and "/tracking/loops/both.md  (out of scope" in dry.stdout, dry.stdout)
+    record("no stderr note: this bundle has an owner.slug",
+           NO_OWNER_NOTE not in dry.stderr, dry.stderr)
+
+    result = run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply exits 0", result.returncode == 0, result.stdout + result.stderr)
+    record("--apply expires the 1-day-old third-party loop (H11)",
+           "status: expired" in third.read_text(encoding="utf-8"),
+           third.read_text(encoding="utf-8"))
+    para = resolution_of(third)
+    record("…with the out-of-scope resolution, naming the owner link it left out",
+           para.startswith(f"**Resolution:** Expired on {TODAY.isoformat()} as out of scope")
+           and f"`{ME}`" in para and "third-party commitment" in para, para)
+    record("…whose first sentence stands alone, two to four sentences in all",
+           2 <= len(sentences(para)) <= 4 and "out of scope" in sentences(para)[0],
+           sentences(para))
+    record("the in-scope 1-day-old loops stay open, with no resolution written",
+           all("status: open" in p.read_text(encoding="utf-8")
+               and "**Resolution:**" not in p.read_text(encoding="utf-8")
+               for p in (mine, owed, ent)), "")
+    record("the stale in-scope loop expires with the silence resolution",
+           "days of silence" in resolution_of(ent_old)
+           and "out of scope" not in resolution_of(ent_old), resolution_of(ent_old))
+    both_text = both.read_text(encoding="utf-8")
+    record("the stale and out-of-scope loop expires once, with the out-of-scope "
+           "resolution and no silence one (E7)",
+           both_text.count("**Resolution:**") == 1
+           and both_text.count("expired:") == 1
+           and "as out of scope" in resolution_of(both)
+           and "days of silence" not in resolution_of(both), both_text)
+    record("the summary splits the three expiries by kind",
+           "3 loop(s) expired (2 out of scope, 1 stale >= 30d)" in result.stdout,
+           result.stdout)
+
+    index = run_script(bundle, "build-index.py")
+    valid = run_script(bundle, "validate-okf.py")
+    record("build-index.py and validate-okf.py pass over the out-of-scope expiries",
+           index.returncode == 0 and valid.returncode == 0,
+           f"index={index.returncode}\n{index.stderr}\nvalid={valid.returncode}\n"
+           f"{valid.stdout}\n{valid.stderr}")
+
+
+def test_out_of_scope_ignores_citation_and_dates(root):
+    """E5, E6: the scope test reads no date. Updated yesterday, cited today, or
+    carrying no parseable date at all, a third-party loop is a candidate."""
+    bundle = new_bundle(root, "scope-no-dates", owner_slug="me")
+    yesterday = write_loop(bundle, "yesterday.md", "Jane and Bob, touched yesterday",
+                           opened=days_ago(200), created=days_ago(200),
+                           updated=days_ago(1), owner=[JANE], entities=[BOB])
+    cited = write_loop(bundle, "cited.md", "Jane and Bob, cited today",
+                       opened=days_ago(200), created=days_ago(200),
+                       updated=days_ago(200), owner=[JANE])
+    undated = write_loop(bundle, "undated.md", "Jane and Bob, no date at all",
+                         opened="someday", created="someday", updated="someday",
+                         owner=[JANE])
+    mine_undated = write_loop(bundle, "mine-undated.md", "Mine, no date at all",
+                              opened="someday", created="someday", updated="someday",
+                              owner=[ME])
+    write_recall(bundle, {"/tracking/loops/cited.md": TODAY.isoformat()})
+
+    dry = run_script(bundle, "decay-loops.py")
+    record("a third-party loop updated yesterday is still a candidate (E5)",
+           "yesterday.md  (out of scope" in dry.stdout, dry.stdout)
+    record("…and so is one cited today in state/recall.json (E5)",
+           "cited.md  (out of scope" in dry.stdout, dry.stdout)
+    record("…and one carrying no parseable date at all (E6)",
+           "/tracking/loops/undated.md  (out of scope" in dry.stdout, dry.stdout)
+    record("…while an in-scope loop with no parseable date is still no candidate: "
+           "the stale test is unchanged",
+           "mine-undated.md" not in dry.stdout
+           and "3 candidate(s) for decay (3 out of scope, 0 stale" in dry.stdout,
+           dry.stdout)
+
+    result = run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply expires all three",
+           all("status: expired" in p.read_text(encoding="utf-8")
+               for p in (yesterday, cited, undated))
+           and "status: open" in mine_undated.read_text(encoding="utf-8"),
+           result.stdout + result.stderr)
+    para = resolution_of(undated)
+    record("the undated loop's resolution names no age and no activity date (E6)",
+           para and "days" not in para and "last activity" not in para
+           and "someday" not in para, para)
+    record("…and the --apply line names no age either",
+           "expired: /tracking/loops/undated.md  (out of scope)" in result.stdout,
+           result.stdout)
+
+
+def test_owner_slug_missing_skips_scope_rule(root):
+    """E1: no owner.slug, whatever the reason, skips the rule with one note on
+    stderr, rather than expiring every loop as naming nobody."""
+    shapes = [
+        ("no elephant.json", None),
+        ("no owner key", json.dumps({"decay": {"loop_expiry_days": 30}})),
+        ("empty slug", json.dumps({"owner": {"slug": "", "name": "Me"}})),
+        ("only a name", json.dumps({"owner": {"name": "Me"}})),
+        ("owner not a dict", json.dumps({"owner": "me"})),
+        ("malformed JSON", "{ not json at all\n"),
+    ]
+    for label, raw in shapes:
+        bundle = new_bundle(root, "no-owner-" + label.replace(" ", "-").replace(".", ""))
+        if raw is not None:
+            (bundle / "elephant.json").write_text(raw, encoding="utf-8")
+        third = write_loop(bundle, "third.md", "Jane and Bob",
+                           opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                           owner=[JANE], entities=[BOB])
+        write_loop(bundle, "old.md", "Old stale loop",
+                   opened=days_ago(100), created=days_ago(100), updated=days_ago(100),
+                   owner=[JANE])
+        dry = run_script(bundle, "decay-loops.py")
+        record(f"{label}: the scan exits 0", dry.returncode == 0,
+               dry.stdout + dry.stderr)
+        record(f"{label}: the 1-day third-party loop is not a candidate; only the "
+               "stale one is",
+               "third.md" not in dry.stdout
+               and "1 candidate(s) for decay (0 out of scope, 1 stale >= 30d" in dry.stdout,
+               dry.stdout)
+        record(f"{label}: one stderr note says the rule is skipped",
+               dry.stderr.count(NO_OWNER_NOTE) == 1
+               and "out-of-scope rule is skipped" in dry.stderr, dry.stderr)
+        before = third.read_text(encoding="utf-8")
+        applied = run_script(bundle, "decay-loops.py", ["--apply"])
+        record(f"{label}: --apply exits 0 and leaves the third-party loop untouched",
+               applied.returncode == 0 and third.read_text(encoding="utf-8") == before,
+               applied.stdout + applied.stderr)
+
+
+def test_scope_link_shapes(root):
+    """E8, E9: the owner's link is matched by slug in every shape a loop spells
+    it, and `owner.slug` is normalized the same way before comparing."""
+    in_scope_shapes = [
+        ("double-quoted-item", "owner", f' ["{ME}"]'),
+        ("single-quoted-item", "owner", f" ['{ME}']"),
+        ("block-sequence", "owner", f"\n  - {ME}"),
+        ("quoted-block-sequence", "owner", f'\n  - "{ME}"'),
+        ("bare-scalar", "owner", f" {ME}"),
+        ("bare-slug", "owner", " [me]"),
+        ("uppercase-slug", "owner", " [/entities/person/ME.md]"),
+        ("other-kind-dir", "entities", " [/entities/org/me.md]"),
+        ("owed-to-block-sequence", "owed_to", f"\n  - {JANE}\n  - {ME}"),
+        ("with-trailing-comment", "owner", f" [{ME}]   # who owes the delivery"),
+        # Valid YAML the first mirror of list_field() misread as empty or
+        # partial, each one an out-of-scope expiry on the day the loop opened.
+        ("zero-indent-block", "owner", f"\n- {ME}"),
+        ("wrapped-flow-list", "entities", f" [/entities/project/a.md,\n  {ME}]"),
+        ("comment-in-block", "owner", f"\n  - {JANE}\n  # the owner below\n  - {ME}"),
+        # A spelling list_field() does not parse at all: the raw link scan is
+        # the floor that keeps it in scope.
+        ("yaml-tag", "owner", f" !!seq [{ME}]"),
+        ("markdown-link", "owner", f' ["[Me]({ME})"]'),
+        ("yaml-tag-bare-slug", "owner", " !!seq [me]"),
+        # The first line of a wrapped list carries a comment, and the owner is
+        # a bare slug on the next: the comment used to be glued to it.
+        ("wrapped-list-comment-bare-slug", "owner", f" [{JANE},  # x\n  me]"),
+        # A bare slug in each of the other two fields: the full-path link is
+        # caught by the raw scan whatever SCOPE_FIELDS holds, a bare slug only
+        # by the field itself being read.
+        ("owed-to-bare-slug", "owed_to", " [me]"),
+        ("entities-bare-slug", "entities", " [me]"),
+        # Only the token test reads this one, and a slug is compared without
+        # regard to case everywhere else, so the token test is too.
+        ("yaml-tag-capitalized-slug", "owner", " !!seq [Me]"),
+        # An apostrophe inside a plain item is content: it used to open a
+        # "quote" that swallowed the `]` and glued it to the owner's slug.
+        ("apostrophe-item-bare-slug", "owner", " [O'Neil, me]"),
+    ]
+    for owner_slug in ("me", "ME", ME):
+        tag = {"me": "plain", "ME": "upper", ME: "path"}[owner_slug]
+        bundle = new_bundle(root, "scope-shapes-" + tag, owner_slug=owner_slug)
+        for name, key, raw in in_scope_shapes:
+            kwargs = {"owner": [JANE], "owed_to": None, "entities": ()}
+            kwargs[key] = raw
+            write_loop(bundle, f"{name}.md", f"Shape {name}",
+                       opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                       **kwargs)
+        spaced = write_loop(bundle, "spaced-colon.md", "Shape spaced-colon",
+                            opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                            owner=[ME])
+        spaced.write_text(spaced.read_text(encoding="utf-8").replace(
+            f"owner: [{ME}]", f"owner : [{ME}]"), encoding="utf-8")
+        # A markdown link to the owner under a key the scope test does not
+        # read: the entity-link floor covers the whole frontmatter, so it keeps
+        # the loop in, the same as a plain link in that key does.
+        write_loop(bundle, "markdown-link-other-key.md", "Shape markdown-link-other-key",
+                   opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                   owner=[JANE], extra=f'participants: ["[Me]({ME})"]\n')
+        write_loop(bundle, "lookalike.md", "A slug the owner's is a prefix of",
+                   opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                   owner=["/entities/person/meyer.md"])
+        # The slug as an ordinary word outside the three fields' values: in the
+        # description, and in a comment on a scope line. Neither is a link.
+        write_loop(bundle, "word-in-description.md", "Jane to send me the deck",
+                   opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                   owner=[JANE])
+        write_loop(bundle, "word-in-comment.md", "Jane's, commented",
+                   opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                   owner=f" [{JANE}]   # not me")
+        write_loop(bundle, "word-in-item-comment.md", "Jane's, a commented item",
+                   opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                   owner=f"\n  - {JANE}  # not me")
+        # A comment after a tab on the continuation line of a wrapped list: YAML
+        # opens a comment after any whitespace, so the `me` in it is no token.
+        write_loop(bundle, "word-in-wrapped-comment.md", "Jane's, wrapped, commented",
+                   opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                   owner=f" [{JANE},\n  {BOB}]\t# ping me")
+        dry = run_script(bundle, "decay-loops.py")
+        names = [name for name, _k, _r in in_scope_shapes] + [
+            "spaced-colon", "markdown-link-other-key"]
+        missed = [name for name in names if f"/{name}.md" in dry.stdout]
+        record(f"owner.slug given as {owner_slug!r}: the owner's link is matched in "
+               "every shape (quoted, block sequence at any indent or with a comment "
+               "line, a wrapped inline list, bare scalar, bare slug, uppercase, "
+               "another kind directory, owed_to, a trailing comment, `owner :`, a "
+               "YAML tag, a markdown link in a scope key or any other, a bare slug "
+               "in owed_to or entities, a capitalized slug, an apostrophe in "
+               "another item)",
+               not missed, f"listed as candidates: {missed}\n{dry.stdout}")
+        record(f"owner.slug given as {owner_slug!r}: …and the rule is still on: a "
+               "lookalike slug, the slug as a word in the description or in a "
+               "comment (after a space, or after a tab on a wrapped line), are no "
+               "match",
+               all(f"{n}.md  (out of scope" in dry.stdout
+                   for n in ("lookalike", "word-in-description", "word-in-comment",
+                             "word-in-item-comment", "word-in-wrapped-comment"))
+               and "5 candidate(s) for decay (5 out of scope" in dry.stdout, dry.stdout)
+
+
+RAFA_OLD = "/entities/person/rafael-girolineto.md"
+RAFA_NEW = "/entities/person/rafael-giro.md"
+
+
+def test_unresolvable_owner_skips_scope_rule(root):
+    """E1, extended: an `owner.slug` that names no entity is no slug. The case
+    that motivated it, end to end: the owner merges a duplicate of their own
+    entity with `rename-entity.py --merge`, which rewrites every loop's link and
+    never touches `elephant.json`. Read as is, the stale slug made every open
+    loop out of scope, and the next unattended run expired the whole lane."""
+    bundle = new_bundle(root, "owner-renamed", owner_slug="rafael-girolineto")
+    write_entity(bundle, "rafael-giro")
+    write_entity(bundle, "jane")
+    shutil.copy2(ASSETS / "scripts" / "rename-entity.py",
+                 bundle / "scripts" / "rename-entity.py")
+    fresh = [write_loop(bundle, f"fresh-{i}.md", f"Mine, fresh {i}",
+                        opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                        owner=[RAFA_OLD])
+             for i in range(3)]
+    stale = write_loop(bundle, "stale.md", "Mine, 100 days silent",
+                       opened=days_ago(100), created=days_ago(100),
+                       updated=days_ago(100), owner=[RAFA_OLD])
+
+    before = run_script(bundle, "decay-loops.py")
+    record("before the merge, only the stale loop is a candidate",
+           "1 candidate(s) for decay (0 out of scope, 1 stale" in before.stdout
+           and "names no entity file" not in before.stderr,
+           before.stdout + before.stderr)
+
+    merged = run_script(bundle, "rename-entity.py",
+                        ["rafael-girolineto", "rafael-giro", "--merge"])
+    record("the fixture holds: rename-entity.py --merge rewrote the loops and left "
+           "elephant.json naming the old slug",
+           merged.returncode == 0
+           and all(RAFA_NEW in p.read_text(encoding="utf-8") for p in fresh)
+           and not (bundle / "knowledge" / RAFA_OLD.lstrip("/")).exists()
+           and "rafael-girolineto" in (bundle / "elephant.json").read_text(encoding="utf-8"),
+           merged.stdout + merged.stderr)
+
+    dry = run_script(bundle, "decay-loops.py")
+    record("after the merge, the scope rule is skipped: no fresh loop is listed as "
+           "out of scope",
+           dry.returncode == 0
+           and not any(p.name in dry.stdout for p in fresh)
+           and "1 candidate(s) for decay (0 out of scope, 1 stale" in dry.stdout,
+           dry.stdout)
+    record("…and one stderr note names the slug and says no entity file backs it",
+           dry.stderr.count("names no entity file") == 1
+           and "`rafael-girolineto`" in dry.stderr
+           and "out-of-scope rule is skipped" in dry.stderr, dry.stderr)
+    applied = run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply leaves the three fresh loops open and expires only the stale one",
+           applied.returncode == 0
+           and all("status: open" in p.read_text(encoding="utf-8") for p in fresh)
+           and "status: expired" in stale.read_text(encoding="utf-8")
+           and "days of silence" in resolution_of(stale),
+           applied.stdout + applied.stderr)
+
+    # The same guard with no rename in the story: a slug with no entity file.
+    bare = new_bundle(root, "owner-no-entity", owner_slug="me", owner_entity=False)
+    write_loop(bare, "third.md", "Jane's", owner=[JANE],
+               opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    write_loop(bare, "mine.md", "Mine", owner=[ME],
+               opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    dry = run_script(bare, "decay-loops.py")
+    record("an owner.slug with no entity file under knowledge/entities/ skips the "
+           "rule with the note",
+           "third.md" not in dry.stdout and "0 candidate(s)" in dry.stdout
+           and dry.stderr.count("names no entity file") == 1, dry.stdout + dry.stderr)
+    write_entity(bare, "ME")
+    dry = run_script(bare, "decay-loops.py")
+    record("…while an entity file whose stem differs only in case backs the slug",
+           "third.md  (out of scope" in dry.stdout
+           and "names no entity file" not in dry.stderr, dry.stdout + dry.stderr)
+
+
+def test_no_loop_names_the_owner_skips_scope_rule(root):
+    """A resolvable `owner.slug` that no open loop names at all reads as the
+    wrong entity far more often than as an owner with nothing left, so the rule
+    is skipped for the run with one note, and those loops decay on the clock."""
+    bundle = new_bundle(root, "owner-named-nowhere", owner_slug="me")
+    fresh = [write_loop(bundle, f"third-{i}.md", f"Jane's {i}", owner=[JANE],
+                        entities=[BOB], opened=days_ago(1), created=days_ago(1),
+                        updated=days_ago(1))
+             for i in range(2)]
+    old = write_loop(bundle, "third-old.md", "Jane's, 100 days", owner=[JANE],
+                     opened=days_ago(100), created=days_ago(100), updated=days_ago(100))
+    dry = run_script(bundle, "decay-loops.py")
+    record("no open loop names the owner: no loop is out of scope, the old one is stale",
+           "1 candidate(s) for decay (0 out of scope, 1 stale" in dry.stdout
+           and "third-old.md  (100d stale)" in dry.stdout, dry.stdout)
+    record("…and one stderr note says why the rule was skipped",
+           dry.stderr.count("no open loop names the owner") == 1
+           and "rather than expiring all 3" in dry.stderr, dry.stderr)
+    applied = run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply leaves the fresh third-party loops open, expiring only on silence",
+           all("status: open" in p.read_text(encoding="utf-8") for p in fresh)
+           and "days of silence" in resolution_of(old), applied.stdout + applied.stderr)
+
+    write_loop(bundle, "mine.md", "Mine", owner=[ME],
+               opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    dry = run_script(bundle, "decay-loops.py")
+    record("one open loop naming the owner switches the rule back on",
+           "2 candidate(s) for decay (2 out of scope, 0 stale" in dry.stdout
+           and "no open loop names the owner" not in dry.stderr,
+           dry.stdout + dry.stderr)
+
+
+def write_named_entity(bundle, entity_slug, title, aliases=()):
+    """An entity file with a given title and aliases, for the duplicate test."""
+    path = write_entity(bundle, entity_slug)
+    text = path.read_text(encoding="utf-8")
+    text = text.replace(f'title: "{entity_slug}"', f'title: "{title}"').replace(
+        "aliases: []", "aliases: [" + ", ".join(aliases) + "]")
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_partial_owner_duplicate(root):
+    """The "no open loop names the owner" guard is all or nothing. With a
+    duplicate of the owner's entity that only some loops link, it does not
+    fire, and those loops used to expire as out of scope. A loop linking an
+    entity carrying one of the owner's names is read as naming the owner."""
+    bundle = new_bundle(root, "owner-partial-duplicate", owner_slug="rafael-girolineto",
+                        owner_entity=False)
+    # The alias the duplicate matches comes last, after one holding an
+    # apostrophe: the list reader used to take that `'` for an unclosed quote
+    # and read the last alias as `Giro]`, which matched nothing.
+    write_named_entity(bundle, "rafael-girolineto", "Rafael Girolineto",
+                       ["rafapg", "O'Neil", "Giro"])
+    write_named_entity(bundle, "giro", "Giro")                  # the duplicate, by alias
+    write_named_entity(bundle, "rafael-g", "Rafael Girolineto")  # the duplicate, by title
+    write_named_entity(bundle, "zelda-girolineto", "Zelda Girolineto")
+    write_named_entity(bundle, "jane", "Jane")
+    mine = write_loop(bundle, "mine.md", "Mine", owner=[RAFA_OLD],
+                      opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    dup_alias = write_loop(bundle, "dup-alias.md", "Mine, linked to the duplicate",
+                           owner=["/entities/person/giro.md"],
+                           opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    dup_title = write_loop(bundle, "dup-title.md", "Owed to me, linked to the duplicate",
+                           owner=[JANE], owed_to=["/entities/person/rafael-g.md"],
+                           opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    write_loop(bundle, "relative.md", "A relative's, not the owner's",
+               owner=["/entities/person/zelda-girolineto.md"],
+               opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    write_loop(bundle, "third.md", "Jane's", owner=[JANE],
+               opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    dry = run_script(bundle, "decay-loops.py")
+    record("a loop linking a duplicate of the owner (same alias or same title) is no "
+           "out-of-scope candidate",
+           "dup-alias.md" not in dry.stdout and "dup-title.md" not in dry.stdout
+           and "mine.md" not in dry.stdout, dry.stdout)
+    record("…while a relative sharing a surname, and a third party, still are",
+           "relative.md  (out of scope" in dry.stdout and "third.md  (out of scope" in dry.stdout
+           and "2 candidate(s) for decay (2 out of scope" in dry.stdout, dry.stdout)
+    record("…and one stderr note names the duplicates and the merge that fixes them",
+           dry.stderr.count("carry one of the owner's names") == 1
+           and "/entities/*/giro.md" in dry.stderr and "/entities/*/rafael-g.md" in dry.stderr
+           and "zelda" not in dry.stderr and "rename-entity.py --merge" in dry.stderr,
+           dry.stderr)
+    run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply leaves the loops linking a duplicate open",
+           all("status: open" in p.read_text(encoding="utf-8")
+               for p in (mine, dup_alias, dup_title)), dry.stdout)
+
+
+def test_quoted_comma_alias_duplicate(root):
+    """An alias written "SURNAME, Name" is one YAML item, quoted because of its
+    comma. The list reader split it at that comma, so a duplicate entity titled
+    with it matched none of the owner's names and the loop linking it expired
+    as out of scope, while the same alias without the comma protected it. The
+    names are fictional."""
+    bundle = new_bundle(root, "owner-quoted-comma-alias", owner_slug="jane-doe",
+                        owner_entity=False)
+    write_named_entity(bundle, "jane-doe", "Jane Doe", ["JD", '"Doe, Jane"', "'Roe, J.'"])
+    write_named_entity(bundle, "doe-jane", "Doe, Jane")    # the duplicate, by alias
+    write_named_entity(bundle, "roe-j", "Roe, J.")         # single-quoted alias
+    write_named_entity(bundle, "doe", "Doe")               # a comma fragment, no name of hers
+    fresh = {"opened": days_ago(1), "created": days_ago(1), "updated": days_ago(1)}
+    mine = write_loop(bundle, "mine.md", "Mine", owner=["/entities/person/jane-doe.md"],
+                      **fresh)
+    dup = write_loop(bundle, "dup.md", "Mine, linked to the duplicate",
+                     owner=["/entities/person/doe-jane.md"], **fresh)
+    roe = write_loop(bundle, "roe.md", "Mine, linked to the other duplicate",
+                     owner=[JANE], owed_to=["/entities/person/roe-j.md"], **fresh)
+    write_loop(bundle, "doe.md", "Someone named Doe", owner=["/entities/person/doe.md"],
+               **fresh)
+    dry = run_script(bundle, "decay-loops.py")
+    record("an alias holding a quoted comma is one name: the loop linking the "
+           "duplicate titled with it is no out-of-scope candidate",
+           "dup.md" not in dry.stdout and "roe.md" not in dry.stdout
+           and "mine.md" not in dry.stdout, dry.stdout)
+    record("…while a comma fragment of it names nobody: `Doe` stays out of scope",
+           "doe.md  (out of scope" in dry.stdout
+           and "1 candidate(s) for decay (1 out of scope" in dry.stdout, dry.stdout)
+    run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply leaves the loops linking either duplicate open",
+           all("status: open" in p.read_text(encoding="utf-8") for p in (mine, dup, roe)),
+           dry.stdout + dry.stderr)
+
+
+def test_duplicate_never_arms_the_scope_rule(root):
+    """The "no open loop names the owner" guard reads the owner's own slug,
+    never a duplicate's. `owner.slug` here names the wrong entity (`alex`,
+    titled "Alex"), a third party carries "Alex" as an alias, and every loop
+    the owner really owes links their actual entity. Counting the duplicate
+    let that third party's one loop arm the rule, and the next `--apply`
+    expired the owner's whole lane as out of scope."""
+    bundle = new_bundle(root, "duplicate-arms-guard", owner_slug="alex",
+                        owner_entity=False)
+    write_named_entity(bundle, "alex", "Alex")
+    write_named_entity(bundle, "alex-moreno", "Alex Moreno", ["Alex"])
+    write_named_entity(bundle, "alexandra-lima", "Alexandra Lima")
+    owed = [write_loop(bundle, f"owed-{i}.md", f"Mine {i}",
+                       owner=["/entities/person/alexandra-lima.md"],
+                       opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+            for i in range(3)]
+    moreno = write_loop(bundle, "moreno.md", "Moreno's",
+                        owner=["/entities/person/alex-moreno.md"],
+                        opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    dry = run_script(bundle, "decay-loops.py")
+    record("a loop linking only a duplicate does not switch the scope rule on: "
+           "the guard's note fires and no loop is out of scope",
+           dry.stderr.count("no open loop names the owner") == 1
+           and "0 candidate(s) for decay (0 out of scope" in dry.stdout,
+           dry.stdout + dry.stderr)
+    applied = run_script(bundle, "decay-loops.py", ["--apply"])
+    record("…and --apply leaves the owner's loops open",
+           applied.returncode == 0
+           and all("status: open" in p.read_text(encoding="utf-8")
+                   for p in owed + [moreno]),
+           applied.stdout + applied.stderr)
+    write_loop(bundle, "named.md", "Links the configured owner entity",
+               owner=["/entities/person/alex.md"],
+               opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    dry = run_script(bundle, "decay-loops.py")
+    record("…while one loop linking the configured owner entity arms it, and the "
+           "duplicate still keeps its own loop in",
+           "no open loop names the owner" not in dry.stderr
+           and all(f"owed-{i}.md  (out of scope" in dry.stdout for i in range(3))
+           and "moreno.md" not in dry.stdout and "named.md" not in dry.stdout,
+           dry.stdout + dry.stderr)
+
+
+def test_owner_duplicate_name_shapes(root):
+    """owner_duplicates() compares every name the same way: an entity file's
+    own slug is one of its names, case is ignored, a folded (`>-`) title is
+    read as its text rather than as the indicator, and one unreadable entity
+    file skips only itself, with a note."""
+    bundle = new_bundle(root, "duplicate-name-shapes", owner_slug="alex",
+                        owner_entity=False)
+    owner_entity = write_named_entity(bundle, "alex", "Alex Doe", ["Lex", "Kit"])
+    owner_entity.write_text(owner_entity.read_text(encoding="utf-8").replace(
+        'title: "Alex Doe"', "title: >-\n  Alex\n  Doe"), encoding="utf-8")
+    write_named_entity(bundle, "lex", "L. Example")       # by slug only
+    write_named_entity(bundle, "kit-b", "KIT")            # by title, other case
+    folded_dup = write_named_entity(bundle, "alex-d", "x")  # folded title, same text
+    folded_dup.write_text(folded_dup.read_text(encoding="utf-8").replace(
+        'title: "x"', "title: >-\n  alex doe"), encoding="utf-8")
+    other = write_named_entity(bundle, "jane-two", "x")     # folded title, unrelated
+    other.write_text(other.read_text(encoding="utf-8").replace(
+        'title: "x"', "title: >-\n  Jane Two"), encoding="utf-8")
+    (bundle / "knowledge" / "entities" / "person" / "folder.md").mkdir()
+    loops = {}
+    for name, target in (("mine", "alex"), ("by-slug", "lex"), ("by-case", "kit-b"),
+                         ("by-folded", "alex-d"), ("unrelated", "jane-two")):
+        loops[name] = write_loop(bundle, f"{name}.md", f"Loop {name}",
+                                 owner=[f"/entities/person/{target}.md"],
+                                 opened=days_ago(1), created=days_ago(1),
+                                 updated=days_ago(1))
+    dry = run_script(bundle, "decay-loops.py")
+    record("a duplicate by its own slug, by a title in another case, and by a "
+           "folded title is no out-of-scope candidate, past a directory named "
+           "`folder.md`",
+           dry.returncode == 0 and not any(
+               f"{n}.md" in dry.stdout for n in ("mine", "by-slug", "by-case", "by-folded")),
+           dry.stdout + dry.stderr)
+    record("…while an entity whose folded title is unrelated is no duplicate: "
+           "two `>-` titles do not match on the indicator",
+           "unrelated.md  (out of scope" in dry.stdout
+           and "1 candidate(s) for decay (1 out of scope" in dry.stdout
+           and "jane-two" not in dry.stderr, dry.stdout + dry.stderr)
+
+    # One entity file that cannot be read, in-process: a permission bit does
+    # not hold on every runner, so the read itself is made to fail.
+    import contextlib
+    import io
+    import pathlib
+    decay = load_script("decay-loops.py")
+    decay.KNOWLEDGE = bundle / "knowledge"
+    real_read = pathlib.Path.read_text
+
+    def flaky(self, *a, **kw):
+        if self.name == "kit-b.md":
+            raise OSError("simulated unreadable file")
+        return real_read(self, *a, **kw)
+
+    err = io.StringIO()
+    pathlib.Path.read_text = flaky
+    try:
+        with contextlib.redirect_stderr(err):
+            got = decay.owner_duplicates("alex")
+    finally:
+        pathlib.Path.read_text = real_read
+    record("one unreadable entity file skips only itself: the other duplicates "
+           "are still found, and one note counts the skipped file",
+           got == ["alex-d", "lex"]
+           and err.getvalue().count("could not be read") == 1
+           and "/entities/person/kit-b.md" in err.getvalue(),
+           f"{got}\n{err.getvalue()}")
+
+
+def test_unreadable_updated_is_no_candidate(root):
+    """An `updated:` line that is present but no YYYY-MM-DD date (a pt-BR date,
+    an unpadded one, a month 13) used to be skipped as if absent: the loop fell
+    back to `opened`, 89 days back, and expired as silent the run after it was
+    re-raised. And of two `updated:` lines only the first was read."""
+    bundle = new_bundle(root, "unreadable-updated")
+    recent = TODAY - datetime.timedelta(days=1)
+    spellings = {
+        "pt-br": recent.strftime("%d/%m/%Y"),
+        "month-13": f"{recent.year}-13-{recent.day:02d}",
+        "words": "yesterday",
+    }
+    loops = {}
+    for tag, value in spellings.items():
+        path = write_loop(bundle, f"bad-{tag}.md", f"Re-raised, updated as {tag}",
+                          opened=days_ago(89), created=days_ago(89))
+        path.write_text(path.read_text(encoding="utf-8").replace(
+            f"updated: {days_ago(89)}", f"updated: {value}"), encoding="utf-8")
+        loops[tag] = path
+    dup = write_loop(bundle, "dup-updated.md", "Bumped by appending a second line",
+                     opened=days_ago(89), created=days_ago(89), updated=days_ago(89))
+    dup.write_text(dup.read_text(encoding="utf-8").replace(
+        f"updated: {days_ago(89)}\n", f"updated: {days_ago(89)}\nupdated: {days_ago(1)}\n"),
+        encoding="utf-8")
+    old = write_loop(bundle, "old.md", "Silent, readable dates",
+                     opened=days_ago(89), created=days_ago(89), updated=days_ago(89))
+    record("the fixture holds: each bad loop carries its unreadable `updated:`",
+           all(f"updated: {spellings[t]}\n" in p.read_text(encoding="utf-8")
+               for t, p in loops.items()), "")
+    dry = run_script(bundle, "decay-loops.py")
+    record("an unreadable `updated:` makes no stale candidate, whatever `opened` says",
+           not any(p.name in dry.stdout for p in loops.values())
+           and "old.md  (89d stale)" in dry.stdout
+           and "1 candidate(s) for decay (0 out of scope, 1 stale" in dry.stdout, dry.stdout)
+    record("…with one stderr note per such loop, naming it and the value",
+           all(dry.stderr.count(f"/tracking/loops/{p.name} has `updated: {spellings[t]}`") == 1
+               for t, p in loops.items()), dry.stderr)
+    record("of two `updated:` lines the newer one counts", "dup-updated.md" not in dry.stdout,
+           dry.stdout)
+    run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply expires only the loop whose dates all read",
+           "status: expired" in old.read_text(encoding="utf-8")
+           and all("status: open" in p.read_text(encoding="utf-8")
+                   for p in (*loops.values(), dup)), "")
+
+
+def load_script(name):
+    """A shipped script loaded in-process from plugin/assets/scripts/, to reach
+    its pure functions. The checkout refusal is guarded on __main__."""
+    spec = importlib.util.spec_from_file_location(
+        "_under_test_" + name.replace("-", "_").replace(".py", ""),
+        ASSETS / "scripts" / name)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_list_field_mirrors_close_loops(root):
+    """decay-loops.py and close-loops.py each carry a list_field(). A shape one
+    reads and the other misreads costs close-loops a ranking signal and decay an
+    irreversible expiry, so the two must agree on every shape, and read each
+    the way YAML does."""
+    decay = load_script("decay-loops.py")
+    close = load_script("close-loops.py")
+    shapes = [
+        ("inline", "owner", f"owner: [{JANE}, {ME}]\n", [JANE, ME]),
+        ("indented block", "owner", f"owner:\n  - {JANE}\n  - {ME}\nstatus: open\n",
+         [JANE, ME]),
+        ("zero-indent block", "owner", f"owner:\n- {JANE}\n- {ME}\nstatus: open\n",
+         [JANE, ME]),
+        ("comment in block", "owner",
+         f"owner:\n  - {JANE}\n  # next\n  - {ME}\nstatus: open\n", [JANE, ME]),
+        ("wrapped inline", "entities",
+         f"entities: [/entities/project/a.md,\n  {ME}]\nstatus: open\n",
+         ["/entities/project/a.md", ME]),
+        ("unclosed inline stops at the next key", "entities",
+         f"entities: [{ME},\nstatus: open\n", [ME]),
+        ("space before the colon", "owner", f"owner : [{ME}]\n", [ME]),
+        ("bare scalar", "owner", f"owner: {ME}\n", [ME]),
+        ("another key's prefix is not the key", "owner",
+         f"owner_note: [{JANE}]\nowner: [{ME}]\n", [ME]),
+        ("missing", "owed_to", f"owner: [{ME}]\n", []),
+        ("comment inside a wrapped inline list", "owner",
+         f"owner: [{JANE}  # the counterpart\n  , {ME}]  # and the owner\nstatus: open\n",
+         [JANE, ME]),
+        # An apostrophe inside a plain item is content (a quote opens a quoted
+        # item only where an item starts): it used to swallow the `]`.
+        ("apostrophe in the first item", "aliases",
+         "aliases: [O'Neil, Kit]\ntags: []\n", ["O'Neil", "Kit"]),
+        ("apostrophe in a middle item", "aliases",
+         "aliases: [Kit, O'Neil, Rowan]\ntags: []\n", ["Kit", "O'Neil", "Rowan"]),
+        ("apostrophe in the last item", "aliases",
+         "aliases: [Kit, O'Neil]\ntags: []\n", ["Kit", "O'Neil"]),
+        ("apostrophe, then a trailing comment", "aliases",
+         "aliases: [O'Neil, Kit]  # nick\ntags: []\n", ["O'Neil", "Kit"]),
+        ("apostrophe on a wrapped list", "aliases",
+         "aliases: [O'Neil,\n  Kit]\ntags: []\n", ["O'Neil", "Kit"]),
+        ("apostrophe on a wrapped list with a comment", "aliases",
+         "aliases: [O'Neil,  # x\n  Kit]\ntags: []\n", ["O'Neil", "Kit"]),
+        ("a single-quoted item with an escaped quote", "aliases",
+         "aliases: ['O''Neil', Kit]\n", ["O'Neil", "Kit"]),
+        ("a double-quoted item holding an apostrophe", "aliases",
+         "aliases: [\"O'Neil\", Kit]\n", ["O'Neil", "Kit"]),
+        ("a double-quoted item holding ` #`", "aliases",
+         "aliases: [\"a #b\", Kit]\n", ["a #b", "Kit"]),
+        ("the owner after an apostrophe", "owner",
+         f"owner: [O'Neil, {ME}]\nstatus: open\n", ["O'Neil", ME]),
+        # A quoted item holding a comma is one item: the naive split made
+        # `"Doe, Jane"` two fragments, `"Doe` and `Jane"`.
+        ("a quoted item holding a comma", "aliases",
+         'aliases: ["Doe, Jane"]\n', ["Doe, Jane"]),
+        ("a plain item, then a quoted one holding a comma", "aliases",
+         'aliases: [JD, "Doe, Jane"]\n', ["JD", "Doe, Jane"]),
+    ]
+    for label_, key, block, expected in shapes:
+        got_d, got_c = decay.list_field(block, key), close.list_field(block, key)
+        record(f"list_field, {label_}: both scripts read {expected}",
+               got_d == expected and got_c == expected,
+               f"decay={got_d}\nclose={got_c}")
+    # A block item's `-` also starts an item, so a quote after it still opens
+    # a quoted scalar and its ` #` stays content: scope_text() cuts every
+    # line of the three fields with this function, block items included.
+    raw, want = '- "a #b"  # c', '- "a #b"'
+    got_d, got_c = decay._cut_line_comment(raw), close._cut_line_comment(raw)
+    record("_cut_line_comment: a quoted block item keeps its ` #`, in both scripts",
+           got_d == want and got_c == want, f"decay={got_d!r}\nclose={got_c!r}")
+
+
+# Inline lists whose quoted items hold a comma, each as PyYAML reads it. The
+# fourth element says whether the list sits on one line: validate-okf.py's
+# inline_list() reads only those. The names are fictional.
+QUOTED_COMMA_SHAPES = [
+    ("a double-quoted item", 'aliases: ["Doe, Jane"]\nkind: person\n',
+     ["Doe, Jane"], True),
+    ("a plain item, then a double-quoted one", 'aliases: [JD, "Doe, Jane"]\nkind: person\n',
+     ["JD", "Doe, Jane"], True),
+    ("a single-quoted item first", "aliases: ['Doe, Jane', JD]\nkind: person\n",
+     ["Doe, Jane", "JD"], True),
+    ("two quoted items and a trailing comment",
+     "aliases: [\"Doe, Jane\", 'Roe, Rick']  # names\nkind: person\n",
+     ["Doe, Jane", "Roe, Rick"], True),
+    ("an apostrophe item before a quoted comma",
+     "aliases: [O'Neil, \"Doe, Jane\"]\nkind: person\n", ["O'Neil", "Doe, Jane"], True),
+    ("an escaped double quote next to the comma",
+     'aliases: ["say \\"hi\\", then", Kit]\nkind: person\n', ['say "hi", then', "Kit"], True),
+    ("an escaped single quote next to the comma",
+     "aliases: ['it''s, fine', Kit]\nkind: person\n", ["it's, fine", "Kit"], True),
+    ("a wrapped list", 'aliases: [JD,\n  "Doe, Jane"]\nkind: person\n',
+     ["JD", "Doe, Jane"], False),
+    # Two apostrophes inside plain items would pair up across the comma if
+    # a quote could open mid-item.
+    ("two apostrophe items", "aliases: [O'Neil, D'Arcy]\nkind: person\n",
+     ["O'Neil", "D'Arcy"], True),
+]
+
+
+def test_quoted_comma_items_every_copy(root):
+    """The inline-list split is mirrored in four scripts, and each one read a
+    quoted item holding a comma as two: decay-loops.py's _names() (an alias
+    that then protects no duplicate, and its loop expires as out of scope),
+    close-loops.py's list_field(), build-index.py's fallback parser, and
+    validate-okf.py's alias collision check (a false collision on the shared
+    surname fragment). Each copy is read against PyYAML's reading of the same
+    block, and the four _split_items() must be one function."""
+    import inspect
+    decay = load_script("decay-loops.py")
+    close = load_script("close-loops.py")
+    index = load_script("build-index.py")
+    index.yaml = None                         # the fallback parser, PyYAML or not
+    okf = load_script("validate-okf.py")
+    try:
+        import yaml as pyyaml
+    except ImportError:
+        pyyaml = None
+    # Recorded on both CI legs, so the suite's check count, which the
+    # CHANGELOG states and smoke.py compares, does not depend on PyYAML. The
+    # oracle itself runs only on the pyyaml=true leg.
+    off = [] if pyyaml is None else [
+        (label_, pyyaml.safe_load(block).get("aliases"))
+        for label_, block, expected, _one in QUOTED_COMMA_SHAPES
+        if pyyaml.safe_load(block).get("aliases") != expected]
+    record("PyYAML, the oracle, reads every quoted-comma row as the table says"
+           + (" (no PyYAML here: read on CI's pyyaml=true leg)" if pyyaml is None else ""),
+           not off, repr(off))
+    for label_, block, expected, one_line in QUOTED_COMMA_SHAPES:
+        got = {"decay-loops.py": decay.list_field(block, "aliases"),
+               "close-loops.py": close.list_field(block, "aliases"),
+               "build-index.py": index.parse_fm(block).get("aliases")}
+        if one_line:
+            raw = block.split("\n", 1)[0][len("aliases:"):]
+            items = okf.inline_list(raw)
+            got["validate-okf.py"] = (None if items is None
+                                      else [decay.unquote(x) for x in items])
+        for name, value in got.items():
+            record(f"{name}: {label_} reads as YAML does, {expected}",
+                   value == expected, f"{name}={value}")
+    sources = {name: inspect.getsource(mod._split_items)
+               for name, mod in (("decay-loops.py", decay), ("close-loops.py", close),
+                                 ("build-index.py", index), ("validate-okf.py", okf))}
+    record("_split_items() is the same function in all four copies",
+           len(set(sources.values())) == 1, "\n".join(sources))
+
+
+def test_legacy_loop_without_owed_to(root):
+    """E2: a loop filed before `owed_to` existed carries no such line. It reads
+    as an empty list, scope is decided on `owner` and `entities`, and the
+    validator accepts the file as it always did."""
+    bundle = new_bundle(root, "legacy-owed-to", owner_slug="me")
+    mine = write_loop(bundle, "mine.md", "Mine, legacy shape",
+                      opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                      owner=[ME], owed_to=None)
+    named = write_loop(bundle, "named.md", "Named in entities, legacy shape",
+                       opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                       owner=[JANE], owed_to=None, entities=[ME])
+    third = write_loop(bundle, "third.md", "Jane's, legacy shape",
+                       opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                       owner=[JANE], owed_to=None)
+    record("the fixture really is the legacy shape: no `owed_to:` line",
+           all("owed_to" not in fm_of(p) for p in (mine, named, third)), fm_of(mine))
+
+    index = run_script(bundle, "build-index.py")
+    valid = run_script(bundle, "validate-okf.py")
+    record("validate-okf.py passes over loops without `owed_to`",
+           index.returncode == 0 and valid.returncode == 0,
+           f"{index.stderr}\n{valid.stdout}\n{valid.stderr}")
+
+    dry = run_script(bundle, "decay-loops.py")
+    record("owner in `owner` or in `entities`: in scope without the field",
+           "mine.md" not in dry.stdout and "named.md" not in dry.stdout, dry.stdout)
+    record("…and a legacy third-party loop is out of scope",
+           "third.md  (out of scope" in dry.stdout
+           and "1 candidate(s) for decay (1 out of scope, 0 stale" in dry.stdout,
+           dry.stdout)
+
+
+def test_dry_run_labels_and_split(root):
+    """A3: every line carries its label, out-of-scope lines come first (by path)
+    and stale ones after (oldest first), and both summaries split by kind."""
+    bundle = new_bundle(root, "labels-and-split", owner_slug="me")
+    write_loop(bundle, "b-third.md", "Third party b", owner=[JANE],
+               opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    write_loop(bundle, "a-third.md", "Third party a", owner=[JANE],
+               opened=days_ago(90), created=days_ago(90), updated=days_ago(90))
+    write_loop(bundle, "c-stale.md", "Mine, 40 days", owner=[ME],
+               opened=days_ago(40), created=days_ago(40), updated=days_ago(40))
+    write_loop(bundle, "d-stale.md", "Mine, 50 days", owner=[ME],
+               opened=days_ago(50), created=days_ago(50), updated=days_ago(50))
+    write_loop(bundle, "e-fresh.md", "Mine, fresh", owner=[ME],
+               opened=days_ago(5), created=days_ago(5), updated=days_ago(5))
+
+    dry = run_script(bundle, "decay-loops.py")
+    lines = [ln for ln in dry.stdout.splitlines() if ln.startswith("/tracking/")]
+    scope_label = "(out of scope: the owner is in none of owner, owed_to, entities)"
+    record("each line carries its label: the scope sentence, or the age",
+           lines == [
+               f"/tracking/loops/a-third.md  {scope_label}",
+               f"/tracking/loops/b-third.md  {scope_label}",
+               "/tracking/loops/d-stale.md  (50d stale)",
+               "/tracking/loops/c-stale.md  (40d stale)",
+           ], "\n".join(lines))
+    record("the trailing count splits the kinds",
+           "4 candidate(s) for decay (2 out of scope, 2 stale >= 30d, dry-run, "
+           "pass --apply to expire)" in dry.stdout, dry.stdout)
+
+    applied = run_script(bundle, "decay-loops.py", ["--apply"])
+    expired = [ln for ln in applied.stdout.splitlines() if ln.startswith("expired:")]
+    record("--apply labels each expiry the same way, in the same order",
+           expired == [
+               "expired: /tracking/loops/a-third.md  (out of scope)",
+               "expired: /tracking/loops/b-third.md  (out of scope)",
+               "expired: /tracking/loops/d-stale.md  (50d stale)",
+               "expired: /tracking/loops/c-stale.md  (40d stale)",
+           ], "\n".join(expired))
+    record("…and its summary splits them too",
+           "4 loop(s) expired (2 out of scope, 2 stale >= 30d). Run build-index.py next."
+           in applied.stdout, applied.stdout)
+
+
+def test_except_leaves_a_candidate_open(root):
+    """E15, A2: `--except <link>` keeps a named candidate out of the run, dry
+    run and `--apply` alike, and counts it in neither split. A claim (H13, E14)
+    needs no flag: the re-scan no longer lists a loop the owner's link was
+    added to."""
+    bundle = new_bundle(root, "except", owner_slug="me")
+    kept = write_loop(bundle, "kept.md", "Rejected at the gate, no claim",
+                      opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                      owner=[JANE])
+    gone = write_loop(bundle, "gone.md", "Approved at the gate",
+                      opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                      owner=[JANE])
+    stale = write_loop(bundle, "stale.md", "Mine, stale",
+                       opened=days_ago(60), created=days_ago(60), updated=days_ago(60),
+                       owner=[ME])
+    claimed = write_loop(bundle, "claimed.md", "Claimed at the gate",
+                         opened=days_ago(60), created=days_ago(60),
+                         updated=TODAY.isoformat(), owner=[JANE], owed_to=[ME])
+    before = kept.read_text(encoding="utf-8")
+
+    dry = run_script(bundle, "decay-loops.py", ["--except", "/tracking/loops/kept.md"])
+    record("dry run with --except leaves the named loop out, counted in neither split",
+           "kept.md" not in dry.stdout
+           and "2 candidate(s) for decay (1 out of scope, 1 stale >= 30d" in dry.stdout,
+           dry.stdout)
+    record("a claimed loop (the owner's link in owed_to, updated today) is no "
+           "candidate at all (H13)", "claimed.md" not in dry.stdout, dry.stdout)
+
+    result = run_script(bundle, "decay-loops.py",
+                        ["--apply", "--except", "/tracking/loops/kept.md",
+                         "--except", "/tracking/loops/claimed.md"])
+    record("--apply --except exits 0", result.returncode == 0,
+           result.stdout + result.stderr)
+    record("the excepted loop stays open and byte-identical",
+           kept.read_text(encoding="utf-8") == before, kept.read_text(encoding="utf-8"))
+    record("…while the rest expire",
+           "status: expired" in gone.read_text(encoding="utf-8")
+           and "status: expired" in stale.read_text(encoding="utf-8")
+           and "status: open" in claimed.read_text(encoding="utf-8")
+           and "2 loop(s) expired (1 out of scope, 1 stale >= 30d)" in result.stdout,
+           result.stdout)
+    record("a link to a loop that is no candidate (the claim took) is ignored "
+           "with one stderr note",
+           result.stderr.count("--except /tracking/loops/claimed.md matches no candidate") == 1
+           and "kept.md" not in result.stderr, result.stderr)
+
+    rerun = run_script(bundle, "decay-loops.py", ["--apply"])
+    record("the next run without the flag expires it: the reject held for one run only",
+           "status: expired" in kept.read_text(encoding="utf-8")
+           and "1 loop(s) expired (1 out of scope, 0 stale" in rerun.stdout,
+           rerun.stdout)
+
+
+def test_except_typo_refuses_the_run(root):
+    """A `--except` link that names no loop file is a typo, and the note for a
+    loop that is no longer a candidate is the one the procedure reads as a
+    snooze or claim having taken. Printed for the typo too, it let `--apply`
+    expire the very loops the owner had just rejected. It now ends the run with
+    exit 2 before anything is scanned or written."""
+    bundle = new_bundle(root, "except-typo", owner_slug="me")
+    stale = write_loop(bundle, "stale.md", "Mine, stale, rejected at the gate",
+                       opened=days_ago(60), created=days_ago(60), updated=days_ago(60),
+                       owner=[ME])
+    oos = write_loop(bundle, "oos.md", "Jane's, rejected at the gate",
+                     opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                     owner=[JANE])
+    before = {p: p.read_text(encoding="utf-8") for p in (stale, oos)}
+    applied = run_script(bundle, "decay-loops.py",
+                         ["--apply", "--except", "/tracking/loops/stale-.md",
+                          "--except", "/tracking/loop/oos.md"])
+    record("--apply with two mistyped --except links exits 2 and writes nothing",
+           applied.returncode == 2 and "expired:" not in applied.stdout
+           and all(p.read_text(encoding="utf-8") == t for p, t in before.items()),
+           applied.stdout + applied.stderr)
+    record("…with one error per link naming it, and never the `matches no "
+           "candidate` note the procedure reads as success",
+           applied.stderr.count("names no loop file") == 2
+           and "/tracking/loops/stale-.md" in applied.stderr
+           and "/tracking/loop/oos.md" in applied.stderr
+           and "matches no candidate" not in applied.stderr, applied.stderr)
+    mixed = run_script(bundle, "decay-loops.py",
+                       ["--apply", "--except", "/tracking/loops/stale.md",
+                        "--except", "/tracking/loops/oos"])
+    record("one right link does not let a wrong one through: still exit 2, "
+           "nothing written",
+           mixed.returncode == 2 and mixed.stderr.count("names no loop file") == 1
+           and all(p.read_text(encoding="utf-8") == t for p, t in before.items()),
+           mixed.stdout + mixed.stderr)
+    dry = run_script(bundle, "decay-loops.py", ["--except", "/tracking/loops/stale-.md"])
+    record("the dry run refuses the same way", dry.returncode == 2
+           and "names no loop file" in dry.stderr and "candidate(s)" not in dry.stdout,
+           dry.stdout + dry.stderr)
+
+
+def test_except_closed_loop_refuses_the_run(root):
+    """A `--except` link to a loop that exists but is not open (done, dropped,
+    expired) can never name a candidate. It passed the typo check and printed
+    the `matches no candidate` note the procedure reads as a snooze or claim
+    having taken, while the loops really rejected expired. It is now refused
+    like a typo: exit 2, before anything is scanned or written."""
+    bundle = new_bundle(root, "except-closed", owner_slug="me")
+    stale = write_loop(bundle, "stale.md", "Mine, stale, rejected at the gate",
+                       opened=days_ago(60), created=days_ago(60), updated=days_ago(60),
+                       owner=[ME])
+    closed = {s: write_loop(bundle, f"{s}.md", f"A {s} loop", status=s,
+                            opened=days_ago(60), created=days_ago(60),
+                            updated=days_ago(60), owner=[ME])
+              for s in ("done", "dropped", "expired")}
+    files = [stale] + list(closed.values())
+    before = {p: p.read_text(encoding="utf-8") for p in files}
+    for s in closed:
+        applied = run_script(bundle, "decay-loops.py",
+                             ["--apply", "--except", f"/tracking/loops/{s}.md"])
+        record(f"--apply --except to a `{s}` loop exits 2 and writes nothing",
+               applied.returncode == 2 and "expired:" not in applied.stdout
+               and all(p.read_text(encoding="utf-8") == t for p, t in before.items()),
+               applied.stdout + applied.stderr)
+        record(f"…naming the status, and never the `matches no candidate` note",
+               f"--except /tracking/loops/{s}.md names a loop whose status is `{s}`"
+               in applied.stderr and "matches no candidate" not in applied.stderr,
+               applied.stderr)
+    dry = run_script(bundle, "decay-loops.py", ["--except", "/tracking/loops/done.md"])
+    record("the dry run refuses a closed loop the same way",
+           dry.returncode == 2 and "candidate(s)" not in dry.stdout,
+           dry.stdout + dry.stderr)
+    ok = run_script(bundle, "decay-loops.py", ["--apply", "--except", "/tracking/loops/stale.md"])
+    record("…while a link to the open loop still keeps it open, exit 0",
+           ok.returncode == 0 and stale.read_text(encoding="utf-8") == before[stale],
+           ok.stdout + ok.stderr)
+
+
+def test_except_link_spellings(root):
+    """`--except` reads its value leniently, the documented safe direction: the
+    procedure is prose a model follows, and a spelling that matched nothing
+    would print one note and let `--apply` expire the loop the owner had just
+    declined to expire."""
+    bundle = new_bundle(root, "except-spellings", owner_slug="me")
+    kept = write_loop(bundle, "kept.md", "Rejected at the gate, no claim",
+                      opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+                      owner=[JANE])
+    write_loop(bundle, "gone.md", "Approved at the gate",
+               opened=days_ago(1), created=days_ago(1), updated=days_ago(1),
+               owner=[JANE])
+    write_loop(bundle, "mine.md", "Mine", owner=[ME],
+               opened=days_ago(1), created=days_ago(1), updated=days_ago(1))
+    spellings = [
+        "tracking/loops/kept.md",
+        "knowledge/tracking/loops/kept.md",
+        "/knowledge/tracking/loops/kept.md",
+        "\\tracking\\loops\\kept.md",
+        "knowledge\\tracking\\loops\\kept.md",
+        "  /tracking/loops/kept.md  ",
+    ]
+    for spelling in spellings:
+        dry = run_script(bundle, "decay-loops.py", ["--except", spelling])
+        record(f"--except {spelling!r} leaves kept.md out, counted in neither split, "
+               "with no `matches no candidate` note",
+               "kept.md" not in dry.stdout
+               and "1 candidate(s) for decay (1 out of scope, 0 stale" in dry.stdout
+               and "matches no candidate" not in dry.stderr,
+               dry.stdout + dry.stderr)
+    before = kept.read_text(encoding="utf-8")
+    applied = run_script(bundle, "decay-loops.py",
+                         ["--apply", "--except", "knowledge/tracking/loops/kept.md"])
+    record("--apply with a `knowledge/`-prefixed --except leaves the loop byte-identical",
+           applied.returncode == 0 and kept.read_text(encoding="utf-8") == before
+           and "1 loop(s) expired (1 out of scope, 0 stale" in applied.stdout,
+           applied.stdout + applied.stderr)
+
+
+# ---------------------------------------------------------------------------
+# 13. the decay skill's prose says what the script does
+# ---------------------------------------------------------------------------
+
+DECAY_SKILL_DIR = REPO_ROOT / "plugin" / "skills" / "decay"
+DEPRECATION = ("`--skip-sweep` is accepted and ignored: this script no longer "
+               "reads `state/closure-sweep.json`.")
+
+
+def flat_text(path):
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def test_decay_prose_contract(root):
+    skill = flat_text(DECAY_SKILL_DIR / "SKILL.md")
+    proc = flat_text(DECAY_SKILL_DIR / "procedure.md")
+    both = skill + " " + proc
+    record("the decay skill states the `--skip-sweep` deprecation once",
+           both.count(DEPRECATION) == 1, DEPRECATION)
+    record("…and names closure-sweep.json nowhere else: decay no longer reads it",
+           "closure-sweep.json" not in both.replace(DEPRECATION, ""),
+           [i for i in range(len(both)) if both.startswith("closure-sweep.json", i)])
+    record("no candidate is `held back` any more", "held back" not in both.lower())
+    record("no `exactly two writers` of `updated:` survives",
+           "exactly **two** writers" not in both and "exactly two writers" not in both)
+    record("the default window is 30 in SKILL.md and in procedure.md",
+           "default 30" in skill and "default 30" in proc and "default 45" not in both,
+           "")
+    record("procedure.md carries the claim rule: `owed_to`, the claim, `--except`",
+           all(tok in proc for tok in ("owed_to", "claim", "--except")), "")
+    record("the bump is never moved backwards",
+           "never moved backwards" in both or "never backwards" in both)
+    record("procedure.md's step 5 log line splits the kinds",
+           "**Decay**: N loops expired (M out of scope, K >=Xd stale)" in proc, "")
+    record("procedure.md passes every rejected candidate, stale or out of scope, as "
+           "`--except`, so a reject never becomes an expiry in its own run, and "
+           "reads the script's `matches no candidate` note as the edit having taken",
+           "Pass every candidate rejected in step 2, stale or out of scope" in proc
+           and "Pass every out-of-scope candidate rejected without a claim" not in proc
+           and "`--except <link> matches no candidate this run`" in proc
+           and "--except {link} matches no candidate this run" in
+           (ASSETS / "scripts" / "decay-loops.py").read_text(encoding="utf-8"), "")
+    record("procedure.md reads exit 2 as a mistyped `--except` link that expired "
+           "nothing, and the `matches no candidate` note as success only for a "
+           "link naming an open loop file",
+           "makes the script exit 2 before it scans or writes anything" in proc
+           and "or a loop whose status is not `open`" in proc
+           and "prints only for a link naming an open loop file" in proc
+           and "names no loop file" in
+           (ASSETS / "scripts" / "decay-loops.py").read_text(encoding="utf-8"), "")
+    record("procedure.md: a failed recall roll ends the run before the scan, and "
+           "unattended it is an environment failure filed to the backlog",
+           "ends the run before the scan" in proc
+           and "**Decay**: environment failure (recall roll failed)" in proc
+           and "backlog.py add decay-recall-roll-failed" in proc
+           and "a failure is not fatal" not in proc, "")
 
 
 def guarded(fn, root):
@@ -1044,6 +2024,7 @@ def main():
         test_other_statuses_untouched,
         test_expired_field_written,
         test_custom_threshold,
+        test_invalid_threshold_values,
         test_build_index_excludes_expired_after_apply,
         test_template_shaped_loop_decays,
         test_status_spelling_agrees_with_build_index,
@@ -1051,17 +2032,31 @@ def main():
         test_stale_citation_does_not_protect,
         test_recall_never_ages_a_loop,
         test_recall_degraded_shapes,
-        test_gate_refuses_the_unexamined,
-        test_gate_expires_the_examined,
-        test_skip_sweep_bypasses_the_gate,
-        test_lost_sweep_parks_decay,
+        test_sweep_is_not_read,
+        test_skip_sweep_is_a_noop,
         test_expiry_writes_a_resolution,
-        test_gate_reads_the_file_dates_not_the_citation,
-        test_gate_clears_a_same_day_examination,
-        test_gate_refuses_an_unvalidated_examination,
-        test_gate_outcome_is_a_whitelist,
         test_expiry_boundary_day,
         test_resolution_states_only_what_decay_checked,
+        test_out_of_scope_expires_at_any_age,
+        test_out_of_scope_ignores_citation_and_dates,
+        test_owner_slug_missing_skips_scope_rule,
+        test_scope_link_shapes,
+        test_unresolvable_owner_skips_scope_rule,
+        test_no_loop_names_the_owner_skips_scope_rule,
+        test_partial_owner_duplicate,
+        test_quoted_comma_alias_duplicate,
+        test_duplicate_never_arms_the_scope_rule,
+        test_owner_duplicate_name_shapes,
+        test_unreadable_updated_is_no_candidate,
+        test_list_field_mirrors_close_loops,
+        test_quoted_comma_items_every_copy,
+        test_legacy_loop_without_owed_to,
+        test_dry_run_labels_and_split,
+        test_except_leaves_a_candidate_open,
+        test_except_typo_refuses_the_run,
+        test_except_closed_loop_refuses_the_run,
+        test_except_link_spellings,
+        test_decay_prose_contract,
     ):
         guarded(fn, scratch_root)
 

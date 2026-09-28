@@ -5,16 +5,18 @@ procedure.
 
 Narrower than `maintain`, and the mirror of `decay`: this ONLY resolves
 `status: open` loops in `knowledge/tracking/loops/` by evidence — it never
-touches facts, entities or confidence, and it never writes `dropped`, which
-stays a hand-set state. The deterministic half lives in
+touches facts, entities or confidence, and it writes `dropped` only on
+evidence that the premise is gone (it can also be set by hand). The
+deterministic half lives in
 `scripts/close-loops.py`; this procedure is the judgment, the write and the
 commit around it.
 
 **No review gate, at any cadence.** `decay` has one because expiry is a verdict
-of silence with nothing to show for it. Closure is the opposite: every `done`
-this routine writes carries a paragraph in the loop file saying what evidence
-convinced it, so a wrong verdict is legible where it was written rather than
-only in a diff. Interactive and scheduled runs follow exactly the same steps.
+of silence with nothing to show for it. Closure is the opposite: every `done` or
+`dropped` this routine writes carries a paragraph in the loop file saying what
+evidence convinced it, so a wrong verdict is legible where it was written rather
+than only in a diff. Interactive and scheduled runs follow exactly the same
+steps.
 
 ## Preflight
 
@@ -34,9 +36,9 @@ unattended is the honest reading, and it costs an interactive user only that the
 finding arrives filed rather than spoken.
 
 Concretely: examine no loop, write no loop file, and **write nothing to
-`state/closure-sweep.json`** — an unexamined loop recorded as examined is the
-one output of this routine `decay` acts on, and it would expire loops on the
-strength of a sweep that never ran. Then append one dated line at the end of
+`state/closure-sweep.json`** — an unexamined loop recorded as examined leaves
+the queue as settled, and is not read again until new material reaches its
+entities. Then append one dated line at the end of
 `knowledge/log.md` as `**Close-loops**: environment failure (bundle scripts
 stale)`, naming the drifted files and the two routes out the check printed; run
 `python3 scripts/backlog.py add bundle-scripts-stale --summary … --evidence …`
@@ -106,34 +108,48 @@ run's report when it left one.
    - **Delivery, not discussion.** A fact saying the thing was decided, planned,
      scheduled or assigned is not a fact saying it happened. A fact describing
      the *outcome* of the commitment is.
-   - **Undecided is `open`.** There is no third state, no queue for a human, no
-     line in `state/needs-review.md`. A loop you could not settle is recorded as
-     examined and left exactly as it was; new material on its entities returns
-     it to the front of the queue on a later run, which is the whole reason the
-     queue has a first band.
+   - **Obsolete by evidence is `dropped`.** When the evidence shows the
+     commitment no longer makes sense (the counterpart left, the project was
+     cancelled, a later decision made it moot), the verdict is `dropped`.
+     Silence is not evidence and doubt is not a verdict: those stay `open`.
+   - **Undecided is `open`.** There is no state for doubt, no queue for a human,
+     no line in `state/needs-review.md`. A loop you could not settle is recorded
+     as examined and left exactly as it was; new material on its entities
+     returns it to the front of the queue on a later run, which is the whole
+     reason the queue has a first band.
    - A loop with **no evidence candidates** — the proposal prints
      `evidence: none` — is not a judgment call. Examine it, record it, leave it
      open, write nothing to its file.
 
-3. **Write the verdict — only on the loops you are closing.** For each one, two
-   edits to the same file:
+3. **Write the verdict — only on the loops you are closing**, as `done` or as
+   `dropped`. For each one, two edits to the same file:
 
-   **Frontmatter**, three fields that already exist on the template:
+   **Frontmatter**, three fields that already exist on the template, with
+   `status: dropped` in place of `status: done` on a loop whose premise is gone:
 
    ```
    status: done
-   closed: <today, YYYY-MM-DD>
+   closed: <the deciding source's own date, its `occurred`, YYYY-MM-DD>
    closed_by: <bundle-absolute link to the source that evidenced it>
    ```
+
+   `closed` is the date the delivery (or the end of the premise) happened, not
+   the date of this run: the ingest core writes the same field from the same
+   source date, and `tracking/resolved-loops.md` orders by it, so the one event
+   lands in one place whichever writer got there. Take it from the deciding
+   source's `occurred`; when that source carries none, use the deciding fact's
+   `occurred`, and only when neither has one, today.
 
    `closed_by` **must resolve on disk** — `validate-okf.py`'s third check fails
    the run otherwise (step 5), and a broken link there costs you the whole
    commit. Take it from the deciding candidate's `sources:` line, which the
    proposal prints. When the deciding fact carries no source, link the fact
    itself and say so in the resolution. Never invent a path, and never leave the
-   field empty on a `done` loop.
+   field empty on a closed loop. A `dropped` loop is the same: `closed_by` is
+   the source of the fact that killed the premise.
 
-   **Body**, one paragraph appended after the `**Closure signal:**` section:
+   **Body**, one paragraph appended at the end of the body, after the
+   `**Closure signal:**` section and any `**Closure signal history:**` section:
 
    ```
    **Resolution:** <what happened, and what showed it>
@@ -143,7 +159,9 @@ run's report when it left one.
      resolved loops by date, outcome and exactly that first sentence, so a
      sentence that begins "This one finally landed" tells that page nothing.
    - Two to four sentences. Name the evidence by its bundle-absolute path, at
-     least once, so the judgment can be re-checked from the file alone.
+     least once, so the judgment can be re-checked from the file alone. The
+     resolution of a `dropped` loop cites by path the fact that killed the
+     premise.
    - Write it in the bundle's `knowledge_language` (see `../_shared/core.md` →
      Languages), like every other body in `knowledge/`.
    - It is **prose in the body, never a frontmatter field.** A sentence of
@@ -157,14 +175,14 @@ run's report when it left one.
    mean the routine that exists to resolve loops also makes them immortal.
 
 4. **Record the sweep — every loop you examined, closed or not.** This is what
-   `decay` reads to know a loop was looked at, so a run that judges and forgets
-   to record has done nothing for the lane. Run the command in **The sweep
-   record** below, **once**, with one `<link>=<outcome>` pair per examined loop
-   — `done` for the ones you closed, `open` for every other one, including the
-   ones with no evidence. Read the count it prints back against the number of
-   loops step 1 queued; they must match. If the command exits non-zero it names
-   the pair it refused and wrote **nothing** — fix that pair and run it again,
-   whole.
+   the queue reads to know a loop was looked at, so a run that judges and
+   forgets to record sends the same loops back next run. Run the command in
+   **The sweep record** below, **once**, with one `<link>=<outcome>` pair per
+   examined loop — `done` or `dropped` for the ones you closed, `open` for every
+   other one, including the ones with no evidence. Read the count it prints back
+   against the number of loops step 1 queued; they must match. If the command
+   exits non-zero it names the pair it refused and wrote **nothing** — fix that
+   pair and run it again, whole.
 
 5. **Rebuild + validate.** `python3 scripts/build-index.py` then
    `python3 scripts/validate-okf.py` — both must pass. This is what removes the
@@ -178,10 +196,11 @@ run's report when it left one.
 
 6. **Log + commit.** Append one dated line at the **end** of `knowledge/log.md`
    (it is oldest-first, like every other routine's ledger):
-   `**Close-loops**: N examined, M closed`. Then:
+   `**Close-loops**: N examined, M closed, D dropped`, where M counts the
+   `done` verdicts and D the `dropped` ones. Then:
 
    ```bash
-   git -C <bundle> add -A && git -C <bundle> commit -m "close-loops: N examined, M closed"
+   git -C <bundle> add -A && git -C <bundle> commit -m "close-loops: N examined, M closed, D dropped"
    ```
 
    **One commit for the run**, and **never push**. The per-loop detail lives in
@@ -192,21 +211,21 @@ run's report when it left one.
 ## The sweep record
 
 `state/closure-sweep.json` records which loops were examined and when. It is
-control state, not audit: `decay` expires a loop only if this file shows it was
-examined **on or after** its own last activity and not closed, so losing it
-parks expiry rather than corrupting it. It is **not** git-ignored — it is
-committed with the run, like the loop files it describes.
+control state, not audit: it is what lets the queue treat a loop as settled,
+and losing it returns every loop to the second band. `decay` does not read it.
+It is **not** git-ignored — it is committed with the run, like the loop files it
+describes.
 
 Step 4 writes it with this command, run from `<bundle>`, with the run's own
-pairs in place of the two shown:
+pairs in place of the three shown:
 
 ```bash
-python3 - /tracking/loops/acme-export.md=done /tracking/loops/pto-policy.md=open <<'PY'
+python3 - /tracking/loops/acme-export.md=done /tracking/loops/old-vendor.md=dropped /tracking/loops/pto-policy.md=open <<'PY'
 import datetime, json, os, pathlib, sys
 
 if not pathlib.Path("elephant.json").exists():
     sys.exit("closure-sweep: run this from the bundle root. Nothing was written.")
-OUTCOMES = {"done", "open"}
+OUTCOMES = {"done", "dropped", "open"}
 today = datetime.date.today().isoformat()
 path = pathlib.Path("state/closure-sweep.json")
 try:
@@ -246,21 +265,20 @@ as `open`.
 
 Every pair is checked before anything is written: the link has to be a
 bundle-absolute loop path (`/tracking/loops/<name>.md`) and the outcome has to
-be `done` or `open`. One bad pair, or an unwritable `state/`, exits non-zero and
-writes nothing at all, so a half-recorded run is not a state this file can be in,
-and `=done`, a mistyped
-path or an outcome like `closed` fail here instead of being recorded as a loop
-that does not exist. The count printed at the end is the number of entries
-actually recorded, not the number of arguments passed, so a run that recorded
-nothing cannot report success.
+be `done`, `dropped` or `open`. One bad pair, or an unwritable `state/`, exits
+non-zero and writes nothing at all, so a half-recorded run is not a state this
+file can be in, and `=done`, a mistyped path or an outcome like `closed` fail
+here instead of being recorded as a loop that does not exist. The count printed
+at the end is the number of entries actually recorded, not the number of
+arguments passed, so a run that recorded nothing cannot report success.
 
 Two things guard the write itself, because this is the one command in the whole
 bundle a human types by hand. Every shipped script resolves its bundle from
 `__file__` and refuses to run outside one; `python3 -` reads stdin and has no
 `__file__`, so the block checks for `elephant.json` in the working directory
 first. Run from anywhere else it would create a `state/` there, print a count and
-exit 0 while the real record stayed untouched, and `decay` would then hold every
-loop back as never examined. And the replacement goes to a temporary file that is
+exit 0 while the real record stayed untouched, and the queue would re-read every
+loop as never examined. And the replacement goes to a temporary file that is
 renamed onto the target, so an interruption cannot leave the record truncated or
 half-written: every earlier run's entry is either wholly there or wholly the
 previous version.
@@ -268,9 +286,8 @@ previous version.
 The write is a command here rather than a subcommand of `close-loops.py`
 because that script reads and does nothing else; the boundary is what lets the
 proposal be re-run at any time without changing state. Do not hand-edit the
-JSON instead. This file is the only thing standing between `decay` and a lane
-it may not touch, and a malformed one reads as empty (with one warning on
-stderr) and parks expiry entirely.
+JSON instead. A malformed one reads as empty, with one warning on stderr, and
+sends every loop back to the second band.
 
 ## Cadence
 
@@ -281,14 +298,19 @@ place), one manual "Run once" after creating the schedule to pre-approve the
 Bash and Edit prompts so unattended runs don't stall. It calls no MCP
 connector, so it is the least fragile of the three.
 
-At 25 loops a run, while the first band stays under the four fifths it may take,
-the stale end of the lane is examined in about a month and the whole open lane
-in about two and a half. Once the first band saturates, the cold end advances
-only at the fifth reserved for it, 5 loops a run: 735 stale loops is then about
-147 runs, roughly five months. Either figure only holds if a run reaches loops
-the last one did not, which is what the sweep record buys: `close-loops.py`
-treats a loop as settled, out of the queue, once it was examined on or after its
-own last activity and has gained nothing since.
+`decay` no longer waits for this sweep: it expires a loop after
+`decay.loop_expiry_days` (default 30) of silence on its own three-day cadence.
+So the front of the second band, oldest last activity first, is loops nearing
+that window, racing expiry, and this routine's job is to end loops by evidence
+before silence does, not to work through a backlog. At 25 loops a run, a fifth
+of every run is reserved for that band. (This paragraph used to promise 735
+stale loops worked through in about 147 runs, roughly five months: a figure from
+0.1.0-beta.13, when `decay` waited on this sweep. That backlog does not survive
+the first `decay` run of 1.0.0-rc.1.) The reserved fifth is only worth
+something if a run reaches loops the last one did not, which is what the sweep
+record buys: `close-loops.py` treats a loop as
+settled, out of the queue, once it was examined on or after its own last
+activity and has gained nothing since.
 
 **A verdict is never permanent.** A fact or a source landing on a settled
 loop's entities returns it to the front of the queue, with the material named

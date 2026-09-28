@@ -31,6 +31,12 @@ by covering the specific bug fixes and new behavior below:
      `status: Superseded` cannot be current in the manifest and history on the
      hub in the same build, and a padded `superseded ` is not published as
      current.
+  4g. The open-loop rows of manifest.jsonl carry `owner` and `owed_to` next to
+     `entities`, so the ingest core's re-mention lookup reaches an "owed to
+     me" loop that names the bundle owner only in `owed_to`; a legacy loop
+     without `owed_to` gets an empty list, a fact row carries neither key, and
+     a refined loop (closure signal history, then a resolution) still prints
+     its resolution's first sentence on tracking/resolved-loops.md.
   5. entities/roster.tsv: the resolution surface — one four-column row per
      ACTIVE entity, sorted by kind then title, with the trailing tab of an
      empty `aliases` column surviving, grid-breaking characters sanitized,
@@ -199,16 +205,22 @@ def write_fact(bundle, rel, desc, entities_yaml, status="active", confidence="hi
 
 
 def write_open_loop(bundle, rel, desc, entities_yaml, status="open",
-                    closed=None, expired=None, updated=None, resolution=None):
-    """A loop file. `closed` / `expired` are the frontmatter dates the two
-    writers stamp; `resolution` is the `**Resolution:**` body paragraph they
-    append after it — prose, never a frontmatter field (see the loop template's
-    three lines of warning about `: ` and ` #`)."""
+                    closed=None, expired=None, updated=None, resolution=None,
+                    parties_yaml="", after=""):
+    """A loop file. `closed` / `expired` are the frontmatter dates the writers
+    stamp; `resolution` is the `**Resolution:**` body paragraph they append at
+    the end of the body — prose, never a frontmatter field (see the loop
+    template's three lines of warning about `: ` and ` #`). `parties_yaml` is
+    the raw `owner:` / `owed_to:` lines, empty by default so every file the
+    older checks write stays byte-identical; `after` is body text placed
+    between the description and the resolution (a closure signal and its
+    history)."""
     text = (
         "---\n"
         "type: open-loop\n"
         f"description: {desc}\n"
         f"{entities_yaml}"
+        f"{parties_yaml}"
         f"status: {status}\n"
         f"opened: {TODAY}\n"
         + (f"closed: {closed}\n" if closed else "")
@@ -219,6 +231,7 @@ def write_open_loop(bundle, rel, desc, entities_yaml, status="open",
         f"timestamp: {TODAY}\n"
         "---\n\n"
         f"{desc}\n"
+        + after
         + (f"\n**Resolution:** {resolution}\n" if resolution else "")
     )
     path = bundle / "knowledge" / rel
@@ -326,6 +339,66 @@ def test_parse_fm_fallback_block_lists(root):
             fm_nested.get("relations") == "" and fm_nested.get("confidence") == "high",
             fm_nested,
         )
+
+
+def test_parse_fm_fallback_loop_party_shapes(root):
+    """The manifest's `owner` / `owed_to` on an open-loop row are what the
+    ingest core's re-mention lookup matches on, and close-loops.py /
+    decay-loops.py's list_field() read these shapes as YAML does. Without
+    PyYAML the fallback read the first two as empty and the last three as one
+    broken item, so a hand-edited "owed to me" loop left the lookup and a
+    re-mention filed a duplicate. build-index.py only: briefing.py carries its
+    own copy of the parser."""
+    mod = load_module_forcing_no_yaml("build-index.py")
+    me, jane = "/entities/person/me.md", "/entities/person/jane.md"
+    shapes = [
+        ("a block sequence at column 0", f"owed_to:\n- {me}\nstatus: open\n", [me]),
+        ("a comment line between block items",
+         f"owed_to:\n  - {jane}\n  # next\n  - {me}\nstatus: open\n", [jane, me]),
+        ("an inline list wrapped across lines",
+         f"owed_to: [{jane},\n  {me}]\nstatus: open\n", [jane, me]),
+        ("a comment on the line an inline list has not closed on",
+         f"owed_to: [{jane},  # waiting\n  {me}]  # tail\nstatus: open\n", [jane, me]),
+        ("an inline list never closed, which ends at the next key",
+         f"owed_to: [{me},\nstatus: open\n", [me]),
+    ]
+    for label_, block, expected in shapes:
+        fm = mod.parse_fm(block)
+        record(f"build-index.py: fallback parser reads {label_} as YAML does",
+               fm.get("owed_to") == expected and fm.get("status") == "open", fm)
+    # An apostrophe inside a plain item is content: a quote opens a quoted
+    # item only where an item starts. The bracket scan used to take it for an
+    # unclosed quote, so a one-line list read as a wrapped one and swallowed
+    # what followed up to the next key. A blank line or a comment line before
+    # that key is where it showed: a key right after the list stops the join
+    # anyway. The names are fictional.
+    alias_shapes = [
+        ("followed by a blank line",
+         "aliases: [bug tracker, issue tracker (Morgan's)]\n\nkind: tool\n",
+         ["bug tracker", "issue tracker (Morgan's)"]),
+        ("followed by a comment line",
+         "aliases: [bug tracker, issue tracker (Morgan's)]\n# note\nkind: tool\n",
+         ["bug tracker", "issue tracker (Morgan's)"]),
+        ("with a trailing comment",
+         "aliases: [O'Neil, Kit]  # nick\n\nkind: tool\n", ["O'Neil", "Kit"]),
+        ("wrapped across lines",
+         "aliases: [O'Neil,\n  Kit]\n\nkind: tool\n", ["O'Neil", "Kit"]),
+        ("wrapped, with a comment on the first line",
+         "aliases: [O'Neil,  # x\n  Kit]\n\nkind: tool\n", ["O'Neil", "Kit"]),
+    ]
+    for label_, block, expected in alias_shapes:
+        fm = mod.parse_fm(block)
+        record(f"build-index.py: fallback parser reads a list holding an apostrophe, "
+               f"{label_}, as YAML does",
+               fm.get("aliases") == expected and fm.get("kind") == "tool", fm)
+    # Not valid YAML, so there is no right reading, only a contained one: a
+    # quote that opens an item and never closes, on a line ending in `]`, is
+    # kept to that line (the `not INLINE_LIST` guard) instead of joining the
+    # comment line after it and leaving the `]` glued to the last item.
+    fm = mod.parse_fm("aliases: [Kit, 'unclosed]\n# c\nkind: tool\n")
+    record("build-index.py: fallback parser keeps a list whose quote never closes "
+           "to its own line, with no `]` glued to the last item",
+           fm.get("aliases") == ["Kit", "'unclosed"] and fm.get("kind") == "tool", fm)
 
 
 # ---------------------------------------------------------------------------
@@ -612,8 +685,8 @@ SECOND = "The evidence is /facts/export-shipped.md, cited by decay.loop_expiry_d
 
 def test_resolution_sentence_unit(root):
     """The first sentence is split on `. ` only: a bundle path and a dotted
-    config key are not sentence ends, and both appear in every resolution the
-    two writers produce."""
+    config key are not sentence ends, and both appear in every resolution
+    every writer produces."""
     mod = load_script_module("build-index.py")
     body = f"\nSome body text.\n\n**Closure signal:** something.\n\n**Resolution:** {FIRST} {SECOND}\n"
     record(
@@ -1227,6 +1300,128 @@ def test_roster(root):
     )
 
 
+# ---------------------------------------------------------------------------
+# 4g. owner and owed_to on the open-loop manifest rows (A4, E27, E24)
+# ---------------------------------------------------------------------------
+
+REFINED_FIRST = "Jane posted the signed contract in #legal on 2026-09-22."
+
+
+def test_manifest_loop_parties(root):
+    """The ingest core matches a new commitment against open loops on
+    manifest.jsonl. An "owed to me" loop names the counterpart only in `owner`
+    and the bundle owner only in `owed_to`, with `entities` possibly empty: on
+    `entities` alone that loop is invisible to the lookup, and every re-mention
+    files a duplicate instead of bumping or closing it."""
+    bundle = new_bundle(root, "manifest-loop-parties")
+    write_entity(bundle, "entities/person/jane.md", "Jane")
+    write_entity(bundle, "entities/person/me.md", "Me")
+    write_open_loop(
+        bundle, "tracking/loops/owed-to-me.md", "Jane sends the signed contract",
+        "entities: []\n",
+        parties_yaml="owner: [/entities/person/jane.md]\n"
+                     "owed_to: [/entities/person/me.md]\n",
+    )
+    write_open_loop(
+        bundle, "tracking/loops/block-owed-to.md", "Jane reviews the deck",
+        "entities: []\n",
+        parties_yaml="owner:\n  - /entities/person/jane.md\n"
+                     "owed_to:\n  - /entities/person/me.md\n",
+    )
+    write_open_loop(
+        bundle, "tracking/loops/legacy.md", "I send the proposal",
+        "entities: [/entities/person/jane.md]\n",
+        parties_yaml="owner: [/entities/person/me.md]\n",
+    )
+    write_fact(bundle, "facts/f1.md", "Jane joined the legal team",
+               "entities: [/entities/person/jane.md]\n")
+    write_open_loop(
+        bundle, "tracking/loops/refined.md", "Jane signs the contract",
+        "entities: []\n", status="done", closed="2026-09-22",
+        parties_yaml="owner: [/entities/person/jane.md]\n"
+                     "owed_to: [/entities/person/me.md]\n",
+        after=(
+            "\n**Closure signal:** Jane posts the signed contract in #legal.\n"
+            "\n**Closure signal history:**\n"
+            "\n- 2026-09-20, from [/sources/2026-09/2026-09-20-standup.md]"
+            "(/sources/2026-09/2026-09-20-standup.md): was \"Jane sends the "
+            "draft by Friday. Then legal reviews it.\"\n"
+        ),
+        resolution=f"{REFINED_FIRST} The evidence is /facts/contract-signed.md.",
+    )
+
+    result = run_script(bundle, "build-index.py")
+    if not record("build-index.py exits 0 over loops carrying owner and owed_to",
+                  result.returncode == 0, result.stdout + result.stderr):
+        return
+
+    manifest = (bundle / "knowledge" / "manifest.jsonl").read_text(encoding="utf-8")
+    rows = {}
+    for ln in manifest.splitlines():
+        if ln.strip():
+            row = json.loads(ln)
+            rows[row["path"]] = row
+
+    owed = rows.get("/tracking/loops/owed-to-me.md", {})
+    record(
+        "an \"owed to me\" open loop's manifest row carries owner and owed_to with "
+        "their values, though its entities are empty (E27)",
+        owed.get("owner") == ["/entities/person/jane.md"]
+        and owed.get("owed_to") == ["/entities/person/me.md"]
+        and owed.get("entities") == [],
+        owed,
+    )
+    record(
+        "…placed right after entities, the rest of the row unchanged",
+        list(owed) == ["path", "type", "desc", "entities", "owner", "owed_to",
+                       "tags", "occurred", "confidence", "status"],
+        list(owed),
+    )
+    block = rows.get("/tracking/loops/block-owed-to.md", {})
+    record(
+        "…and read the same from block-sequence owner / owed_to",
+        block.get("owner") == ["/entities/person/jane.md"]
+        and block.get("owed_to") == ["/entities/person/me.md"],
+        block,
+    )
+    legacy = rows.get("/tracking/loops/legacy.md", {})
+    record(
+        "a legacy loop without an owed_to line gets \"owed_to\": [] and keeps its owner",
+        legacy.get("owed_to") == [] and legacy.get("owner") == ["/entities/person/me.md"],
+        legacy,
+    )
+    fact = rows.get("/facts/f1.md", {})
+    record(
+        "a fact row carries neither owner nor owed_to",
+        bool(fact) and "owner" not in fact and "owed_to" not in fact,
+        fact,
+    )
+    record(
+        "the done loop stays out of the manifest",
+        "/tracking/loops/refined.md" not in rows,
+        sorted(rows),
+    )
+
+    page = (bundle / "knowledge" / "tracking" / "resolved-loops.md").read_text(encoding="utf-8")
+    lines = [ln for ln in page.splitlines() if ln.startswith("- ")]
+    record(
+        "a refined loop (closure signal history, then a resolution) prints the "
+        "resolution's first sentence on tracking/resolved-loops.md (E24)",
+        lines == [f"- 2026-09-22 · done · [Jane signs the contract]"
+                  f"(/tracking/loops/refined.md) — {REFINED_FIRST}"],
+        page,
+    )
+    record(
+        "…and nothing from the history section reaches the page",
+        "Friday" not in page and "legal reviews" not in page,
+        page,
+    )
+
+    result = run_script(bundle, "validate-okf.py")
+    record("validate-okf.py passes the bundle with owed_to on its loops",
+           result.returncode == 0, result.stdout + result.stderr)
+
+
 def guarded(fn, root):
     try:
         fn(root)
@@ -1245,6 +1440,7 @@ def main():
 
     for fn in (
         test_parse_fm_fallback_block_lists,
+        test_parse_fm_fallback_loop_party_shapes,
         test_block_style_entities,
         test_marker_injection,
         test_hub_sharding,
@@ -1257,6 +1453,7 @@ def main():
         test_loop_status_one_rule,
         test_loop_status_two_scripts_agree,
         test_fact_status_one_rule_two_scripts,
+        test_manifest_loop_parties,
         test_roster,
     ):
         guarded(fn, scratch_root)

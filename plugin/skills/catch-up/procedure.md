@@ -276,7 +276,7 @@ on to step 1, and carry the check's one line into this run's `log.md` entry
    read. It is the resolution surface for step 4.
 
    **This load has to be written here; it cannot be inherited.** Step 4 reuses
-   the `ingest` loop's core (steps 2–6), and `ingest` loads the roster in *its*
+   the `ingest` loop's core (steps 2–7), and `ingest` loads the roster in *its*
    step 3 — which this routine reaches from its own step 4, after the fan-out
    has already happened. Hence the explicit load, ahead of it. The roster goes
    to the **main agent alone**, once per run; handing it to each subagent would
@@ -299,7 +299,9 @@ on to step 1, and carry the check's one line into this run's `log.md` entry
    discussed. A subagent carries no roster, so a slug returned from there is
    invention rather than resolution: it returns none, and it creates no entity.
    That is ~20 tokens a mention, against the 9k a roster-carrying subagent
-   would cost.
+   would cost. A commitment's spec also says, as names with context, who owes
+   it and who is waiting on it, so the main agent can apply the loop bar after
+   resolution.
 
    **A missing or stale roster degrades, it never fails.** Check freshness
    before the fan-out: `git -C <bundle> status --porcelain` empty means the last
@@ -317,21 +319,16 @@ on to step 1, and carry the check's one line into this run's `log.md` entry
    dedup → cross-source corroboration + **source precedence** (transcripts >
    Slack) → conflict handling → confidence → persist. **Merge** re-observed
    facts (append the new source, bump `times_referenced`, corroborate) rather
-   than filing a duplicate; **close** open-loops a new source shows done (set
-   `status: done`, `closed`, `closed_by`).
+   than filing a duplicate, and apply the core's loop rules
+   (`../ingest/procedure.md`: the loop bar in steps 2 and 3, **Open loops** in
+   step 4, written at step 7): the bar for new loops, and close, drop, bump or
+   refine for every open loop a source speaks to.
 
-   **A source that re-raises an open loop without closing it bumps it.** Set
-   that loop's `updated:` to **the source's own date** — not today's, so a
-   window that arrives late cannot make an old mention look fresh — and change
-   nothing else on the file. If the source carries no date, leave `updated:`
-   alone. This is the whole of what keeps a live commitment alive: `decay`
-   reads `updated` as the loop's last activity and expires anything quiet past
-   `decay.loop_expiry_days`, and this rule is its only writer on the ingest
-   side (the other is `decay`'s own review-gate snooze). Re-raised means the
-   source actually speaks to the commitment — chasing it, re-scheduling it,
-   reporting it still blocked. A source that merely names the same people or
-   the same project is not a re-mention, and bumping on that would keep every
-   loop of an active project alive forever.
+   Those rules live in the core so every ingest path applies them the same
+   way; this routine adds nothing to them. When two sources in one window speak
+   to the same loop, source precedence (transcripts over Slack) settles only
+   wording and detail, as it does for facts; the bump takes the latest of their
+   dates, since `updated:` is never moved backwards.
 
    **Entity resolution happens here, against the roster loaded at step 3 — and
    only here.** The subagents returned names, not slugs; this is where they
@@ -349,7 +346,10 @@ on to step 1, and carry the check's one line into this run's `log.md` entry
    name/entity, ambiguous tool, weak single-mention signal): write it anyway
    with `confidence: low` + tag `needs-review`, and append a line to
    `state/needs-review.md` (`- [ ] <date> <path> — <the question>`). Do not
-   block the run.
+   block the run. A loop action (close, drop, bump, refine) is not such an
+   item: one you are unsure of is not taken and the loop stays exactly as it
+   is (`../ingest/procedure.md` step 4, **Open loops**), since every terminal
+   status is final.
    **The `needs-review` tag and its queue line are ONE unit — never write one
    without the other.** This holds for extraction subagents too: a subagent that
    tags an item `needs-review` MUST return its queue line so the consolidator

@@ -29,16 +29,20 @@ through). Default autonomous; same machinery as `ingest`, but:
    claude-code:<workspace>` (the working dir's basename; bare `claude-code` if
    none), `occurred: <today>`, and a one-line summary of what was decided **and
    why**. No `raw/`.
-2. **Extract & route.** Usually one durable `fact` (a decision) — plus an
-   `open-loop` when it implies follow-up. Same skip-rules; a decision that merely
+2. **Extract & route.** Usually one durable `fact` (a decision), plus an
+   `open-loop` when it implies follow-up the owner owes or is owed: the loop bar
+   of `ingest` steps 2 and 3 applies. Same skip-rules; a decision that merely
    restates an existing fact MERGEs (bump `times_referenced`), never duplicates.
+   When the user says something about an open loop (it shipped, it moved, it is
+   off), apply `ingest` step 4's rules on open loops: the user is the source,
+   the capture record is `closed_by`, and the date is today.
 3. **Resolve entities, dedup, persist** as `ingest`: write the fact(s), then
    `build-index` → `validate` → local commit. After the commit lands, fire the
    lifecycle event: `python3 scripts/run-hooks.py post_ingest --trigger capture`.
    Best-effort — this is where subscribers (e.g. the wiki generator) regenerate;
    a hook failure never affects the capture.
 4. Recap in the bundle's `conversation_language`: what was filed, where, any
-   open-loop opened.
+   open-loop opened, closed, dropped, bumped or refined.
 
 The user is the source, so treat the claim as `confidence: high` unless they
 hedge. The **rationale is signal** — capture the why, not just the what.

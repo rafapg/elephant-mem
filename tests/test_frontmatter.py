@@ -734,6 +734,25 @@ def test_regex_readers_share_the_rule(root):
             got = fn(raw)
             record(f"{name}: {why}", got == want, f"raw={raw!r}\nwant={want!r}\ngot ={got!r}")
 
+    # A quote opens a quoted item only where an item starts (after `[` or
+    # `,`), so an apostrophe inside a plain item is content and the list still
+    # ends at its `]`. Only the four copies that read loop and entity lists for
+    # the manifest, the validator and the loop scripts carry this rule so far;
+    # briefing.py, snapshot-drift.py, entity-drift.py and rename-entity.py
+    # still scan the old way, a follow-up with its own tests.
+    apostrophe = [("[O'Neil, Kit]  # nick", "[O'Neil, Kit]",
+                   "an apostrophe inside a plain item is content, the comment still goes"),
+                  ("['O''Neil', Kit]  # nick", "['O''Neil', Kit]",
+                   "a quoted item that opens an item is still skipped whole")]
+    for name, fn in copies:
+        if name not in ("build-index.py", "validate-okf.py", "decay-loops.py",
+                        "close-loops.py"):
+            continue
+        for raw, want, why in apostrophe:
+            got = fn(raw)
+            record(f"{name}: {why}", got == want,
+                   f"raw={raw!r}\nwant={want!r}\ngot ={got!r}")
+
     # split_comment() is a split, not a strip: the two halves must rebuild the
     # line, or rename-entity.py would drop the comment every time it rewrites.
     bad = [raw for raw, _w, _y in STRIP_CASES
@@ -949,6 +968,23 @@ def test_validator_sees_collisions_through_the_comment(root):
     record("…and distinct names still collide with nothing — the warning did "
            "not simply learn to fire",
            collisions(bundle) == [], collisions(bundle))
+
+    # A quoted alias holding a comma is one name. Split at that comma, two
+    # people sharing a surname collided on the fragment `"Doe`, and the whole
+    # alias was never the key. The names are fictional.
+    bundle = new_bundle(root, "collide-quoted-comma")
+    write_template_entity(bundle, "entities/person/x.md", '"Jane Doe"',
+                          aliases='[JD, "Doe, Jane"]' + C_ALIASES)
+    write_template_entity(bundle, "entities/person/y.md", '"John Doe"',
+                          aliases='["Doe, John"]' + C_ALIASES)
+    record("validate-okf: aliases `\"Doe, Jane\"` and `\"Doe, John\"` do not "
+           "collide on their shared surname fragment",
+           collisions(bundle) == [], collisions(bundle))
+    write_template_entity(bundle, "entities/person/z.md", '"J. Doe"',
+                          aliases='["Doe, Jane"]' + C_ALIASES)
+    hits = collisions(bundle)
+    record("…while the same quoted alias on two entities collides whole",
+           len(hits) == 1 and '"Doe, Jane"' in hits[0], hits)
 
 
 def main():
