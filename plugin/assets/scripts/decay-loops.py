@@ -70,8 +70,9 @@ loops out of this run, in the dry run and on `--apply`: it is how the
 interactive review gate keeps every candidate the owner rejected out of the
 `--apply` re-scan, which would otherwise list an unclaimed out-of-scope loop
 again, and a snoozed stale one again if its `updated:` bump went wrong. A
-link that names no loop file ends the run with exit 2 before anything is
-written; a link to a loop that is no longer a candidate prints a note.
+link that names no loop file, or a loop that is not open, ends the run with
+exit 2 before anything is written; a link to an open loop that is no longer a
+candidate prints a note.
 
 `--skip-sweep` is a deprecated no-op. This script no longer reads
 `state/closure-sweep.json`; the flag is still accepted so a schedule or a habit
@@ -79,8 +80,9 @@ that passes it does not make argparse exit 2 and quietly stop expiry.
 
 Exit code is 0 whenever the script completed a run, whether or not it found
 candidates — non-zero only on a hard, unexpected error, or 2 when an
-`--except` link names no loop file, checked before anything is scanned or
-written: a typo there would otherwise let the loop it meant to keep expire.
+`--except` link names no loop file or a loop that is not open, checked
+before anything is scanned or written: a typo there would otherwise let the
+loop it meant to keep expire.
 After `--apply` the caller is expected to run `build-index.py` (this script
 does not — it only touches loop files).
 """
@@ -189,8 +191,10 @@ def _closing_bracket(v):
     while i < n:
         c = v[i]
         # A quote opens a quoted item only where an item starts, after the `[`
-        # or a `,` (YAML's flow rule); inside a plain item it is content, so the
-        # apostrophe of `[O'Brien, me]` does not swallow the `]`.
+        # or a `,`; inside a plain item it is content, so the apostrophe of
+        # `[O'Brien, me]` does not swallow the `]`. An approximation of YAML's
+        # flow rule: a node may also start after a tag or anchor (`!!str 'a'`,
+        # `&x 'a'`) or after a flow mapping's `:`, and those are not handled.
         if c in "\"'" and v[:i].rstrip()[-1:] in ("[", ","):
             end = _closing_quote(v[i:])
             if end < 0:
@@ -205,6 +209,31 @@ def _closing_bracket(v):
                 return i
         i += 1
     return -1
+
+
+def _split_items(inner):
+    """The items of an inline list, given the text between its `[` and `]`,
+    split at the commas that sit outside a quoted item and stripped, empty ones
+    dropped. As in _closing_bracket(), a quote opens a quoted item only where
+    an item starts, so `"Doe, Jane"` is one item while the apostrophe of
+    `O'Neil, Kit` is content; a quote that never closes is content too, so
+    the rest of the list still splits. The items keep their quotes, for the
+    caller to unquote. Same function in decay-loops.py, close-loops.py,
+    build-index.py and validate-okf.py."""
+    items, start, i, n = [], 0, 0, len(inner)
+    while i < n:
+        c = inner[i]
+        if c in "\"'" and not inner[start:i].strip():
+            end = _closing_quote(inner[i:])
+            if end >= 0:
+                i += end + 1
+                continue
+        if c == ",":
+            items.append(inner[start:i])
+            start = i + 1
+        i += 1
+    items.append(inner[start:])
+    return [x.strip() for x in items if x.strip()]
 
 
 def strip_comment(v):
@@ -342,9 +371,13 @@ def list_field(block, key):
     PyYAML's own `safe_dump` style) and may carry comment lines between its
     items; and an inline list may wrap across lines, read until its `]`.
 
-    The comma split is naive, matching build-index.py's fallback parser: every
-    value this is used for is a bundle-absolute link or a slug, neither of which
-    can carry a comma.
+    The items are split by _split_items(), which honors quoting, as
+    build-index.py's fallback parser does. A naive comma split was once safe
+    here, when every value read was a bundle-absolute link or a slug, neither
+    of which can carry a comma. decay-loops.py's _names() also reads `aliases`
+    through this, and an alias can: `aliases: ["Doe, Jane"]` came back as
+    `"Doe` and `Jane"`, the duplicate titled `Doe, Jane` went undetected, and
+    the loop linking it expired as out of scope.
     """
     lines = block.splitlines()
     head = re.compile(rf"^{re.escape(key)}[ \t]*:(.*)$")
@@ -362,7 +395,7 @@ def list_field(block, key):
                 j += 1
             end = _closing_bracket(val)
             inner = (val[1:end] if end > 0 else val[1:]).strip()
-            return [unquote(x.strip()) for x in inner.split(",") if x.strip()]
+            return [unquote(x) for x in _split_items(inner)]
         if val:
             return [unquote(val)]
         items = []
@@ -940,21 +973,33 @@ def main():
 
     # --except: a link that names no loop file at all is a typo, not a loop
     # that stopped being a candidate, and the loop it meant to keep open would
-    # expire in this very run. Refuse before anything is scanned or written.
+    # expire in this very run. So is a link to a loop that is not open (done,
+    # dropped, expired): it can never have been a candidate, and letting it
+    # through would print the `matches no candidate` note the procedure reads
+    # as a snooze or claim having taken. Refuse before anything is scanned or
+    # written.
     excepted = []
     for raw in args.except_links:
         link = normalize_link(raw)
         if link not in excepted:
             excepted.append(link)
     if excepted:
-        known = {bundle_link(p) for p in loop_files()}
-        unknown = [link for link in excepted if link not in known]
-        if unknown:
-            for link in unknown:
-                print(f"error: --except {link} names no loop file (no "
-                      f"knowledge{link} under tracking/loops/). Nothing was "
-                      "scanned or written; fix the link and run again.",
-                      file=sys.stderr)
+        status_of = {}
+        for p in loop_files():
+            m = FM.match(p.read_text(encoding="utf-8"))
+            status_of[bundle_link(p)] = loop_status(m.group(1)) if m else None
+        refused = [link for link in excepted if status_of.get(link) != "open"]
+        if refused:
+            for link in refused:
+                if link not in status_of:
+                    why = f"names no loop file (no knowledge{link} under tracking/loops/)"
+                elif status_of[link] is None:
+                    why = "names a loop file with no frontmatter, which is no candidate"
+                else:
+                    why = (f"names a loop whose status is `{status_of[link]}`, not "
+                           "open, so it is no candidate")
+                print(f"error: --except {link} {why}. Nothing was scanned or "
+                      "written; fix the link and run again.", file=sys.stderr)
             return 2
 
     candidates = find_candidates(expiry_days, owner)

@@ -198,8 +198,10 @@ def _closing_bracket(v):
     while i < n:
         c = v[i]
         # A quote opens a quoted item only where an item starts, after the `[`
-        # or a `,` (YAML's flow rule); inside a plain item it is content, so the
-        # apostrophe of `[O'Brien, me]` does not swallow the `]`.
+        # or a `,`; inside a plain item it is content, so the apostrophe of
+        # `[O'Brien, me]` does not swallow the `]`. An approximation of YAML's
+        # flow rule: a node may also start after a tag or anchor (`!!str 'a'`,
+        # `&x 'a'`) or after a flow mapping's `:`, and those are not handled.
         if c in "\"'" and v[:i].rstrip()[-1:] in ("[", ","):
             end = _closing_quote(v[i:])
             if end < 0:
@@ -214,6 +216,31 @@ def _closing_bracket(v):
                 return i
         i += 1
     return -1
+
+
+def _split_items(inner):
+    """The items of an inline list, given the text between its `[` and `]`,
+    split at the commas that sit outside a quoted item and stripped, empty ones
+    dropped. As in _closing_bracket(), a quote opens a quoted item only where
+    an item starts, so `"Doe, Jane"` is one item while the apostrophe of
+    `O'Neil, Kit` is content; a quote that never closes is content too, so
+    the rest of the list still splits. The items keep their quotes, for the
+    caller to unquote. Same function in decay-loops.py, close-loops.py,
+    build-index.py and validate-okf.py."""
+    items, start, i, n = [], 0, 0, len(inner)
+    while i < n:
+        c = inner[i]
+        if c in "\"'" and not inner[start:i].strip():
+            end = _closing_quote(inner[i:])
+            if end >= 0:
+                i += end + 1
+                continue
+        if c == ",":
+            items.append(inner[start:i])
+            start = i + 1
+        i += 1
+    items.append(inner[start:])
+    return [x.strip() for x in items if x.strip()]
 
 
 def strip_comment(v):
@@ -389,7 +416,7 @@ def parse_fm(block, path=None):
         m = INLINE_LIST.match(val)
         if m:
             inner = m.group(1).strip()
-            data[key] = [unquote(x.strip()) for x in inner.split(",") if x.strip()] if inner else []
+            data[key] = [unquote(x) for x in _split_items(inner)]
         else:
             data[key] = unquote(val)
     return data

@@ -15,7 +15,8 @@ a deprecated no-op; that an open loop naming the bundle owner (`elephant.json`
 candidate at any age, compared by slug in every link shape, and that the rule
 is skipped with a note when there is no `owner.slug`, or when only a
 duplicate of the owner's entity is linked; that `--except` keeps a named loop
-out of the run, and refuses the run when it names no loop file; that every expiry writes a `**Resolution:**`
+out of the run, and refuses the run when it names no loop file or a loop
+that is not open; that every expiry writes a `**Resolution:**`
 paragraph in the same shape a closure does, naming which kind of expiry it
 was; that a recent citation in `state/recall.json` counts as a fourth activity
 date while every degraded shape of that record — absent, empty, malformed, no
@@ -1348,6 +1349,41 @@ def test_partial_owner_duplicate(root):
                for p in (mine, dup_alias, dup_title)), dry.stdout)
 
 
+def test_quoted_comma_alias_duplicate(root):
+    """An alias written "SURNAME, Name" is one YAML item, quoted because of its
+    comma. The list reader split it at that comma, so a duplicate entity titled
+    with it matched none of the owner's names and the loop linking it expired
+    as out of scope, while the same alias without the comma protected it. The
+    names are fictional."""
+    bundle = new_bundle(root, "owner-quoted-comma-alias", owner_slug="jane-doe",
+                        owner_entity=False)
+    write_named_entity(bundle, "jane-doe", "Jane Doe", ["JD", '"Doe, Jane"', "'Roe, J.'"])
+    write_named_entity(bundle, "doe-jane", "Doe, Jane")    # the duplicate, by alias
+    write_named_entity(bundle, "roe-j", "Roe, J.")         # single-quoted alias
+    write_named_entity(bundle, "doe", "Doe")               # a comma fragment, no name of hers
+    fresh = {"opened": days_ago(1), "created": days_ago(1), "updated": days_ago(1)}
+    mine = write_loop(bundle, "mine.md", "Mine", owner=["/entities/person/jane-doe.md"],
+                      **fresh)
+    dup = write_loop(bundle, "dup.md", "Mine, linked to the duplicate",
+                     owner=["/entities/person/doe-jane.md"], **fresh)
+    roe = write_loop(bundle, "roe.md", "Mine, linked to the other duplicate",
+                     owner=[JANE], owed_to=["/entities/person/roe-j.md"], **fresh)
+    write_loop(bundle, "doe.md", "Someone named Doe", owner=["/entities/person/doe.md"],
+               **fresh)
+    dry = run_script(bundle, "decay-loops.py")
+    record("an alias holding a quoted comma is one name: the loop linking the "
+           "duplicate titled with it is no out-of-scope candidate",
+           "dup.md" not in dry.stdout and "roe.md" not in dry.stdout
+           and "mine.md" not in dry.stdout, dry.stdout)
+    record("…while a comma fragment of it names nobody: `Doe` stays out of scope",
+           "doe.md  (out of scope" in dry.stdout
+           and "1 candidate(s) for decay (1 out of scope" in dry.stdout, dry.stdout)
+    run_script(bundle, "decay-loops.py", ["--apply"])
+    record("--apply leaves the loops linking either duplicate open",
+           all("status: open" in p.read_text(encoding="utf-8") for p in (mine, dup, roe)),
+           dry.stdout + dry.stderr)
+
+
 def test_duplicate_never_arms_the_scope_rule(root):
     """The "no open loop names the owner" guard reads the owner's own slug,
     never a duplicate's. `owner.slug` here names the wrong entity (`alex`,
@@ -1566,6 +1602,12 @@ def test_list_field_mirrors_close_loops(root):
          "aliases: [\"a #b\", Kit]\n", ["a #b", "Kit"]),
         ("the owner after an apostrophe", "owner",
          f"owner: [O'Neil, {ME}]\nstatus: open\n", ["O'Neil", ME]),
+        # A quoted item holding a comma is one item: the naive split made
+        # `"Doe, Jane"` two fragments, `"Doe` and `Jane"`.
+        ("a quoted item holding a comma", "aliases",
+         'aliases: ["Doe, Jane"]\n', ["Doe, Jane"]),
+        ("a plain item, then a quoted one holding a comma", "aliases",
+         'aliases: [JD, "Doe, Jane"]\n', ["JD", "Doe, Jane"]),
     ]
     for label_, key, block, expected in shapes:
         got_d, got_c = decay.list_field(block, key), close.list_field(block, key)
@@ -1579,6 +1621,81 @@ def test_list_field_mirrors_close_loops(root):
     got_d, got_c = decay._cut_line_comment(raw), close._cut_line_comment(raw)
     record("_cut_line_comment: a quoted block item keeps its ` #`, in both scripts",
            got_d == want and got_c == want, f"decay={got_d!r}\nclose={got_c!r}")
+
+
+# Inline lists whose quoted items hold a comma, each as PyYAML reads it. The
+# fourth element says whether the list sits on one line: validate-okf.py's
+# inline_list() reads only those. The names are fictional.
+QUOTED_COMMA_SHAPES = [
+    ("a double-quoted item", 'aliases: ["Doe, Jane"]\nkind: person\n',
+     ["Doe, Jane"], True),
+    ("a plain item, then a double-quoted one", 'aliases: [JD, "Doe, Jane"]\nkind: person\n',
+     ["JD", "Doe, Jane"], True),
+    ("a single-quoted item first", "aliases: ['Doe, Jane', JD]\nkind: person\n",
+     ["Doe, Jane", "JD"], True),
+    ("two quoted items and a trailing comment",
+     "aliases: [\"Doe, Jane\", 'Roe, Rick']  # names\nkind: person\n",
+     ["Doe, Jane", "Roe, Rick"], True),
+    ("an apostrophe item before a quoted comma",
+     "aliases: [O'Neil, \"Doe, Jane\"]\nkind: person\n", ["O'Neil", "Doe, Jane"], True),
+    ("an escaped double quote next to the comma",
+     'aliases: ["say \\"hi\\", then", Kit]\nkind: person\n', ['say "hi", then', "Kit"], True),
+    ("an escaped single quote next to the comma",
+     "aliases: ['it''s, fine', Kit]\nkind: person\n", ["it's, fine", "Kit"], True),
+    ("a wrapped list", 'aliases: [JD,\n  "Doe, Jane"]\nkind: person\n',
+     ["JD", "Doe, Jane"], False),
+    # Two apostrophes inside plain items would pair up across the comma if
+    # a quote could open mid-item.
+    ("two apostrophe items", "aliases: [O'Neil, D'Arcy]\nkind: person\n",
+     ["O'Neil", "D'Arcy"], True),
+]
+
+
+def test_quoted_comma_items_every_copy(root):
+    """The inline-list split is mirrored in four scripts, and each one read a
+    quoted item holding a comma as two: decay-loops.py's _names() (an alias
+    that then protects no duplicate, and its loop expires as out of scope),
+    close-loops.py's list_field(), build-index.py's fallback parser, and
+    validate-okf.py's alias collision check (a false collision on the shared
+    surname fragment). Each copy is read against PyYAML's reading of the same
+    block, and the four _split_items() must be one function."""
+    import inspect
+    decay = load_script("decay-loops.py")
+    close = load_script("close-loops.py")
+    index = load_script("build-index.py")
+    index.yaml = None                         # the fallback parser, PyYAML or not
+    okf = load_script("validate-okf.py")
+    try:
+        import yaml as pyyaml
+    except ImportError:
+        pyyaml = None
+    # Recorded on both CI legs, so the suite's check count, which the
+    # CHANGELOG states and smoke.py compares, does not depend on PyYAML. The
+    # oracle itself runs only on the pyyaml=true leg.
+    off = [] if pyyaml is None else [
+        (label_, pyyaml.safe_load(block).get("aliases"))
+        for label_, block, expected, _one in QUOTED_COMMA_SHAPES
+        if pyyaml.safe_load(block).get("aliases") != expected]
+    record("PyYAML, the oracle, reads every quoted-comma row as the table says"
+           + (" (no PyYAML here: read on CI's pyyaml=true leg)" if pyyaml is None else ""),
+           not off, repr(off))
+    for label_, block, expected, one_line in QUOTED_COMMA_SHAPES:
+        got = {"decay-loops.py": decay.list_field(block, "aliases"),
+               "close-loops.py": close.list_field(block, "aliases"),
+               "build-index.py": index.parse_fm(block).get("aliases")}
+        if one_line:
+            raw = block.split("\n", 1)[0][len("aliases:"):]
+            items = okf.inline_list(raw)
+            got["validate-okf.py"] = (None if items is None
+                                      else [decay.unquote(x) for x in items])
+        for name, value in got.items():
+            record(f"{name}: {label_} reads as YAML does, {expected}",
+                   value == expected, f"{name}={value}")
+    sources = {name: inspect.getsource(mod._split_items)
+               for name, mod in (("decay-loops.py", decay), ("close-loops.py", close),
+                                 ("build-index.py", index), ("validate-okf.py", okf))}
+    record("_split_items() is the same function in all four copies",
+           len(set(sources.values())) == 1, "\n".join(sources))
 
 
 def test_legacy_loop_without_owed_to(root):
@@ -1750,6 +1867,43 @@ def test_except_typo_refuses_the_run(root):
            dry.stdout + dry.stderr)
 
 
+def test_except_closed_loop_refuses_the_run(root):
+    """A `--except` link to a loop that exists but is not open (done, dropped,
+    expired) can never name a candidate. It passed the typo check and printed
+    the `matches no candidate` note the procedure reads as a snooze or claim
+    having taken, while the loops really rejected expired. It is now refused
+    like a typo: exit 2, before anything is scanned or written."""
+    bundle = new_bundle(root, "except-closed", owner_slug="me")
+    stale = write_loop(bundle, "stale.md", "Mine, stale, rejected at the gate",
+                       opened=days_ago(60), created=days_ago(60), updated=days_ago(60),
+                       owner=[ME])
+    closed = {s: write_loop(bundle, f"{s}.md", f"A {s} loop", status=s,
+                            opened=days_ago(60), created=days_ago(60),
+                            updated=days_ago(60), owner=[ME])
+              for s in ("done", "dropped", "expired")}
+    files = [stale] + list(closed.values())
+    before = {p: p.read_text(encoding="utf-8") for p in files}
+    for s in closed:
+        applied = run_script(bundle, "decay-loops.py",
+                             ["--apply", "--except", f"/tracking/loops/{s}.md"])
+        record(f"--apply --except to a `{s}` loop exits 2 and writes nothing",
+               applied.returncode == 2 and "expired:" not in applied.stdout
+               and all(p.read_text(encoding="utf-8") == t for p, t in before.items()),
+               applied.stdout + applied.stderr)
+        record(f"…naming the status, and never the `matches no candidate` note",
+               f"--except /tracking/loops/{s}.md names a loop whose status is `{s}`"
+               in applied.stderr and "matches no candidate" not in applied.stderr,
+               applied.stderr)
+    dry = run_script(bundle, "decay-loops.py", ["--except", "/tracking/loops/done.md"])
+    record("the dry run refuses a closed loop the same way",
+           dry.returncode == 2 and "candidate(s)" not in dry.stdout,
+           dry.stdout + dry.stderr)
+    ok = run_script(bundle, "decay-loops.py", ["--apply", "--except", "/tracking/loops/stale.md"])
+    record("…while a link to the open loop still keeps it open, exit 0",
+           ok.returncode == 0 and stale.read_text(encoding="utf-8") == before[stale],
+           ok.stdout + ok.stderr)
+
+
 def test_except_link_spellings(root):
     """`--except` reads its value leniently, the documented safe direction: the
     procedure is prose a model follows, and a spelling that matched nothing
@@ -1833,9 +1987,10 @@ def test_decay_prose_contract(root):
            (ASSETS / "scripts" / "decay-loops.py").read_text(encoding="utf-8"), "")
     record("procedure.md reads exit 2 as a mistyped `--except` link that expired "
            "nothing, and the `matches no candidate` note as success only for a "
-           "link naming a real loop file",
+           "link naming an open loop file",
            "makes the script exit 2 before it scans or writes anything" in proc
-           and "prints only for a link naming a real loop file" in proc
+           and "or a loop whose status is not `open`" in proc
+           and "prints only for a link naming an open loop file" in proc
            and "names no loop file" in
            (ASSETS / "scripts" / "decay-loops.py").read_text(encoding="utf-8"), "")
     record("procedure.md: a failed recall roll ends the run before the scan, and "
@@ -1889,14 +2044,17 @@ def main():
         test_unresolvable_owner_skips_scope_rule,
         test_no_loop_names_the_owner_skips_scope_rule,
         test_partial_owner_duplicate,
+        test_quoted_comma_alias_duplicate,
         test_duplicate_never_arms_the_scope_rule,
         test_owner_duplicate_name_shapes,
         test_unreadable_updated_is_no_candidate,
         test_list_field_mirrors_close_loops,
+        test_quoted_comma_items_every_copy,
         test_legacy_loop_without_owed_to,
         test_dry_run_labels_and_split,
         test_except_leaves_a_candidate_open,
         test_except_typo_refuses_the_run,
+        test_except_closed_loop_refuses_the_run,
         test_except_link_spellings,
         test_decay_prose_contract,
     ):

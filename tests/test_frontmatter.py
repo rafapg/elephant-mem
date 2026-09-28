@@ -969,6 +969,23 @@ def test_validator_sees_collisions_through_the_comment(root):
            "not simply learn to fire",
            collisions(bundle) == [], collisions(bundle))
 
+    # A quoted alias holding a comma is one name. Split at that comma, two
+    # people sharing a surname collided on the fragment `"Doe`, and the whole
+    # alias was never the key. The names are fictional.
+    bundle = new_bundle(root, "collide-quoted-comma")
+    write_template_entity(bundle, "entities/person/x.md", '"Jane Doe"',
+                          aliases='[JD, "Doe, Jane"]' + C_ALIASES)
+    write_template_entity(bundle, "entities/person/y.md", '"John Doe"',
+                          aliases='["Doe, John"]' + C_ALIASES)
+    record("validate-okf: aliases `\"Doe, Jane\"` and `\"Doe, John\"` do not "
+           "collide on their shared surname fragment",
+           collisions(bundle) == [], collisions(bundle))
+    write_template_entity(bundle, "entities/person/z.md", '"J. Doe"',
+                          aliases='["Doe, Jane"]' + C_ALIASES)
+    hits = collisions(bundle)
+    record("…while the same quoted alias on two entities collides whole",
+           len(hits) == 1 and '"Doe, Jane"' in hits[0], hits)
+
 
 def main():
     print("elephant-mem test_frontmatter — YAML-safe frontmatter (validate-okf rule 5)")

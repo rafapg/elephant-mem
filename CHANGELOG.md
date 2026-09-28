@@ -108,11 +108,25 @@ re-syncs `elephant.json`; moving it to 30 is a manual edit.
   opening quote, so it read the last item with the `]` glued on, and an owner
   whose aliases held an apostrophe before the alias a duplicate carried lost
   that match, which is the case the duplicate test exists for. A quote now opens
-  an item only where an item starts, which is YAML's flow rule, in the copies in
-  `decay-loops.py`, `close-loops.py`, `build-index.py` and `validate-okf.py`;
-  `briefing.py`, `snapshot-drift.py`, `entity-drift.py` and `rename-entity.py`
-  keep the old scan for now. Duplicate detection no longer loses the whole scan
-  to one unreadable entity file, which it now skips with a note, and no longer
+  an item only where an item starts, after the `[` or a `,`, in the copies in
+  `decay-loops.py`, `close-loops.py`, `build-index.py` and `validate-okf.py`.
+  That approximates YAML's flow rule without all of it, since a tag, an anchor
+  or a flow mapping's `:` also starts a node, a shape no bundle writes. A third
+  review found the other half of the same reader: every copy split an inline
+  list at every comma, quoted or not, which was safe while the lists held only
+  links and slugs and stopped being safe when the duplicate test began reading
+  `aliases` through it. An owner alias written `"Doe, Jane"` came back as the
+  fragments `"Doe` and `Jane"`, and a reproduction in a throwaway bundle had the
+  loop linking a duplicate titled `Doe, Jane` listed as out of scope, while the
+  same alias without its comma, or in a block sequence, protected it. The split
+  now skips the commas inside a quoted item, with the same item-start rule, as
+  one function in all four copies, read against PyYAML's reading of the same
+  blocks. It also ends a false alias collision in `validate-okf.py` between
+  two people sharing a surname, `"Doe, Jane"` and `"Doe, John"`, which used to
+  collide on the fragment `"Doe`. `briefing.py`, `snapshot-drift.py`,
+  `entity-drift.py` and `rename-entity.py` keep both old scans for now.
+  Duplicate detection no longer loses the whole scan to one unreadable entity
+  file, which it now skips with a note, and no longer
   reads two folded (`>-`) titles as one name. The entity-link floor now also
   ends a link on `)`, so a markdown link to the owner under a key the scope
   test does not read keeps the loop in, as a plain link there already did. On
@@ -135,7 +149,10 @@ re-syncs `elephant.json`; moving it to 30 is a manual edit.
   printed the same note, which the procedure reads as a snooze or claim having
   taken, and `--apply` expired the loop the owner had just rejected. A link
   that names no loop file now ends the run with exit 2 before anything is
-  scanned or written.
+  scanned or written. So does a link to a loop that exists but is not open,
+  since a `done`, `dropped` or `expired` loop can never be a candidate: it had
+  passed the file check and printed the same note, while the loops really
+  rejected expired.
 - **Closure signal history.** A source that speaks to the commitment can now
   refine its `**Closure signal:**` (a deadline moved, the scope shrank, the
   deliverable changed), and never silently: the previous version is kept in a
@@ -215,7 +232,7 @@ re-syncs `elephant.json`; moving it to 30 is a manual edit.
   phrases about the sweep gate or the two writers of `updated:` survives under
   `plugin/`, `docs/` or the README, naming the file when one does. It also
   checks that its own `ci.yml` line is still there.
-  `tests/test_decay.py` grew to 239 checks, with the six gate tests deleted;
+  `tests/test_decay.py` grew to 289 checks, with the six gate tests deleted;
   `tests/test_close_loops.py` went to 151, `tests/test_index.py` to 125 and
   `tests/test_templates.py` to 32.
 
