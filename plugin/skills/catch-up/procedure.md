@@ -197,6 +197,14 @@ after.**
 
 ## Procedure
 
+**Named, or stop.** This routine is model-invocable only so that a scheduled
+task can reach it (`../catch-up/SKILL.md` → *Scheduling*). Proceed when the
+prompt that started this turn names `/elephant-mem:catch-up`, typed by the user
+or inside a `<scheduled-task>` block. Otherwise Claude reached for it unasked:
+say in one line what it would do and stop, without reading a source, writing, or
+committing anything. The description is the first guard; this is the second, the
+same pair `ingest` has had since 0.1.0-beta.8 (its step 0).
+
 **Preflight, before step 1.** Run the check described in `../_shared/core.md` →
 **Preflight**. On required drift, do not start the sweep: take the stale-scripts
 branch of **Degradation** above and end the run there. On any other outcome go

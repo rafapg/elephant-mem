@@ -20,9 +20,14 @@ What is checked:
   3. Each of the four, now visible to the model, says in its description that
      it runs only when named and lists phrasings that are not a trigger: that
      text is the only guard left against Claude reaching for a writer unasked.
-  4. Every description fits the 1024-character limit on skill descriptions.
+  4. The three that write or send (`catch-up`, `close-loops`,
+     `push-start-day`) also stop in their procedure when the prompt did not name
+     them, so a description that misfires still changes nothing. `decay` needs
+     no such step: without `--yes` it already stops at its review gate.
+  5. Every description fits the 1024-character limit on skill descriptions.
 
-Pure stdlib, Python 3.10+. Reads the shipped SKILL.md files; runs nothing.
+Pure stdlib, Python 3.10+. Reads the shipped SKILL.md and procedure.md files;
+runs nothing.
 """
 
 from __future__ import annotations
@@ -35,6 +40,20 @@ ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = ROOT / "plugin" / "skills"
 SCHEDULED = ("catch-up", "push-start-day", "close-loops", "decay")
 FLAG = "disable-model-invocation: true"
+# Any spelling a YAML parser reads as the flag set: `True`, quoted, extra
+# spaces around the colon, a trailing comment. A literal `in` test missed all
+# of those, and each one blocks the Skill tool just the same.
+FLAG_RE = re.compile(
+    r"^disable-model-invocation[ \t]*:[ \t]*[\"']?true[\"']?[ \t]*(#.*)?$",
+    re.M | re.I)
+# Where each model-invocable routine keeps its second guard, the step that
+# stops a run nobody named. Pinned like the description's "Never on a guess".
+GUARD = "**Named, or stop.**"
+GUARD_FILES = {
+    "catch-up": "procedure.md",
+    "close-loops": "procedure.md",
+    "push-start-day": "SKILL.md",
+}
 
 checks: list[tuple[str, bool]] = []
 
@@ -55,8 +74,11 @@ def frontmatter(path: Path) -> str:
 
 
 def description(fm: str) -> str:
-    """The folded `description: >` block, joined into one line."""
-    m = re.search(r"^description: >\n((?:[ \t]+.*\n?)+)", fm, re.M)
+    """A block-scalar description (`>`, `|`, any chomping), joined into one
+    line. Matching only `>` let a `>-` description fall through to the inline
+    branch, read as "-", and drop its skill out of every derived check."""
+    m = re.search(r"^description:[ \t]*[>|][-+]?[ \t]*\n((?:[ \t]+.*\n?)+)",
+                  fm, re.M)
     if m:
         return " ".join(line.strip() for line in m.group(1).splitlines())
     m = re.search(r"^description: (.*)$", fm, re.M)
@@ -88,7 +110,7 @@ def main() -> int:
         fm, _ = skills[name]
         record(f"{name}: runs from a schedule, so it does not carry {FLAG!r} "
                "(the Skill tool refuses it since Claude Code 2.1.293)",
-               FLAG not in fm, fm[:200])
+               not FLAG_RE.search(fm), fm[:200])
 
     for name in SCHEDULED:
         _, desc = skills.get(name, ("", ""))
@@ -98,6 +120,13 @@ def main() -> int:
                and f"/elephant-mem:{name}" in desc, desc)
         record(f"{name}: description names phrasings that are not a trigger",
                "Never on a guess" in desc, desc)
+
+    for name, filename in GUARD_FILES.items():
+        path = SKILLS_DIR / name / filename
+        body = path.read_text(encoding="utf-8") if path.is_file() else ""
+        record(f"{name}: {filename} stops a run whose prompt did not name it "
+               f"({GUARD})",
+               GUARD in body and f"/elephant-mem:{name}" in body, str(path))
 
     for name, (_, desc) in skills.items():
         record(f"{name}: description is present and fits 1024 characters "

@@ -63,6 +63,7 @@ has no staleness threshold, it only orders, so nothing here needs the calendar.
 """
 import datetime
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -1294,7 +1295,8 @@ def test_skill_shape():
            "on, since a scheduled task reaches it through the Skill tool, with "
            "the description restricting it to a prompt that names it",
            "name: close-loops" in skill
-           and "disable-model-invocation: true" not in skill
+           and not re.search(r"^disable-model-invocation[ \t]*:[ \t]*[\"']?true",
+                             skill, re.M | re.I)
            and "Use ONLY when the prompt names it" in skill, skill[:200])
     record("SKILL.md points at procedure.md and at the shared contract",
            "procedure.md" in skill and "_shared/core.md" in skill)
