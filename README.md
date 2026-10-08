@@ -5,7 +5,7 @@
 *an elephant never forgets*
 
 ![license](https://img.shields.io/badge/license-MIT-black?style=flat-square)
-![elephant-mem](https://img.shields.io/badge/elephant--mem-v1.0.0--rc.1-black?style=flat-square)
+![elephant-mem](https://img.shields.io/badge/elephant--mem-v1.0.0--rc.2-black?style=flat-square)
 ![elephant-wiki](https://img.shields.io/badge/elephant--wiki-v0.1.0--beta.4-black?style=flat-square)
 ![claude code](https://img.shields.io/badge/claude--code-plugin-black?style=flat-square)
 ![ci](https://img.shields.io/github/actions/workflow/status/rafapg/elephant-mem/ci.yml?branch=main&style=flat-square&label=ci)
@@ -108,8 +108,8 @@ states what it is about to file and waits for you to accept. Invoking it by name
 skips that confirmation. A source merely appearing in the conversation — a
 pasted stack trace, a page opened while debugging — is never a trigger.
 
-**Explicit** — deliberate operations you invoke by name (they have side effects
-or run unattended):
+**Explicit** — deliberate operations you invoke by name or from a scheduled
+task (they have side effects or run unattended):
 
 | mode | what it does | invocation |
 |---|---|---|
@@ -123,6 +123,13 @@ or run unattended):
 | `review` | clear the low-confidence needs-review queue | `/elephant-mem:review` |
 | `expand` | propose derived facts, relations, and promotions | `/elephant-mem:expand` |
 | `update` | check for a newer release and re-sync bundle scripts/templates | `/elephant-mem:update` |
+
+The four routines meant for a schedule (`catch-up`, `push-start-day`,
+`close-loops`, `decay`) are technically model-invocable. A scheduled task hands
+its prompt to Claude wrapped in a preamble, so it reaches the mode through the
+Skill tool, and that tool refuses a skill that blocks model invocation. Their
+descriptions keep them explicit instead: Claude runs them only when the prompt
+names them, and never for "catch me up" or "what's still open".
 
 ## integrations
 

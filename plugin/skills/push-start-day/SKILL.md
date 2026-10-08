@@ -1,12 +1,13 @@
 ---
 name: push-start-day
-disable-model-invocation: true
 description: >
   Autonomous variant of start-day that DELIVERS the morning orientation via
   the configured transport (Slack self-DM or SMTP email) instead of printing
   it in the conversation. Runs unattended, fired by a scheduled task.
-  Read-only on the bundle (writes nothing, no commit). Invoke only explicitly
-  or via the scheduled task (elephant-mem:push-start-day).
+  Read-only on the bundle (writes nothing, no commit), but sends one outbound
+  message. Use ONLY when the prompt names it (/elephant-mem:push-start-day),
+  typed by the user or carried by a scheduled task. Never on a guess: "what's
+  on today" or "start my day" is start-day, which prints and sends nothing.
 ---
 
 # elephant-mem:push-start-day

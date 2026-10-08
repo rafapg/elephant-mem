@@ -1,19 +1,15 @@
 ---
 name: decay
-disable-model-invocation: true
 description: >
-  Automatic expiry of open loops: expire a `status: open` loop into
-  `status: expired` once it has gone quiet (no `updated`/`opened`/`created`
-  activity, and no citation recorded in `state/recall.json`) for
-  elephant.json -> decay.loop_expiry_days days or more (default 30), or at
-  once when it names the bundle owner in none of `owner`, `owed_to`,
-  `entities`, a third-party commitment outside the lane's scope. Every expiry
-  writes a `**Resolution:**` paragraph saying which. Silence alone suffices:
-  it does not wait for `close-loops`. Re-mention resets the clock via
-  `updated`, written by every ingest path and by this mode's own review-gate
-  snooze. A deliberate operation with side effects (edits loop files,
-  rebuilds, validates, commits). Invoke only when the user explicitly asks
-  (elephant-mem:decay), or unattended with --yes from a schedule.
+  Automatic expiry of open loops: a `status: open` loop becomes
+  `status: expired` once it has gone quiet (no activity and no recorded
+  citation) for decay.loop_expiry_days days (default 30), or at once when it
+  names the bundle owner nowhere, a third-party commitment outside the lane.
+  Each expiry writes a `**Resolution:**` saying which. Side effects: edits loop
+  files, rebuilds, validates, commits. Use ONLY when the prompt names it
+  (/elephant-mem:decay), typed by the user or carried by a scheduled task
+  (with --yes). Never on a guess: "clean up my loops" or "too many open items"
+  is a question to answer, not an expiry to run.
 ---
 
 # elephant-mem:decay

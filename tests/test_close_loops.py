@@ -1290,10 +1290,12 @@ def test_skill_shape():
     procedure = read_skill("procedure.md")
     record("plugin/skills/close-loops/ ships a SKILL.md and a procedure.md",
            bool(skill) and bool(procedure), str(SKILL_DIR))
-    record("SKILL.md declares `name: close-loops` and blocks model invocation, "
-           "so the routine only ever starts from an explicit call or a schedule",
+    record("SKILL.md declares `name: close-loops` and leaves model invocation "
+           "on, since a scheduled task reaches it through the Skill tool, with "
+           "the description restricting it to a prompt that names it",
            "name: close-loops" in skill
-           and "disable-model-invocation: true" in skill, skill[:200])
+           and "disable-model-invocation: true" not in skill
+           and "Use ONLY when the prompt names it" in skill, skill[:200])
     record("SKILL.md points at procedure.md and at the shared contract",
            "procedure.md" in skill and "_shared/core.md" in skill)
     low = skill.lower()

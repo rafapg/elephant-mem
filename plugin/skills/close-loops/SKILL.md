@@ -1,17 +1,14 @@
 ---
 name: close-loops
-disable-model-invocation: true
 description: >
   Closes open loops by evidence: each run examines a bounded, ranked slice of
-  `knowledge/tracking/loops/` and, where the evidence shows the commitment was
-  delivered, writes `status: done`, `closed`, `closed_by` and a
-  `**Resolution:**` paragraph saying why, or, where it shows the premise is
-  gone, `status: dropped` with the same fields. Every loop it looks at is
-  recorded in `state/closure-sweep.json`, closed or not; that record is this
-  routine's own queue control. A deliberate operation with side effects (edits
-  loop files, rebuilds, validates, commits). Invoke only when the user
-  explicitly asks (elephant-mem:close-loops), or unattended from a daily
-  schedule.
+  `knowledge/tracking/loops/` and marks a loop `done` when the evidence shows
+  it was delivered, or `dropped` when its premise is gone, with a
+  `**Resolution:**` saying why. Side effects: edits loop files, rebuilds,
+  validates, commits. Use ONLY when the prompt names it
+  (/elephant-mem:close-loops), typed by the user or carried by a daily
+  scheduled task. Never on a guess: "what's still open", "is X done" or "my
+  pending items" are read questions for query or start-day, not this sweep.
 ---
 
 # elephant-mem:close-loops
