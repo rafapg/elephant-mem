@@ -94,9 +94,11 @@ runner.
   it as a slash command: the run reaches the skill through the Skill tool.
   Since Claude Code 2.1.293 the Skill tool refuses any skill carrying
   `disable-model-invocation: true`, so `catch-up`, `push-start-day`,
-  `close-loops` and `decay` no longer carry it. The guard against Claude
-  reaching for them unasked lives in their `description` instead, which names
-  the phrasings that are **not** a trigger. Don't add the flag back.
+  `close-loops` and `decay` no longer carry it. Two guards replace it against
+  Claude reaching for them unasked: the `description`, which names the
+  phrasings that are **not** a trigger, and a **Named, or stop.** step at the
+  top of each procedure, which ends a run whose prompt does not name the
+  routine before anything is written or sent. Don't add the flag back.
 - Configure the task with a permissive permission mode and **worktree OFF** (it
   commits in place), then do a "Run once" after creating it to pre-approve the
   MCP / Bash / Edit prompts so unattended runs don't stall.

@@ -18,12 +18,14 @@ What is checked:
   2. The four known scheduled routines are among those the derivation found, so
      rewording a description cannot quietly drop one out of check 1.
   3. Each of the four, now visible to the model, says in its description that
-     it runs only when named and lists phrasings that are not a trigger: that
-     text is the only guard left against Claude reaching for a writer unasked.
-  4. The three that write or send (`catch-up`, `close-loops`,
-     `push-start-day`) also stop in their procedure when the prompt did not name
-     them, so a description that misfires still changes nothing. `decay` needs
-     no such step: without `--yes` it already stops at its review gate.
+     it runs only when named and lists phrasings that are not a trigger. That
+     is the first guard against Claude reaching for a writer unasked.
+  4. Each of the four also opens its procedure with a **Named, or stop.** step,
+     the second guard: a run whose prompt does not name the routine ends before
+     any side effect, so a description that misfires still changes nothing. The
+     step must name its own routine and come before the first step that acts.
+     `decay` needs it as much as the others: its review gate is skipped for any
+     run from a scheduled task, and an hourly `catch-up` is one.
   5. Every description fits the 1024-character limit on skill descriptions.
 
 Pure stdlib, Python 3.10+. Reads the shipped SKILL.md and procedure.md files;
@@ -52,8 +54,12 @@ GUARD = "**Named, or stop.**"
 GUARD_FILES = {
     "catch-up": "procedure.md",
     "close-loops": "procedure.md",
+    "decay": "procedure.md",
     "push-start-day": "SKILL.md",
 }
+# The first heading or paragraph of each file that starts acting. The guard
+# must come before it: at the end of the file it would run too late.
+FIRST_ACT = re.compile(r"^(?:## Preflight|## Destination|\*\*Preflight)", re.M)
 
 checks: list[tuple[str, bool]] = []
 
@@ -124,9 +130,15 @@ def main() -> int:
     for name, filename in GUARD_FILES.items():
         path = SKILLS_DIR / name / filename
         body = path.read_text(encoding="utf-8") if path.is_file() else ""
+        # The name is looked for inside the step's own paragraph: both
+        # close-loops and push-start-day cite their name elsewhere in the file,
+        # so a whole-file search passed a step that named another routine.
+        guard = re.search(re.escape(GUARD) + r"(.*?)(?:\n\n|\Z)", body, re.S)
+        first = FIRST_ACT.search(body)
         record(f"{name}: {filename} stops a run whose prompt did not name it "
-               f"({GUARD})",
-               GUARD in body and f"/elephant-mem:{name}" in body, str(path))
+               f"({GUARD}), before its first step",
+               bool(guard) and f"/elephant-mem:{name}" in guard.group(1)
+               and (first is None or guard.start() < first.start()), str(path))
 
     for name, (_, desc) in skills.items():
         record(f"{name}: description is present and fits 1024 characters "

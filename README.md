@@ -127,9 +127,11 @@ task (they have side effects or run unattended):
 The four routines meant for a schedule (`catch-up`, `push-start-day`,
 `close-loops`, `decay`) are technically model-invocable. A scheduled task hands
 its prompt to Claude wrapped in a preamble, so it reaches the mode through the
-Skill tool, and that tool refuses a skill that blocks model invocation. Their
-descriptions keep them explicit instead: Claude runs them only when the prompt
-names them, and never for "catch me up" or "what's still open".
+Skill tool, and that tool refuses a skill that blocks model invocation. Two
+things keep them explicit instead: their descriptions tell Claude to run them
+only when the prompt names them, and never for "catch me up" or "what's still
+open"; and each one stops before doing anything when the prompt that started
+the turn does not name it.
 
 ## integrations
 

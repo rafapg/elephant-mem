@@ -33,26 +33,29 @@ ordinary run.
   trigger ("catch me up", "what's on today", "what's still open", "clean up my
   loops"). `ingest` got two guards in that release, the description and a
   confirmation step in its procedure, and the first cut of this one shipped only
-  the first. The three routines that write or send (`catch-up`, `close-loops`,
-  `push-start-day`) now also open with **Named, or stop.**: a run whose prompt
-  does not name `/elephant-mem:<mode>`, typed or inside a `<scheduled-task>`
-  block, says in one line what it would do and stops, so a misfiring
-  description still changes nothing. `decay` needs no such step, since without
-  `--yes` it already stops at its review gate. The descriptions of `close-loops` and `decay` were also cut down, from
-  806 and 965 characters to 558 and 626: they now sit in the skill listing of
-  every session, and `decay` was 59 characters short of the 1024 limit.
+  the first. All four routines now also open with **Named, or stop.**: a run
+  whose prompt does not name `/elephant-mem:<mode>`, typed or inside a
+  `<scheduled-task>` block, says in one line what it would do and stops, so a
+  misfiring description still changes nothing. Being inside a scheduled task is
+  not enough, and `decay` shows why: its review gate is skipped for any run from
+  a scheduled task, so a `decay` picked up inside the hourly `catch-up` would
+  have expired every candidate unreviewed. The descriptions of `close-loops` and
+  `decay` were also cut down, from 806 and 965 characters to 558 and 626: they
+  now sit in the skill listing of every session, and `decay` was 59 characters
+  short of the 1024 limit.
   `init`, `update`, `expand`, `ingest-audio`, `maintain` and `review` keep the
   flag; none of them is meant to run from a schedule.
 
 ### Added
 
-- **`tests/test_skill_invocation.py` (33 checks).** Any skill whose description says it
+- **`tests/test_skill_invocation.py` (34 checks).** Any skill whose description says it
   runs from a schedule must not carry `disable-model-invocation: true`. The set
   is derived from the descriptions, so a fifth scheduled routine is covered the
   day it ships, and a separate check pins the four known ones so rewording a
   description cannot quietly drop one out. It also checks that each of the four
-  restricts itself to a named prompt, that the three with a side effect carry
-  the **Named, or stop.** step, and that every skill description fits 1024
+  restricts itself to a named prompt, that each carries the **Named, or stop.**
+  step naming its own routine before its first step that acts, and that every
+  skill description fits 1024
   characters. The flag is matched in any spelling a YAML parser reads as set
   (`True`, quoted, extra spaces, a trailing comment) and the description in any
   block-scalar form (`>-` included); a first draft matched only the literal
