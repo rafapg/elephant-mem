@@ -4,7 +4,7 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0-rc.2] - 2026-10-08
+## [1.0.0-rc.2] - 2026-10-09
 
 The scheduled routines stopped running on Claude Code 2.1.293, and nothing in
 the plugin had changed. A scheduled task hands its prompt over wrapped in a
@@ -13,13 +13,13 @@ of the message and the harness never expanded it as a slash command: every
 scheduled run has always reached its skill through the Skill tool. Up to 2.1.289
 that tool loaded a skill marked `disable-model-invocation: true` anyway. From
 2.1.293 it refuses, and tells the model not to reproduce the workflow by other
-means. On the owner's bundle the last run that worked was on 2.1.289
-(2026-10-07 16:01 UTC); the next five hourly `catch-up` runs, all on 2.1.293,
-ingested nothing and logged the refusal instead. `push-start-day` failed worse:
-refused, the run fell back to `start-day`, which is model-invocable, delegated it
-to `elephant-worker` and printed a briefing with no agenda (that agent carries
-no connectors) and delivered nothing. In the transcripts it looked like an
-ordinary run.
+means. On the owner's bundle the last run that worked was on 2.1.289 (2026-10-07
+16:01 UTC); the next five hourly `catch-up` runs, all on 2.1.293, ingested
+nothing and logged the refusal instead. `push-start-day` failed worse: refused,
+the run fell back to `start-day`, which is model-invocable, delegated it to
+`elephant-worker` and printed a briefing with no agenda (that agent carries no
+connectors) and delivered nothing. In the transcripts it looked like an ordinary
+run.
 
 ### Fixed
 
@@ -48,20 +48,19 @@ ordinary run.
 
 ### Added
 
-- **`tests/test_skill_invocation.py` (34 checks).** Any skill whose description says it
-  runs from a schedule must not carry `disable-model-invocation: true`. The set
-  is derived from the descriptions, so a fifth scheduled routine is covered the
-  day it ships, and a separate check pins the four known ones so rewording a
-  description cannot quietly drop one out. It also checks that each of the four
-  restricts itself to a named prompt, that each carries the **Named, or stop.**
-  step naming its own routine before its first step that acts, and that every
-  skill description fits 1024
-  characters. The flag is matched in any spelling a YAML parser reads as set
-  (`True`, quoted, extra spaces, a trailing comment) and the description in any
-  block-scalar form (`>-` included); a first draft matched only the literal
-  `disable-model-invocation: true` and `description: >`, and review found three
-  mutations that kept it green. All of them now fail it. It has its own step in
-  CI.
+- **`tests/test_skill_invocation.py` (34 checks).** Any skill whose description
+  says it runs from a schedule must not carry `disable-model-invocation: true`.
+  The set is derived from the descriptions, so a fifth scheduled routine is
+  covered the day it ships, and a separate check pins the four known ones so
+  rewording a description cannot quietly drop one out. It also checks that each
+  of the four restricts itself to a named prompt, that each carries the **Named,
+  or stop.** step naming its own routine before its first step that acts, and
+  that every skill description fits 1024 characters. The flag is matched in any
+  spelling a YAML parser reads as set (`True`, quoted, extra spaces, a trailing
+  comment) and the description in any block-scalar form (`>-` included); a first
+  draft matched only the literal `disable-model-invocation: true` and
+  `description: >`, and review found three mutations that kept it green. All of
+  them now fail it. It has its own step in CI.
 
 ### Changed
 
