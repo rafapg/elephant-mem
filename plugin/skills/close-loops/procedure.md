@@ -18,6 +18,16 @@ evidence convinced it, so a wrong verdict is legible where it was written rather
 than only in a diff. Interactive and scheduled runs follow exactly the same
 steps.
 
+**Named, or stop.** This routine is model-invocable only so that a scheduled
+task can reach it (`../catch-up/SKILL.md` → *Scheduling*). Proceed when the
+prompt that started this turn names `/elephant-mem:close-loops`, typed by the
+user or inside a `<scheduled-task>` block. Otherwise Claude reached for it
+unasked: say in one line what it would do and stop, without editing a loop,
+writing the sweep record, or committing. Being inside a scheduled task is not
+enough: an hourly `catch-up` run is one, and it names only `catch-up`. The
+description is the first guard; this is the second, the same pair `ingest` has
+had since 0.1.0-beta.8 (its step 0).
+
 ## Preflight
 
 Run the check described in `../_shared/core.md` → **Preflight** before step 1.

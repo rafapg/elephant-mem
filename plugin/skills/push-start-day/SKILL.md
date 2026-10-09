@@ -1,12 +1,13 @@
 ---
 name: push-start-day
-disable-model-invocation: true
 description: >
   Autonomous variant of start-day that DELIVERS the morning orientation via
   the configured transport (Slack self-DM or SMTP email) instead of printing
   it in the conversation. Runs unattended, fired by a scheduled task.
-  Read-only on the bundle (writes nothing, no commit). Invoke only explicitly
-  or via the scheduled task (elephant-mem:push-start-day).
+  Read-only on the bundle (writes nothing, no commit), but sends one outbound
+  message. Use ONLY when the prompt names it (/elephant-mem:push-start-day),
+  typed by the user or carried by a scheduled task. Never on a guess: "what's
+  on today" or "start my day" is start-day, which prints and sends nothing.
 ---
 
 # elephant-mem:push-start-day
@@ -19,6 +20,15 @@ whichever transport `elephant.json` configures.
 `../_shared/core.md`. Runs **unattended** — no conversational recap, no review
 gate, **writes nothing to the bundle** (no facts, no commit). Its only side
 effect is one outbound message (Slack post or email send).
+
+**Named, or stop.** This routine is model-invocable only so that a scheduled
+task can reach it (`../catch-up/SKILL.md` → *Scheduling*). Proceed when the
+prompt that started this turn names `/elephant-mem:push-start-day`, typed by the
+user or inside a `<scheduled-task>` block. Otherwise Claude reached for it
+unasked: say in one line what it would do and stop, without sending anything.
+Being inside a scheduled task is not enough: an hourly `catch-up` run is one,
+and it names only `catch-up`. The description is the first guard; this is the
+second, the same pair `ingest` has had since 0.1.0-beta.8 (its step 0).
 
 ## Destination and preconditions
 

@@ -42,3 +42,4 @@ jobs:
       - run: python tests/test_update.py
       - run: python tests/test_snapshot_drift.py
       - run: python tests/test_entity_drift.py
+      - run: python tests/test_skill_invocation.py

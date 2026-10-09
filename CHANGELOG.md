@@ -4,6 +4,74 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.2] - 2026-10-09
+
+The scheduled routines stopped running on Claude Code 2.1.293, and nothing in
+the plugin had changed. A scheduled task hands its prompt over wrapped in a
+`<scheduled-task>` preamble, so `/elephant-mem:catch-up` is not the first token
+of the message and the harness never expanded it as a slash command: every
+scheduled run has always reached its skill through the Skill tool. Up to 2.1.289
+that tool loaded a skill marked `disable-model-invocation: true` anyway. From
+2.1.293 it refuses, and tells the model not to reproduce the workflow by other
+means. On the owner's bundle the last run that worked was on 2.1.289 (2026-10-07
+16:01 UTC); the next five hourly `catch-up` runs, all on 2.1.293, ingested
+nothing and logged the refusal instead. `push-start-day` failed worse: refused,
+the run fell back to `start-day`, which is model-invocable, delegated it to
+`elephant-worker` and printed a briefing with no agenda (that agent carries no
+connectors) and delivered nothing. In the transcripts it looked like an ordinary
+run.
+
+### Fixed
+
+- **The four scheduled routines are model-invocable again**
+  (`skills/catch-up`, `skills/push-start-day`, `skills/close-loops`,
+  `skills/decay`). The flag is gone, for the same reason `ingest` lost it in
+  0.1.0-beta.8: what it protected against was Claude reaching for a writer
+  unasked, and that is a matter for the description, not the frontmatter. Each
+  description now says it runs only when the prompt names it, typed by the user
+  or carried by a scheduled task, and names the phrasings that are **not** a
+  trigger ("catch me up", "what's on today", "what's still open", "clean up my
+  loops"). `ingest` got two guards in that release, the description and a
+  confirmation step in its procedure, and the first cut of this one shipped only
+  the first. All four routines now also open with **Named, or stop.**: a run
+  whose prompt does not name `/elephant-mem:<mode>`, typed or inside a
+  `<scheduled-task>` block, says in one line what it would do and stops, so a
+  misfiring description still changes nothing. Being inside a scheduled task is
+  not enough, and `decay` shows why: its review gate is skipped for any run from
+  a scheduled task, so a `decay` picked up inside the hourly `catch-up` would
+  have expired every candidate unreviewed. The descriptions of `close-loops` and
+  `decay` were also cut down, from 806 and 965 characters to 558 and 626: they
+  now sit in the skill listing of every session, and `decay` was 59 characters
+  short of the 1024 limit.
+  `init`, `update`, `expand`, `ingest-audio`, `maintain` and `review` keep the
+  flag; none of them is meant to run from a schedule.
+
+### Added
+
+- **`tests/test_skill_invocation.py` (34 checks).** Any skill whose description
+  says it runs from a schedule must not carry `disable-model-invocation: true`.
+  The set is derived from the descriptions, so a fifth scheduled routine is
+  covered the day it ships, and a separate check pins the four known ones so
+  rewording a description cannot quietly drop one out. It also checks that each
+  of the four restricts itself to a named prompt, that each carries the **Named,
+  or stop.** step naming its own routine before its first step that acts, and
+  that every skill description fits 1024 characters. The flag is matched in any
+  spelling a YAML parser reads as set (`True`, quoted, extra spaces, a trailing
+  comment) and the description in any block-scalar form (`>-` included); a first
+  draft matched only the literal `disable-model-invocation: true` and
+  `description: >`, and review found three mutations that kept it green. All of
+  them now fail it. It has its own step in CI.
+
+### Changed
+
+- **`README.md`** explains, under the explicit modes, why the four scheduled
+  routines are technically model-invocable and what keeps them explicit.
+  `skills/catch-up/SKILL.md` → *Scheduling* records the same mechanism next to
+  the setup instructions, so the flag is not added back by someone tidying up.
+- `tests/test_close_loops.py` asserted the flag was present on `close-loops`; it
+  now asserts the flag is absent, in any spelling, and that the description
+  restricts invocation.
+
 ## [1.0.0-rc.1] - 2026-09-28
 
 The open-loop lane filed commitments that were not the owner's, then waited on a

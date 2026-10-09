@@ -8,6 +8,18 @@ entities, or confidence (that stays `maintain`'s job). The deterministic half
 lives in `scripts/decay-loops.py`; this procedure is the review/commit wrapper
 around it.
 
+**Named, or stop.** This routine is model-invocable only so that a scheduled
+task can reach it (`../catch-up/SKILL.md` → *Scheduling*). Proceed when the
+prompt that started this turn names `/elephant-mem:decay`, typed by the user or
+inside a `<scheduled-task>` block. Otherwise Claude reached for it unasked: say
+in one line what it would do and stop, without rolling the recall record,
+expiring a loop, or committing. Being inside a scheduled task is not enough: an
+hourly `catch-up` run is one, and it names only `catch-up`. That matters more
+here than anywhere: step 2 skips the review gate for any run from a scheduled
+task, so a `decay` picked up inside `catch-up` would expire every candidate
+unreviewed. The description is the first guard; this is the second, the same
+pair `ingest` has had since 0.1.0-beta.8 (its step 0).
+
 ## Preflight
 
 Run the check described in `../_shared/core.md` → **Preflight** before step 1.

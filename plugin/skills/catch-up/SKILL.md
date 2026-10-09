@@ -1,12 +1,13 @@
 ---
 name: catch-up
-disable-model-invocation: true
 description: >
   The scheduled elephant-mem routine — autonomous forward ingestion of
   everything new since the last run, driven by timestamp cursors over the
   sources configured in elephant.json. Runs unattended (no recap, no review
-  gate) and writes/commits locally, inside a written autonomy envelope. Invoke
-  only explicitly or via a scheduled task (elephant-mem:catch-up).
+  gate) and writes/commits locally, inside a written autonomy envelope. Use
+  ONLY when the prompt names it (/elephant-mem:catch-up), typed by the user or
+  carried by a scheduled task. Never on a guess: "catch me up", "what's new",
+  "what happened today" are briefing or start-day questions, not this routine.
 ---
 
 # elephant-mem:catch-up
@@ -87,6 +88,17 @@ runner.
   no run. That is fine — every source cursor is a timestamp, so whenever the
   routine next runs it fast-forwards the entire offline gap in one pass. The two
   are orthogonal; don't raise the cadence to "cover" being offline (it can't).
+- **Why the four scheduled routines are model-invocable.** A scheduled task
+  wraps its prompt in a `<scheduled-task>` preamble, so `/elephant-mem:catch-up`
+  is no longer the first token of the message and the harness does not expand
+  it as a slash command: the run reaches the skill through the Skill tool.
+  Since Claude Code 2.1.293 the Skill tool refuses any skill carrying
+  `disable-model-invocation: true`, so `catch-up`, `push-start-day`,
+  `close-loops` and `decay` no longer carry it. Two guards replace it against
+  Claude reaching for them unasked: the `description`, which names the
+  phrasings that are **not** a trigger, and a **Named, or stop.** step at the
+  top of each procedure, which ends a run whose prompt does not name the
+  routine before anything is written or sent. Don't add the flag back.
 - Configure the task with a permissive permission mode and **worktree OFF** (it
   commits in place), then do a "Run once" after creating it to pre-approve the
   MCP / Bash / Edit prompts so unattended runs don't stall.
