@@ -180,6 +180,19 @@ def _run(root):
     record("the CHANGELOG has a section for plugin.json's version",
            bool(version) and f"## [{version}]" in cl, version)
 
+    # tests/test_skill_invocation.py checks the 1024-character limit on
+    # plugin/skills/ only; its own parser reads the trunk's, so the two agree.
+    spec = importlib.util.spec_from_file_location(
+        "skill_invocation", REPO_ROOT / "tests" / "test_skill_invocation.py")
+    invocation = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(invocation)
+    skill_files = sorted((PLUGIN / "skills").glob("*/SKILL.md"))
+    record("the plugin ships its skills", bool(skill_files), PLUGIN / "skills")
+    for path in skill_files:
+        desc = invocation.description(invocation.frontmatter(path))
+        record(f"{path.parent.name}: description is present and fits 1024 characters ({len(desc)})",
+               0 < len(desc) <= 1024, desc[:80])
+
     # ── bundle resolution ─────────────────────────────────────────────────────
     home = root / "home"
     home.mkdir()
