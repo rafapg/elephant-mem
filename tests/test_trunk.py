@@ -1115,6 +1115,7 @@ def _past_sessions(root, home):
         "a senha do banco é Xy9kq2pz77": "Xy9kq2pz77",
         "the password for prod is hunter2pass": "hunter2pass",
         "post to https://hooks.slack.com/services/T0000AAAA/B0000BBBB/" + "X" * 24: "T0000AAAA",
+        "post to https://example.com/webhook/abc123def456ghi now": "abc123def456ghi",
     }
     missed = [text for text, value in shapes.items() if value in redact(text)]
     record("a quoted key, a compound key, a bare slashed token, senha, a password in prose "
@@ -1126,8 +1127,14 @@ def _past_sessions(root, home):
            {t: redact(t) for t in whole} == whole, {t: redact(t) for t in whole})
     kept = ["read the open PRs before proposing, always", "/bb:spec then dispatch",
             "the password policy is strict, rotate every 90 days",
-            "open /Users/someone/development/projects/elephant-mem/x.py"]
-    record("ordinary words, a skill command and a path survive the redaction",
+            "open /Users/someone/development/projects/elephant-mem/x.py",
+            "see https://github.com/Inspira-Legal/stillare/pull/1234 please",
+            "open docs/2026/Q3/RoadmapPlanningNotesFinal",
+            "the password reset flow goes through /bb:spec and auth0",
+            "read https://docs.github.com/en/webhooks/about-webhooks first",
+            "set max_tokens=4096"]
+    record("ordinary words, a skill command, a path, a mixed-case link or path, a page "
+           "about webhooks and a token count survive the redaction",
            [redact(t) for t in kept] == kept, [redact(t) for t in kept])
     r = run(TRUNK, "sessions", "extract", rich, "--max-tokens", "50", env=env)
     record("--max-tokens cuts a session and says how much was left",

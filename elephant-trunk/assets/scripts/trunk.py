@@ -1378,8 +1378,10 @@ _SECRETS = [
     # Webhook URLs: the URL itself is the credential.
     re.compile(r"(?i)\bhttps?://hooks\.slack\.com/\S+"),
     re.compile(r"(?i)\bhttps?://(?:[\w-]+\.)*discord(?:app)?\.com/api/webhooks/\S+"),
-    re.compile(r"(?i)\bhttps?://\S*webhook\S*"),
 ]
+# Any other webhook URL is one only when it carries a token: a page about
+# webhooks is a link the owner shared, not a credential.
+_WEBHOOK = re.compile(r"(?i)\bhttps?://\S*webhook\S*")
 # A credential named by its key, in code, config or JSON: `password = x`,
 # `"password": "x"`, `aws_secret_access_key=x`, `senha: x`. The key and the
 # separator are kept, the value is left out.
@@ -1392,6 +1394,11 @@ _KEYED_SECRET = re.compile(
 # mixes letters with digits or symbols is taken for the password.
 _PROSE_SECRET = re.compile(r"(?i)\b(?:password|passwd|passphrase|senha)\b([^\n]{0,60})")
 _LONG_TOKEN = re.compile(r"[A-Za-z0-9_+/=-]{32,}")
+# Inside one word of a slashed string, the marks of random text no name
+# carries: a digit between letters (K7M), letters between digits (3fa9), one
+# lowercase letter between capitals (PxR), a word opening lowercase then
+# capital (wJalr). A camel-cased name or a numbered folder has none of them.
+_NOISE = re.compile(r"[A-Za-z]\d+[A-Za-z]|\d[A-Za-z]+\d|[A-Z][a-z][A-Z]|^[a-z][A-Z]")
 _CUT = "\ue000"               # where a secret was, until _redact writes the marker
 # Text Claude Code itself puts in a user turn on older transcripts, which carry
 # no `origin` to tell it from the owner's: a peer session's message, a resumed
@@ -1426,12 +1433,23 @@ def _redact(text):
     text = text.replace(_CUT, "")
     for rx in _SECRETS:
         text = rx.sub(_CUT, text)
-    text = _KEYED_SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}{_CUT}", text)
+    text = _WEBHOOK.sub(lambda m: _CUT if any(
+        len(p) >= 12 and re.search(r"\d", p) and re.search(r"[A-Za-z]", p)
+        for p in re.split(r"[/?&=#@]", m.group(0))) else m.group(0), text)
+
+    def keyed(m):
+        # `max_tokens = 4096` counts tokens, it holds none.
+        if re.search(r"(?i)tokens", m.group(1)):
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2)}{_CUT}"
+    text = _KEYED_SECRET.sub(keyed, text)
 
     def prose(m):
         words = re.split(r"(\s+)", m.group(1))
         for i, w in enumerate(words[:13]):
             core = w.strip(".,;:!?()[]{}<>\"'`")
+            if core.startswith("/") or "://" in core:
+                continue  # a command, a path or a link, never a password
             if len(core) >= 6 and re.search(r"[^\W\d_]", core) and re.search(r"[\d\W_]", core) \
                     and _CUT not in w:
                 words[i] = w.replace(core, _CUT)
@@ -1442,13 +1460,16 @@ def _redact(text):
         s = m.group(0)
         if not (re.search(r"\d", s) and re.search(r"[A-Za-z]", s)):
             return s
-        if "/" in s and s[0] == "/":
-            # A path: only a segment shaped like a token on its own is one.
-            mixed = any(len(seg) >= 16 and re.search(r"\d", seg) and re.search(r"[A-Za-z]", seg)
-                        for seg in s.split("/"))
-            return _CUT if mixed else s
-        if "/" in s and not (re.search(r"[A-Z]", s) and re.search(r"[a-z]", s)):
-            return s
+        if "/" in s:
+            # A path, a URL's path or a slashed token. A token when one of
+            # its segments is shaped like a token on its own, or when two of
+            # its words read as random text: a repo path or a PR link, mixed
+            # case or not, reads as names.
+            if any(len(seg) >= 16 and re.search(r"\d", seg) and re.search(r"[A-Za-z]", seg)
+                   for seg in s.split("/")):
+                return _CUT
+            noisy = sum(1 for w in re.split(r"[/_.+=-]", s) if _NOISE.search(w))
+            return _CUT if noisy >= 2 else s
         return _CUT
     return _LONG_TOKEN.sub(long_token, text).replace(_CUT, "[secret left out]")
 
