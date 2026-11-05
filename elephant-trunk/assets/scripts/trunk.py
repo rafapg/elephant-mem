@@ -1683,16 +1683,20 @@ _WEBHOOK = re.compile(r"(?i)\bhttps?://\S*webhook\S*")
 # A credential named by its key, in code, config or JSON: `password = x`,
 # `"password": "x"`, `aws_secret_access_key=x`, `senha: x`, `DB_PASS=x`,
 # `MYSQL_PWD=x`, `STRIPE_KEY=x`. The key and the separator are kept, the value
-# is left out. `pass` and `auth` are keys only as words of their own, at the
-# start of the key or after an underscore (`DB_PASS`, `pass`, `auth_token`,
-# `Authorization`): the words that hold them (passo, passou, bypass, compass,
-# OAuth, author, authentication) are not keys. A bare `key` is not one, only a
-# `_key` suffix is, and not the key of a table or a map (`primary_key`).
-_CRED_WORDS = (r"pass(?:word|wd|phrase)s?(?![a-z])|(?<![a-z])pass(?![a-z])|pwd|secret|token|"
+# is left out. A key word ends where the key does or where a capital opens the
+# next word (`passwordConfirm`, `adminPasswordProd`, `BasicAuth`), never before
+# a lowercase letter: the words that go on past one (passo, passou, passwordless,
+# author, authentication) are not keys. Glued after a prefix (`PGPASS`, `dbpass`,
+# `authkey`) a key word still counts, except where the prefix makes another word
+# of it (bypass, compass, surpass, trespass, OAuth). A bare `key` is not one,
+# only a `_key` suffix is, and not the key of a table or a map (`primary_key`).
+_WORD_END = r"(?-i:(?![a-z]))"
+_CRED_WORDS = (rf"pass(?:word|wd|phrase|code|key)s?{_WORD_END}|"
+               rf"(?<!by)(?<!com)(?<!sur)(?<!tres)pass{_WORD_END}|pwd|secret|token|"
                r"api[_-]?key|access[_-]?key|private[_-]?key|"
                r"(?<!primary)(?<!foreign)(?<!unique)(?<!sort)(?<!partition)(?<!range)"
-               r"(?<!hash)(?<!shard)(?<!cache)(?<!lookup)(?<!join)(?<!group)(?<!row)_key(?![a-z])|"
-               r"credential|senha|chave|(?<![a-z])auth(?:orization)?(?![a-z])")
+               rf"(?<!shard)(?<!cache)(?<!lookup)(?<!join)(?<!group)(?<!row)_key{_WORD_END}|"
+               rf"credential|senha|chave|(?<!o)auth(?:orization|key)?{_WORD_END}")
 # An HTTP scheme before the value (`Authorization: Token x`) is part of it.
 _KEYED_SECRET = re.compile(
     rf"(?i)\b([A-Za-z_]*(?:{_CRED_WORDS})[A-Za-z_]*[\"']?)(\s*[:=]\s*)"
@@ -1701,7 +1705,7 @@ _KEYED_SECRET = re.compile(
 # staple`): with a password key and an unquoted value, the rest of the line is
 # the value. A quoted one is cut by _KEYED_SECRET, up to its closing quote.
 _KEYED_PASSWORD = re.compile(
-    r"(?i)\b([A-Za-z_]*(?:password|passwd|passphrase|senha)s?(?![a-z])[A-Za-z_]*[\"']?)"
+    rf"(?i)\b([A-Za-z_]*(?:password|passwd|passphrase|senha)s?{_WORD_END}[A-Za-z_]*[\"']?)"
     r"([ \t]*[:=][ \t]*)(?![\"'\s])([^\n]+)")
 # MySQL takes its password glued to `-p` (`mysql -u root -pHunter2`). Only
 # after mysql or mysqldump: `ssh -p2222` and `cp -pR` are no password.

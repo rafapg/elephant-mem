@@ -216,9 +216,12 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   none of the file; a program name carries much less than its arguments,
   though not nothing (`acme-bank-migrate.sh`). The redaction cuts a value keyed
   by a credential word (`token`, `secret`, `password`, `pwd`, `senha`, `chave`,
-  `pass` and `auth` only as words of their own, as in `DB_PASS`, `auth_token`
-  and `Authorization`, so "próximo passo:", `bypass:` and `OAuth:` keep their
-  text, and a `_key` suffix other than a table's, as `primary_key`) together
+  `pass`, `passcode`, `passkey` and `auth`, in a key of any case, camel-cased
+  or glued after a prefix, as in `DB_PASS`, `PGPASS`, `passwordConfirm`,
+  `BasicAuth` and `Authorization`, but never before a lowercase letter or
+  inside another word, so "próximo passo:", `passwordless:`, `bypass:` and
+  `OAuth:` keep their text, and a `_key` suffix other than a table's, as
+  `primary_key`) together
   with its HTTP scheme (`Authorization: Token x`), an unquoted password to the
   end of its line (`password: correct horse battery staple`), the value glued
   to a `mysql` or `mysqldump` `-p`, a secret named in prose ("the token is x",

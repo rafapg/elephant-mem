@@ -1590,15 +1590,23 @@ def _past_sessions(root, home):
     # Letters only, so no prose pass covers: each is cut as a key or not at all.
     keys = ["pass: qwertyuiop", "DB_PASS: qwertyuiop", "PGPASSWORD=qwertyuiop",
             "passwords = qwertyuiop", "AUTH: qwertyuiop", "x_auth=qwertyuiop",
-            "Authorization: qwertyuiop", "STRIPE_KEY=qwertyuiop"]
-    record("pass, auth and _key as words of a key are still cut",
-           [t for t in keys if "qwertyuiop" in redact(t)] == [], [redact(t) for t in keys])
+            "Authorization: qwertyuiop", "STRIPE_KEY=qwertyuiop",
+            # Camel-cased, or glued after a prefix: still a key word.
+            '{"passwordConfirm": "qwertyuiop"}', "const adminPasswordProd = 'qwertyuiop'",
+            "export PGPASS=qwertyuiop", "dbpass: qwertyuiop", "rootpass=qwertyuiop",
+            "DBPASS=qwertyuiop", "passcode: 482913", "passkey=qwertyuiop",
+            "authkey: qwertyuiop", "BasicAuth: qwertyuiop", "hash_key=qwertyuiop"]
+    record("pass, auth and _key as words of a key are still cut, camel-cased or glued "
+           "after a prefix",
+           [t for t in keys if "qwertyuiop" in redact(t) or "482913" in redact(t)] == [],
+           [redact(t) for t in keys])
     # A password of several words, unquoted, leaves nothing of itself; MySQL's
     # glued -p<value> is cut only after mysql or mysqldump.
     phrases = {"password: correct horse battery staple": "password: [secret left out]",
                "senha: cavalo correto bateria grampo": "senha: [secret left out]",
                "passphrase = correct horse battery staple\nnext line": "passphrase = [secret left out]\nnext line",
                "DB_PASSWORD: correct horse battery": "DB_PASSWORD: [secret left out]",
+               "passwordConfirm: correct horse battery": "passwordConfirm: [secret left out]",
                '{"password": "a b c", "user": "bob"}': '{"password": [secret left out], "user": "bob"}',
                "mysql -u root -pHunter2pass": "mysql -u root -p[secret left out]",
                "mysqldump -u root -p'my pass word' db": "mysqldump -u root -p[secret left out] db"}
@@ -1661,6 +1669,8 @@ def _past_sessions(root, home):
             "próximo passo: abrir o PR", "passou: 12 de 12", "bypass: use the flag",
             "compass: north", "OAuth: use the SSO", "authentication: SSO", "primary_key: id",
             "foreign_key: user_id", "passwordless: yes, through the magic link",
+            "passos: 1, 2, 3", "passei: no review", "compasso: 4/4", "Passo: rodar os testes",
+            "oauth2: google", "trespass: no", "surpass: the target",
             "ssh -p2222 host", "cp -pR a b", "mysql -u root -p mydb"]
     record("ordinary words, a skill command, a path, a mixed-case link or path, a numbered "
            "component, a page about webhooks, a token count, an author line and the words "
