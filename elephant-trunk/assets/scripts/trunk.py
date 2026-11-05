@@ -187,7 +187,9 @@ def announce_tag(cfg):
     """Say on stderr why the default tag is read, when it is."""
     if cfg["problem"]:
         note(f"{cfg['problem']}; reading the default tag")
-    if cfg["tag_source"] == "default":
+    elif cfg["tag_source"] == "default":
+        # Only when elephant.json sets no tag at all: after a problem it does
+        # set one, and "no trunk.tag" would contradict the line above.
         note(f'no trunk.tag in elephant.json, reading "{DEFAULT_TAG}"; {SET_TAG_HINT}')
 
 

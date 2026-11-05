@@ -289,6 +289,9 @@ def _run(root):
         record(f"{label} trunk.tag falls back to how-i-work and says why",
                r.returncode == 0 and cfg is not None and cfg["tag"] == "how-i-work"
                and cfg["problem"] and "trunk.tag" in r.stderr, r.stderr or r.stdout)
+        record(f"{label} trunk.tag is not also called absent",
+               "no trunk.tag in elephant.json" not in r.stderr and len(r.stderr.strip().splitlines()) == 1,
+               r.stderr)
 
     b = make_bundle(root, "trunk-not-object", {"trunk": "como-trabalhar"})
     r, cfg = config_json("--bundle", b, env=env_for(home))
