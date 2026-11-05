@@ -145,6 +145,8 @@ directory the run resolved:
   — a bundle that never built a wiki is not behind. One it does have and holds
   stale is drift a run fixes, but never a stop: the wiki renders the memory, it
   does not run it.
+- `elephant-trunk` is not in the table: its script runs from the plugin and is
+  never copied into the bundle, so there is no stale copy for a preflight to find.
 - `elephant-wiki` not being installed is not could-not-verify. With no plugin
   publishing them, wiki files in the bundle are files no plugin ships: ignored.
 - Files the bundle holds that **neither** plugin ships are never drift and are

@@ -308,6 +308,30 @@ the schema.
 - Subscribers register themselves (see e.g. `elephant-wiki`'s `--register`);
   you rarely hand-edit this block.
 
+### `trunk`
+
+**`trunk`** (optional) — settings for the `elephant-trunk` plugin. It is the first
+extension namespace in `elephant.json` besides `hooks`; the plugin reads only its
+own key.
+
+```json
+"trunk": { "tag": "como-trabalhar" }
+```
+
+- `trunk.tag` (default `"how-i-work"`) — the how-I-work tag the trunk reads. The
+  trunk looks for active facts carrying this tag plus one of the fixed area tags
+  `trunk-study`, `trunk-dispatch` or `trunk-recipe`, straight from
+  `knowledge/manifest.jsonl`. Set it when your facts already carry another tag
+  (`como-trabalhar`, say), so they are read as they are. A missing key reads
+  `how-i-work` and the trunk says how to set another; a value that is not a
+  non-empty string falls back to the same default and says why. `trunk.py config`
+  prints what it resolved.
+- Like every key here, `update` never re-syncs it. The plugin's script runs from
+  the plugin and is never copied into the bundle.
+- The raw run records live in `<bundle>/state/trunk/`, which the plugin keeps
+  git-ignored in the bundle, so an `ingest` never commits them (see
+  [Operational state](#3-operational-state--bundlestate)).
+
 ---
 
 ## 3. Operational state — `<bundle>/state/`

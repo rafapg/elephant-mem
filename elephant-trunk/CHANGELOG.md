@@ -160,3 +160,8 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   sessions each how showed in, offers the interview's questions for an area
   with nothing, and captures only what the owner confirms, as the interview
   does.
+- **Docs.** The README presents the trunk beside the memory and the wiki (a
+  badge, a section, its own tag namespace), and `docs/configuration.md` gains a
+  `trunk` section for `trunk.tag`, its default and its fallbacks. The trunk
+  needs no CI line of its own beyond `tests/test_trunk.py`, listed as its own
+  step; `trunk.py sessions` is documented as needing no bundle.

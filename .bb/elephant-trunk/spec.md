@@ -258,7 +258,7 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 
 ### Close
 
-- [ ] **11. Docs and CI**: README and docs mention the plugin and `trunk.tag`; each new
+- [x] **11. Docs and CI**: README and docs mention the plugin and `trunk.tag`; each new
       test file has its own CI line. · verify: CI
 
 ## Out of scope
