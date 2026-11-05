@@ -227,7 +227,7 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 
 ### Dispatch
 
-- [ ] **5. Dispatch and follow**: brief in the form the dispatch needs, saved recipe, orq
+- [x] **5. Dispatch and follow**: brief in the form the dispatch needs, saved recipe, orq
       or plain Claude Code, confirmation, record, ingest of the record, learnings recorded
       and reported (happy path 5–8). · verify: reading
 

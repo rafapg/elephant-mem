@@ -182,13 +182,254 @@ say plainly when something was not studied.
 
 ## 3. Dispatch
 
-Not built yet in this version. Stop after recording the dispatch decision: tell
-the owner the run `<name>` holds the study, the approaches and the decisions,
-and that nothing was dispatched. Start nothing.
+The owner said to dispatch, and the record holds it. This step turns the
+conversation into work: the dispatch way, the brief, the recipe, then the
+start. Nothing starts before 3e, and 3e runs only what 3d showed. Read the run
+back first, so the brief is written from the record and not from memory of the
+chat:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run show <name> --json
+```
+
+### 3a. The dispatch way
+
+The `trunk-dispatch` facts read in 1a say how this owner dispatches: on
+**orq** (several sessions in an orq workspace, coordinating over agent-bus,
+started with the owner's own tooling) or on **plain Claude Code** (the work
+runs in this session, right after the conversation, as a maestro with
+subagents, no bus). They also say the form the brief takes for that way and
+the command that starts it. Use the way they give; when two apply, the one
+whose condition matches this work.
+
+- **No `trunk-dispatch` fact**: ask the owner the one question this step
+  needs (orq or this session, and for orq the command that starts the work),
+  and use the answer for this run. It is captured as a learning in 4c.
+- **orq is the way and orq is not available here**: the orq tooling is
+  machine-specific, so check before writing anything for it. The command the
+  facts name to start the work must resolve on this machine
+  (`command -v <its first word>`), and so must any other tool they name for
+  the dispatch. When one does not, say so in one line, naming what is missing,
+  and offer plain Claude Code. Nothing is attempted on orq. If the owner takes
+  plain Claude Code, record it:
+
+  ```bash
+  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> decision --value "dispatch via claude-code: orq not available (<what was missing>)"
+  ```
+
+  If they decline, the run stays open with nothing dispatched; stop here and
+  say a later session can continue it.
+
+### 3b. The brief
+
+**The repository first.** The repository the work lands in must be settled
+before a word of the brief is written. If the conversation left it open, ask
+now, naming the candidates and what points to each.
+
+**What every brief carries**, whatever its form: the repository (and the base
+branch, when the study found one), the goal in the owner's terms, the approach
+as converged (the `dispatch:` decision), the decisions that shape the work with
+their why, what is out of scope, and when the work is done. Done is a pull
+request opened for the owner to review: the dispatched work never merges and
+never deploys.
+
+**The form** is the one the `trunk-dispatch` facts give for the chosen way.
+Some ways run alone only on a given form: `bus-spawn`, for one, goes straight
+to `/bb:implement` only on an approved bb spec, and anything less makes it
+interview the owner. Write the brief in that form. When the form is an
+artifact (a spec file in the repository, a ticket), write it where the facts
+say, from the same brief.
+
+**Contextual integrity, before the owner sees it.** Go through the brief piece
+by piece against where each piece came from. Memory content travels into it
+only when the content and the expectation of whoever shared it allow it to
+reach the sessions that will read the brief and the repository and pull
+request where it lands. Sensitive content (personal data, health, pay, a
+customer's own words) and anything shared in confidence is left out, or
+generalized ("a customer reported the export times out" rather than who and
+what they wrote). A secret never travels: when the work needs a credential,
+the brief says where it lives (an environment variable, a secret manager, a
+connection the owner manages), never its value. When something was left out or
+generalized, tell the owner in one line what kind of content it was, without
+repeating it.
+
+**The form check.** The brief must have the form the dispatch needs to run
+without interviewing the owner. Run the check the facts name for it (a lint, a
+dry run, the dispatch tool's own rule); with none named, check the brief
+yourself against the form they describe. When anything is missing, **nothing
+is dispatched**: say what is missing, item by item, record it, and go back to
+the conversation (step 2). The owner's next "dispatch" starts step 3 again.
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> note --value "not dispatched: the brief lacks <what is missing>"
+```
+
+When the brief passes, save it (the filtered text, as the dispatch will read
+it; an artifact's location goes in a note):
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> brief --file - <<'EOF'
+<the brief>
+EOF
+```
+
+### 3c. The recipe
+
+A recipe is how the work is split into sessions: the roles and the stop
+conditions. Saved recipes are the `trunk-recipe` facts read in 1a, each saying
+when it fits and how it is started. Pick the one whose "when it fits" matches
+this work (its split, its roles, the kind of repository), and say in one line
+which one and why, citing its `link`.
+
+- On **orq**, the recipe's start command, filled in for this run, is the
+  dispatch command.
+- On **plain Claude Code**, the same roles and stop conditions are played by
+  subagents of this session. With no recipe that fits, the split is this
+  session's own, stated in one line per role with the dispatch in 3d.
+- **No saved recipe fits the work on orq**: writing a new one is not built in
+  this version. Say that none fits, name the closest one and what it lacks,
+  and offer to dispatch with it as it is or on plain Claude Code. Write no
+  recipe of your own.
+
+Save the choice:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> recipe --value '{"name": "<recipe>", "fact": "<its link, or null>", "command": "<the start command, or null on claude-code>", "roles": "<one line per role>"}'
+```
+
+### 3d. Show it
+
+Show the owner, in one message: the brief (or the artifact's location and a
+summary of it), the recipe and the fact it came from, the exact command or
+commands that will run, where the work will run, and what follows the start:
+the confirmation, the record, an `ingest` of the record into the bundle (a
+local commit of the facts it yields, never the raw record), and the learnings
+of this run. The owner's "dispatch" is the authorization: show this, then go
+straight to 3e. If what 3a to 3c produced changed the work the owner agreed to
+(a different repository, a part left out), ask before starting instead.
+
+### 3e. Start it
+
+**On orq**, run the command or commands exactly as shown.
+
+- **It ran** (exit 0): record the dispatch, with where it runs (the orq
+  team, the workspace):
+
+  ```bash
+  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run dispatch <name> --via orq --command "<the command, as run>" --where "<team or workspace>"
+  ```
+
+- **It failed**: record the attempt with its error (its first lines, with any
+  token or secret it printed cut out), so the record says not dispatched:
+
+  ```bash
+  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run dispatch <name> --via orq --command "<the command, as run>" --error "<the error>"
+  ```
+
+  Tell the owner it was not dispatched, with the error. The run stays open; a
+  retry, now or from a later session, is a new dispatch the owner asks for.
+  Never retry on your own, and do not go on to step 4.
+
+**On plain Claude Code**, there is no command to fail: record the dispatch as
+the work starting in this session, then go to step 4, where the work runs.
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run dispatch <name> --via claude-code --command "<one line: the plan this session runs>" --where "this session (<working directory>)"
+```
+
+A run the script says was already dispatched is never started again: show
+what was dispatched and where (`run show <name>`), and continue the
+conversation from there.
 
 ## 4. Follow
 
-Not built yet in this version.
+### 4a. Confirm the work
+
+**On orq**, confirm the sessions are running with what the `trunk-dispatch`
+facts name for it (a status or board command). With nothing named, the start
+command's own output is the evidence: the team, workspace or sessions it
+reports. Say in one line what is running and where. When the check shows
+nothing running, say so and record it; the run stays dispatched and is never
+started again by the trunk:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> note --value "started, not confirmed: <what the check showed>"
+```
+
+The trunk does not watch the sessions to the pull request: that is their job.
+Go to 4b.
+
+**On plain Claude Code**, this session is the maestro: run the work on the
+brief, one subagent (the Agent tool) per role of the recipe, and update the
+record as the work goes, one note per milestone (a role done, a check green,
+the pull request opened, with its link):
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> note --value "<the milestone>"
+```
+
+The trunk ends when the work ends: a pull request opened for the owner, or the
+work stopped, with why in a note. It never merges and never deploys. Then 4b.
+
+### 4b. Ingest the record
+
+The raw record stays in `state/`; its useful parts become facts. Run
+`elephant-mem:ingest` (the Skill tool) over the record file,
+`<bundle>/state/trunk/runs/<name>.json`, once: right after 4a on orq, when the
+work has ended on plain Claude Code. The owner saw it announced in 3d and
+their "dispatch" covers it, which is ingest's scope confirmation. Pass these
+terms with the source:
+
+- **No raw capture.** Nothing is copied to `raw/`; the source record's summary
+  is a recall aid (the topic, the approach chosen, where the work went), never
+  a copy of the study or the conversation.
+- **What becomes facts**: the decisions, with their why (tagged `decision`),
+  and what was dispatched, how and where, so a later `query` on the topic
+  finds it. Nothing that restates what the memory already held, and nothing
+  about how the owner works: 4c captures that, with its tags.
+- **Contextual integrity**, as for the brief: what was shared in confidence,
+  sensitive content and secrets stay out of the facts.
+
+`ingest` commits with `git add -A`; the script keeps `state/trunk/` ignored, so
+the record cannot go in. Check that it did not, and record the ingest:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run ingested <name> --json
+```
+
+**Exit 1** means the raw record entered the bundle's history: relay the stderr
+as it is, tell the owner, and do nothing else with the bundle. The bundle is
+never pushed by the trunk. An ingest that failed is said so, and the run is
+left with no ingest recorded, for a later session to run again.
+
+### 4c. What the trunk learned
+
+During the run the trunk may have learned something about how the owner works:
+an answer to a question asked because an area had no fact, the winner between
+two facts that contradicted each other, a correction to how a step was done (a
+source to add, approaches shown another way, another dispatch way), a recipe
+that fit or did not. Only that: never something about the topic, never content
+of a session, a secret or third-party content.
+
+Learning is autonomous. Capture each one without asking, with **Capturing a
+how**, and check it with `facts --area`. Two exceptions: a how the owner
+already captured in this run is not captured again, and one the owner declined
+to capture in this run stays uncaptured. Record each learning that landed:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value "<its link>: <the how, in one line>"
+```
+
+A capture that did not land is recorded as a note, and reported as not
+recorded.
+
+### 4d. Report and stop
+
+Close with one short message: the run's name, what is running and where (or
+the pull request, on plain Claude Code), the ingest's commit, and the
+learnings, one line each with its area and its `link`, saying the owner can
+steer one or ask to forget it. With nothing learned, say so in one line. The
+trunk stops here; a later session continues the run from its record.
 
 ## First use
 
@@ -226,6 +467,10 @@ python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" facts --area <the area t
 A capture that does not show up there carries the wrong tags; say so to the
 owner rather than assume it took.
 
+During the conversation a capture is offered once. What the owner neither
+captured nor declined by the end of the run is captured in 4c without asking,
+and reported.
+
 ## Rules
 
 - **The how comes from facts.** Nothing in this file is a preference of this
@@ -235,5 +480,5 @@ owner rather than assume it took.
   fact) is filtered by the content and the expectation of whoever shared it;
   sensitive content and things shared in confidence stay out.
 - **Nothing starts without the owner's word.** The owner's "dispatch" is the
-  only authorization to start sessions. The trunk never deploys and never
-  merges.
+  only authorization to start sessions. The trunk never deploys, never
+  merges and never pushes the bundle.

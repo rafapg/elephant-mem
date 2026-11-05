@@ -8,7 +8,8 @@ reads `trunk.tag` from elephant.json (the bundle's value, or `how-i-work` with a
 hint on how to set another), how `facts` lists the owner's how from
 knowledge/manifest.jsonl alone, and how `run` writes a run record under
 state/trunk/ (git-ignored, so a `git add -A` never stages it), reads it back,
-continues it, and never dispatches a dispatched run again.
+continues it, never dispatches a dispatched run again, and records the ingest
+of a dispatched run only when its commit left the raw record out.
 
 Pure stdlib, Python 3.10+, mirroring tests/test_wiki.py's conventions: a
 throwaway bundle in a tempdir, subprocess calls into the real script, PASS/FAIL
@@ -546,6 +547,51 @@ def _run_record(root, home):
     record("what was dispatched stays as dispatched", r.returncode != 0, r.stderr)
     r = run(TRUNK, *S, "decision", "--value", "follow up next week", env=env)
     record("the conversation continues after the dispatch", r.returncode == 0, r.stderr)
+    r = run(TRUNK, *S, "learning", "--value", "/facts/2026-11/orq-for-two-areas.md: orq when the work splits by area",
+            env=env)
+    _, rec = run_json("show", "--bundle", b, name, env=env)
+    record("a learning is appended to the record after the dispatch",
+           r.returncode == 0 and rec and [x["text"] for x in rec["learnings"]]
+           == ["/facts/2026-11/orq-for-two-areas.md: orq when the work splits by area"], r.stderr or rec)
+
+    # ── the ingest of a dispatched run ────────────────────────────────────────
+    r = run(TRUNK, "run", "ingested", "--bundle", b, f"{name}-2", env=env)
+    record("a run not dispatched yet is not marked ingested",
+           r.returncode != 0 and "not dispatched" in r.stderr, r.stderr)
+    if has_git:
+        G = ("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false")
+        git(b, "add", "-A")
+        git(b, *G, "commit", "-q", "-m", "ingest: the run")
+        head = git(b, "rev-parse", "HEAD").stdout.strip()
+        r, out = run_json("ingested", "--bundle", b, name, env=env)
+        _, rec = run_json("show", "--bundle", b, name, env=env)
+        record("run ingested records the ingest commit, the bundle's HEAD by default",
+               r.returncode == 0 and rec and head and rec["ingests"][-1]["commit"] == head
+               and rec["status"] == "dispatched", r.stderr or rec)
+        r = run(TRUNK, "run", "show", "--bundle", b, name, env=env)
+        record("the plain show names the ingest and what was learned",
+               "## ingested" in r.stdout and head[:12] in r.stdout and "orq when the work splits" in r.stdout,
+               r.stdout)
+
+        leak = git_bundle(root, "leaked")
+        _, lo = run_json("new", "--bundle", leak, "--topic", "t", env=env)
+        lname = lo["name"] if lo else "x"
+        run(TRUNK, "run", "dispatch", "--bundle", leak, lname, "--via", "claude-code",
+            "--command", "this session", env=env)
+        git(leak, "add", "-A")
+        git(leak, "add", "-f", f"state/trunk/runs/{lname}.json")
+        git(leak, *G, "commit", "-q", "-m", "ingest: leaked")
+        leaked_sha = git(leak, "rev-parse", "HEAD").stdout.strip()
+        r = run(TRUNK, "run", "ingested", "--bundle", leak, lname, env=env)
+        record("an ingest that committed the raw record is refused, saying how to untrack it",
+               r.returncode != 0 and "entered the bundle's history" in r.stderr and "rm -r --cached" in r.stderr,
+               r.stderr)
+        git(leak, "rm", "-r", "-q", "--cached", "state/trunk")
+        git(leak, *G, "commit", "-q", "-m", "untrack")
+        r = run(TRUNK, "run", "ingested", "--bundle", leak, lname, "--commit", leaked_sha, env=env)
+        _, lrec = run_json("show", "--bundle", leak, lname, env=env)
+        record("an ingest commit that carried the raw record is refused even once untracked",
+               r.returncode != 0 and "entered" in r.stderr and lrec and lrec["ingests"] == [], r.stderr)
 
     r, out = run_json("list", "--bundle", b, "--open", env=env)
     record("run list --open leaves out the dispatched run",

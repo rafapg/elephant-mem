@@ -25,11 +25,15 @@ Commands:
   run set <name> <field> (--value <v> | --file <path|->)
                         continue a run: study, brief (text, replaced);
                         approaches (JSON array), recipe (JSON object), replaced;
-                        decision, note (text, appended)
+                        decision, note, learning (text, appended)
   run dispatch <name> --via <orq|claude-code> --command <c> [--where <w>]
                         [--error <e>]
                         record a dispatch attempt; without --error the run
                         becomes dispatched, and a dispatched run refuses another
+  run ingested <name> [--commit <sha>]
+                        after `ingest` ran over a dispatched run's record:
+                        checks no run record entered the bundle's history and
+                        records the ingest commit (default: the bundle's HEAD)
   --bundle <path>       override bundle location (default: ELEPHANT_BUNDLE, then
                         the machine pointer ~/.config/elephant-mem/config.json)
 
@@ -267,7 +271,7 @@ DISPATCH_VIAS = ("orq", "claude-code")
 # What `run set` may change: text replaced, JSON replaced, text appended.
 TEXT_FIELDS = ("study", "brief")
 JSON_FIELDS = {"approaches": list, "recipe": dict}
-APPEND_FIELDS = {"decision": "decisions", "note": "log"}
+APPEND_FIELDS = {"decision": "decisions", "note": "log", "learning": "learnings"}
 # After the dispatch the conversation can go on, but what was dispatched stays
 # as it was dispatched.
 FROZEN_AFTER_DISPATCH = ("study", "approaches", "brief", "recipe")
@@ -403,7 +407,8 @@ def new_record(name, topic):
     return {"version": RECORD_VERSION, "name": name, "topic": topic,
             "status": STATUS_OPEN, "created": t, "updated": t,
             "study": None, "approaches": [], "decisions": [], "brief": None,
-            "recipe": None, "dispatch": None, "attempts": [], "log": []}
+            "recipe": None, "dispatch": None, "attempts": [], "log": [],
+            "ingests": [], "learnings": []}
 
 
 def list_records(bundle):
@@ -484,6 +489,18 @@ def cmd_run_show(args):
         last = failed[-1]
         print(f"\n## not dispatched\nlast attempt via {last.get('via')} at {last.get('at')} "
               f"failed: {last.get('error')}")
+    if rec.get("ingests"):
+        print("\n## ingested")
+        for i in rec["ingests"]:
+            print(f"- {i.get('at')}{', commit ' + i['commit'] if i.get('commit') else ''}")
+    if rec.get("learnings"):
+        print("\n## learned")
+        for item in rec["learnings"]:
+            print(f"- {item.get('text') if isinstance(item, dict) else item}")
+    if rec.get("log"):
+        print("\n## notes")
+        for item in rec["log"]:
+            print(f"- {item.get('text') if isinstance(item, dict) else item}")
     return 0
 
 
@@ -567,6 +584,54 @@ def cmd_run_dispatch(args):
     return 0
 
 
+def _git(bundle, *args):
+    """A git command in the bundle: (returncode, stdout), or None when git is
+    missing or cannot run."""
+    git = shutil.which("git")
+    if not git:
+        return None
+    try:
+        r = subprocess.run([git, "-C", bundle, *args], capture_output=True, text=True)
+    except OSError:
+        return None
+    return r.returncode, r.stdout.strip()
+
+
+def cmd_run_ingested(args):
+    """Record that `ingest` ran over a dispatched run's record, after checking
+    the raw record stayed out of the bundle's history: nothing under
+    state/trunk/ is tracked, and the ingest commit touched nothing there."""
+    bundle = resolve_bundle(args.bundle)
+    rec = load_or_die(bundle, check_name(args.name))
+    if rec["status"] != STATUS_DISPATCHED:
+        die(f"run {rec['name']} was not dispatched; its record is ingested after the dispatch")
+    commit = args.commit or None
+    inside = _git(bundle, "rev-parse", "--is-inside-work-tree")
+    if inside and inside[0] == 0 and inside[1] == "true":
+        tracked = _git(bundle, "ls-files", "--", "state/trunk")
+        if tracked and tracked[0] == 0 and tracked[1]:
+            die(f"{bundle} tracks files under {IGNORE_ENTRY}: the raw record entered the bundle's "
+                f"history; untrack it with `git -C {bundle} rm -r --cached state/trunk` and commit")
+        ref = commit or "HEAD"
+        head = _git(bundle, "rev-parse", "--verify", "--quiet", ref + "^{commit}")
+        if not head or head[0] != 0 or not head[1]:
+            die(f"{ref} is not a commit in {bundle}")
+        commit = head[1]
+        touched = _git(bundle, "show", "--name-only", "--format=", commit, "--", "state/trunk")
+        if touched and touched[0] == 0 and touched[1]:
+            die(f"commit {commit[:12]} carries files under {IGNORE_ENTRY}: the raw record entered "
+                f"the bundle's history; it must be rewritten before anything is pushed or shared")
+    t = now()
+    rec.setdefault("ingests", []).append({"at": t, "commit": commit})
+    rec["updated"] = t
+    write_record(bundle, rec)
+    if args.json:
+        print(json.dumps({**summary(rec), "ingests": rec["ingests"]}, ensure_ascii=False))
+    else:
+        print(f"run {rec['name']}: ingested{' in ' + commit[:12] if commit else ''}")
+    return 0
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main(argv):
@@ -584,7 +649,7 @@ def main(argv):
     p.add_argument("--json", action="store_true", help="print one JSON object")
     p.set_defaults(func=cmd_facts)
 
-    run = sub.add_parser("run", help="the run record: new, show, list, set, dispatch")
+    run = sub.add_parser("run", help="the run record: new, show, list, set, dispatch, ingested")
     rsub = run.add_subparsers(dest="run_command", required=True)
     p = rsub.add_parser("new", parents=[common], help="start a run record")
     p.add_argument("--topic", required=True, help="the topic, in one line")
@@ -614,6 +679,12 @@ def main(argv):
     p.add_argument("--error", default=None, help="the attempt failed with this error")
     p.add_argument("--json", action="store_true", help="print the run's summary as JSON")
     p.set_defaults(func=cmd_run_dispatch)
+    p = rsub.add_parser("ingested", parents=[common],
+                        help="record that ingest ran over a dispatched run's record")
+    p.add_argument("name")
+    p.add_argument("--commit", default="", help="the ingest commit (default: the bundle's HEAD)")
+    p.add_argument("--json", action="store_true", help="print the run's summary and its ingests as JSON")
+    p.set_defaults(func=cmd_run_ingested)
     args = ap.parse_args(argv)
     return args.func(args)
 

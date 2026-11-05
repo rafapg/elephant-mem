@@ -72,3 +72,18 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   that contradict each other are both shown and the owner picks, and a how the
   owner states is captured with its tags spelled out and then looked up with
   `trunk.py facts`, because `capture` checks no tag.
+- **The `trunk` skill, dispatch and follow.** Once the owner says to dispatch,
+  the trunk writes the brief from the run record in the form the owner's
+  `trunk-dispatch` facts give (an approved bb spec, when `bus-spawn` is the
+  way), filters it for content not meant to travel before the owner sees it,
+  and dispatches nothing when the brief lacks that form, saying what is
+  missing. It picks a saved recipe from the `trunk-recipe` facts, shows the
+  brief, the recipe and the exact command, and starts the work on orq or, on
+  plain Claude Code, in the same session as a maestro with subagents; when orq
+  is the way but its tooling is not on the machine, it says so and offers plain
+  Claude Code. A failed start is recorded with its error and the run stays open.
+  It then confirms the work is running, runs `ingest` over the record, and
+  captures what it learned about how the owner works without asking, reporting
+  each learning with its link. `trunk.py run ingested` records the ingest and
+  refuses it when the commit carried the raw record, since `ingest` commits with
+  `git add -A`; `run set <name> learning` keeps what was learned in the record.
