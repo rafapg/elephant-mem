@@ -9,12 +9,12 @@ description: >
   dispatched) comes from the owner's own tagged facts, never from this file.
   Use when the owner names it (/elephant-trunk:trunk <topic>) or hands a topic
   over to be studied and taken to dispatched work ("trunk this", "study this
-  and dispatch it", "take this to a PR"), and to continue a run an earlier
-  session left ("continue the trunk run <name>", "resume the trunk", "where
-  did the trunk stop"), and to steer or forget what the trunk learned about
-  how the owner works ("forget that learning", "that's not how I dispatch").
-  Not for a plain recall question about a topic (that is
-  elephant-mem:query) or for work the owner is already doing in this session.
+  and dispatch it"), and to continue a run an earlier session left ("continue
+  the trunk run <name>", "resume the trunk", "where did the trunk stop"), and
+  to steer or forget what the trunk learned about how the owner works
+  ("forget that learning", "that's not how I dispatch"). Not for a plain
+  recall question about a topic (that is elephant-mem:query) or for work the
+  owner is already doing in this session.
 ---
 
 # elephant-trunk:trunk
