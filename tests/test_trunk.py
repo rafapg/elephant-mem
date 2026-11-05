@@ -25,6 +25,7 @@ per check, exit 0 only if every check passes. The machine pointer is faked by
 pointing HOME (and USERPROFILE, for Windows) at the tempdir, so the real
 ~/.config/elephant-mem/config.json is never read.
 """
+import importlib.util
 import json
 import os
 import re
@@ -814,6 +815,14 @@ def build_index(bundle):
                           capture_output=True, text=True, encoding="utf-8")
 
 
+def load_trunk():
+    """trunk.py as a module, to reach a helper no subcommand isolates."""
+    spec = importlib.util.spec_from_file_location("trunk_under_test", TRUNK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def learning(*args, env):
     r = run(TRUNK, "learning", *args, "--json", env=env)
     try:
@@ -909,6 +918,16 @@ def _steer_and_forget(root, home):
            r.returncode == 0 and f"    - /facts/older.md\n    - {newer}\n" in block_text, r.stderr + block_text)
     r = build_index(b)
     record("the edited facts still build", r.returncode == 0, r.stderr)
+    trunk = load_trunk()
+    flush = ["relations:", "  superseded-by:", "  - /facts/older.md", "  supersedes: []"]
+    lines = list(flush)
+    added = trunk._add_relation(lines, "superseded-by", "/facts/b.md")
+    record("a block list written at the key's own indent (PyYAML's style) gains one more item",
+           added is True and lines == ["relations:", "  superseded-by:", "  - /facts/older.md",
+                                       "  - /facts/b.md", "  supersedes: []"], lines)
+    lines = list(flush)
+    added = trunk._add_relation(lines, "superseded-by", "/facts/older.md")
+    record("a link already in that block list is not added again", added is False and lines == flush, lines)
 
     # ── the run record ───────────────────────────────────────────────────────
     _, rec = run_json("show", "--bundle", b, name, env=env)

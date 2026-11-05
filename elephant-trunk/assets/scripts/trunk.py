@@ -1097,12 +1097,13 @@ def _add_relation(lines, rel, link):
             return False
         lines[at] = f"{indent}{rel}: [{bare}, {link}]"
         return True
-    # A block list, or nothing at all under the key.
+    # A block list, or nothing at all under the key. Its items may sit at the
+    # key's own indentation, as PyYAML's safe_dump writes them, or deeper.
     item_rx = re.compile(r"^([ \t]+)-[ \t]+(.*)$")
     last, item_indent = at, indent + "  "
     for i in range(at + 1, end):
         m = item_rx.match(lines[i])
-        if not m or len(m.group(1)) <= len(indent):
+        if not m or len(m.group(1)) < len(indent):
             break
         if _scalar(m.group(2)) == link:
             return False
