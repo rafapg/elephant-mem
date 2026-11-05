@@ -141,3 +141,22 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   forgotten alone later; each is checked with `facts --area`, kept in the run
   as a learning and reported with its link. What the owner forgot earlier is
   never offered back as an answer.
+- **The `trunk` skill, reading past sessions.** The interview asked the owner
+  to describe a way of working their own sessions already showed. On first use
+  the trunk now offers to read them instead, and estimates first:
+  `trunk.py sessions list` finds every session's transcript, picks the most
+  recent ones holding a message of the owner's (30 by default; sessions run by
+  a script or a schedule are passed over), and reports their raw size, the
+  tokens left after extraction and the small-model readers it takes. On this
+  machine the 30 most recent were 96 MB raw, about 24M tokens, and about 67k
+  tokens after extraction, two readers. Nothing is read before the owner says
+  so; a skip goes to the interview. `sessions extract` hands a reader the
+  owner's own messages and the names of what each session ran (a skill, a
+  subagent, a program, never its arguments), with tool output, the assistant's
+  text, system-injected turns and credential-shaped strings left out, so the
+  raw transcripts never enter the conversation. Readers on the small model
+  return statements of how the owner works only, per area; the trunk filters
+  them again, sets aside what the owner forgot, shows a panorama with how many
+  sessions each how showed in, offers the interview's questions for an area
+  with nothing, and captures only what the owner confirms, as the interview
+  does.

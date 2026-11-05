@@ -692,14 +692,138 @@ each with what it costs:
 - **Read past sessions**: an estimate first (sessions found, their size, the
   tokens it would take), then a small model reads the most recent ones and
   extracts how the owner works, never what was in the session. The owner
-  confirms a panorama before anything is saved.
+  confirms a panorama before anything is saved. It costs the small model's
+  reading, shown before anything is read, and a few minutes of the owner's
+  confirmation.
 - **Interview only**: a few questions on how the owner studies a topic,
   dispatches work and splits it into sessions. It costs a few minutes of the
   owner's answers and no reading of anything else.
 
-When the owner picks the interview, or declines the reading, go to **The
-interview**. Either way, what the owner confirms is saved with **Capturing a
-how**, and the run continues at 1a.
+When the owner picks the reading, go to **Reading past sessions**; the estimate
+there is what they decide on, and nothing is read before they do. When the
+owner picks the interview, or declines the reading, go to **The interview**.
+Either way, what the owner confirms is saved with **Capturing a how**, and the
+run continues at 1a.
+
+## Reading past sessions
+
+The owner's past Claude Code sessions show how they work: what they ask a
+topic to be studied with, how they react to approaches, how they start work and
+split it. The trunk reads them **once, on first use**, and only on the owner's
+word after an estimate; it never debriefs sessions as they end. It keeps how the
+owner works, never what was in a session: no topic, no file, no person's or
+customer's words, no secret.
+
+The raw transcripts never enter this conversation. The script reads them and
+prints counts; small-model readers, in subagents, read the extract the script
+makes of them and return statements of how only. Nothing of this is written to
+disk; what becomes a fact is what the owner confirms in the panorama.
+
+### The estimate
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" sessions list --json
+```
+
+It needs no bundle. It finds every session's transcript (under
+`$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`; `--root` when they
+live elsewhere) and picks the most recent ones holding at least one message of
+the owner's, `limit` of them (30 by default). Sessions run by a script or a
+schedule, with no message of the owner's, are passed over and counted in
+`skipped_no_owner`. For the ones picked it reports the raw size (`raw_bytes`,
+`raw_tokens`), what the readers would read after extraction (`tokens`), and how
+that splits into `readers`, one small-model subagent per batch of at most
+`batch_tokens`.
+
+- **Exit 1**, or `read` is 0: there is nothing to read. Say so in one line and
+  go to **The interview**.
+- **Otherwise**, show the owner the estimate in a few lines: the sessions found
+  on the machine (`found`), the ones that would be read (`read`, from `since` to
+  `until`, across `projects` projects), their raw size and tokens, the tokens
+  the readers would read, and how many readers. Say what the extract leaves out
+  before any reader sees it: tool output, files read, the assistant's own text,
+  system-injected messages, and anything shaped like a credential; only the
+  owner's messages and the names of what each session ran (a skill, a subagent,
+  a program, never its arguments) are read. Every path in `unreadable` is named
+  in one line. Then ask: read these, read fewer or more (a number, run again
+  with `--limit <n>` and show the new estimate), or skip. Wait.
+
+### The skip
+
+The owner skips, declines or does not say yes: nothing is read. Go to **The
+interview**, whole. Skipping is never asked again in this session: the interview
+is the way on.
+
+### The debrief
+
+Before the readers start, list what the owner forgot or steered away from,
+with `facts --forgotten --json` as **The interview** does. The readers are not
+told of them; the panorama sets aside what matches one.
+
+Start one reader per entry of `batches`, all at once, each a subagent (the
+Agent tool) on the small model (`model: "haiku"`). A reader's shell may not
+carry `CLAUDE_PLUGIN_ROOT`, so spell the script's absolute path in its prompt.
+Its prompt is this, filled in, in English whatever the owner speaks:
+
+> Read how one person works from their past Claude Code sessions. Run
+> `python3 "<the script's absolute path>" sessions extract <the batch's paths>
+> --max-tokens <batch_tokens>` and read its output: each session's messages
+> from the owner, and between them `[then: ...]`, what the session ran next.
+> Return only statements of how the owner works, in three areas:
+> `trunk-study` (what they have a topic studied with, in what order, how deep,
+> how they want approaches shown and how many), `trunk-dispatch` (where work
+> runs once they decide: in the same session with subagents, or as separate
+> sessions with a tool such as orq or bus-spawn; the form a brief takes; the
+> commands that start work and show it running), `trunk-recipe` (how work is
+> split into sessions: roles, when each stops, saved recipes and when each
+> fits). Only what the owner does or asks for repeatedly or states as a rule;
+> one session's one-off is not a way of working. Never write what a session was
+> about: no topic, project, repository, file or person's name, no customer, no
+> quote of more than five words, no URL, no id, path, version or value of any
+> kind, nothing marked `[secret left out]` or `[pasted]`. Generalize what you
+> keep ("reads the repository's open pull requests before proposing", not which
+> repository); drop what cannot be generalized. Answer with JSON lines only,
+> one per statement: `{"area": "<one of the three>", "how": "<one sentence>",
+> "sessions": <in how many of these sessions it shows>}`. No statement at all
+> is a valid answer: print nothing.
+
+A reader that fails, or answers with anything but those lines, is named in one
+line with the number of sessions it held, as not read; the others go on. A line
+whose `area` is not one of the three is dropped.
+
+### The panorama
+
+Merge what the readers returned, in this conversation:
+
+1. **The same how** from several readers is one line, its `sessions` summed.
+2. **The second gate.** Read each line as the owner's memory would keep it: a
+   line that still names a topic, a repository, a person, a customer or a
+   value, or carries anything secret, is generalized or dropped here, before
+   the owner sees it. When one was, say in one line what kind of content it
+   was, without repeating it.
+3. **Forgotten.** A line that says what one of the forgotten facts said is set
+   aside and named as set aside because the owner forgot it. Only the owner
+   brings a forgotten how back, by confirming it below in their own words.
+4. **Contradictions.** Two lines that say opposite things for the same step are
+   shown side by side, each with its `sessions`, and the owner says which holds,
+   as **Two facts that contradict each other** does for facts.
+
+Show the panorama grouped by area, in the order of **The questions**, one line
+per how, each with its area tag and in how many of the `read` sessions it
+showed ("in 7 of 30 sessions"). An area with no line is said so. Then the
+owner confirms, changes or drops lines, as **The read-back** says: one fact per
+how, nothing captured before they confirm, nothing they drop captured.
+
+**An area with nothing to show** is offered its questions from **The
+questions**, that area's only, with **The answers** applying to what the owner
+says; their answers join the read-back. The owner can decline, and the step
+asks when it comes (**An area with no fact**).
+
+When the owner has confirmed, capture with **The capture**, exactly as for the
+interview: each line with the bundle's how-I-work tag and its one area tag, the
+owner's confirmed words, checked with `facts --area`, listed, reported with
+their links, and kept as learnings of the run. When nothing was confirmed, say
+so in one line and go on as 1a says for a first use that captured nothing.
 
 ## The interview
 

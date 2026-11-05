@@ -55,6 +55,14 @@ Commands:
                         steer a learning to the fact that replaces it: the old
                         one becomes `superseded`, linked both ways, and the
                         trunk reads the new one in its place
+  sessions list [--root <dir>] [--limit <n>] [--batch-tokens <n>]
+                        past Claude Code sessions first use would read: how
+                        many, their size, the tokens after extraction and the
+                        small-model readers it takes (no bundle needed)
+  sessions extract <path>... [--max-tokens <n>]
+                        the owner's own messages in those sessions and the
+                        names of what each ran; tool output, the assistant's
+                        text and credential-shaped strings left out
   --bundle <path>       override bundle location (default: ELEPHANT_BUNDLE, then
                         the machine pointer ~/.config/elephant-mem/config.json)
 
@@ -1280,6 +1288,346 @@ def cmd_learning_steer(args):
     return 0
 
 
+# ── past sessions ────────────────────────────────────────────────────────────
+#
+# First use can read how the owner works from their own past Claude Code
+# sessions. The raw transcripts are large (the 30 most recent were about 79 MB)
+# and hold everything a session touched: tool output, files read, other
+# people's words, secrets. So nothing raw leaves this script. `sessions list`
+# prints counts and an estimate only; `sessions extract` prints, for the small
+# model that reads it, the owner's own messages and the names of what the
+# session ran, with tool output, the assistant's text, system-injected blocks
+# and anything shaped like a credential left out.
+
+SESSIONS_LIMIT = 30          # the most recent sessions read by default
+BATCH_TOKENS = 60000         # what one small-model reader is handed, at most
+TURN_CHARS = 2000            # one owner message, at most, before it is cut
+CHARS_PER_TOKEN = 4          # the rough rule the estimate is stated with
+USED_MAX = 12                # names of what ran between two owner messages
+
+_DROP_BLOCKS = re.compile(
+    r"<(system-reminder|local-command-caveat|local-command-stdout|local-command-stderr|"
+    r"task-notification|scheduled-task|command-message)\b[^>]*>.*?</\1>", re.S)
+_PASTED = re.compile(r"<pasted_content\b[^>]*>(.*?)</pasted_content\b[^>]*>", re.S)
+_COMMAND = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.S)
+_COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
+_INTERRUPTED = re.compile(r"^\[Request interrupted by user[^\]]*\]\s*$", re.M)
+_SECRETS = [
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.S),
+    re.compile(r"\b(sk|pk|rk)-[A-Za-z0-9_-]{16,}"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"\bA[KS]IA[0-9A-Z]{16}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{30,}"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+    re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{16,}"),
+    re.compile(r"(?i)\b([A-Za-z_]*(password|passwd|secret|token|api[_-]?key|credential)s?)"
+               r"(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|\S+)"),
+    re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@"),
+]
+_LONG_TOKEN = re.compile(r"[A-Za-z0-9_+=-]{32,}")
+# Text Claude Code itself puts in a user turn on older transcripts, which carry
+# no `origin` to tell it from the owner's: a peer session's message, a resumed
+# session's summary, a hook's feedback.
+_INJECTED = ("Another Claude session sent", "This session is being continued",
+             "Stop hook feedback:", "A session-scoped Stop hook", "Caveat: The messages below")
+# Built-in commands say nothing of how the owner works; a skill or a plugin
+# command (`/orq`, `/bb:spec`) does, so only these are passed over.
+_BUILTIN_COMMANDS = {"/clear", "/compact", "/exit", "/quit", "/resume", "/model", "/cost",
+                     "/context", "/status", "/config", "/login", "/logout", "/help",
+                     "/doctor", "/usage", "/mcp", "/plugin", "/permissions", "/rewind"}
+# Shell plumbing: present in every session, so it tells nothing apart.
+_PLUMBING = {"ls", "cat", "head", "tail", "grep", "rg", "sed", "awk", "echo", "printf", "wc",
+             "sort", "uniq", "cut", "tr", "find", "xargs", "true", "false", "test", "pwd",
+             "mkdir", "rm", "cp", "mv", "touch", "sleep", "date", "which", "command", "export",
+             "source", "set", "jq", "tee", "diff", "stat", "basename", "dirname", "realpath",
+             "readlink", "for", "done", "if", "fi", "while", "until", "case", "esac", "break",
+             "continue", "return", "wait", "exit", "true", "local", "read", "printf"}
+# Words that start a segment before its program: skipped, the next word is it.
+_PREFIXES = {"sudo", "time", "env", "nohup", "exec", "!", "(", "{", "do", "then", "else", "elif"}
+
+
+def _redact(text):
+    """Credential-shaped strings out, before any reader sees the text. Errs on
+    the side of cutting: a hash or an id lost costs nothing to how the owner
+    works, while one token let through would be read by a model and could be
+    offered back for capture."""
+    for rx in _SECRETS:
+        if rx.groups >= 4:
+            text = rx.sub(lambda m: f"{m.group(1)}{m.group(3)}[secret left out]", text)
+        else:
+            text = rx.sub("[secret left out]", text)
+
+    def long_token(m):
+        s = m.group(0)
+        return "[secret left out]" if re.search(r"\d", s) and re.search(r"[A-Za-z]", s) else s
+    return _LONG_TOKEN.sub(long_token, text)
+
+
+def sessions_root(override=""):
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    return os.path.join(base, "projects")
+
+
+def _transcripts(root):
+    """The top-level transcript of every session, one directory per project.
+    A subagent's transcript sits deeper and holds no word of the owner's."""
+    found = []
+    try:
+        projects = sorted(os.listdir(root))
+    except OSError:
+        return None
+    for proj in projects:
+        d = os.path.join(root, proj)
+        if not os.path.isdir(d):
+            continue
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for n in names:
+            p = os.path.join(d, n)
+            if n.endswith(".jsonl") and os.path.isfile(p):
+                try:
+                    st = os.stat(p)
+                except OSError:
+                    continue
+                found.append((st.st_mtime, st.st_size, p))
+    found.sort(key=lambda t: (-t[0], t[2]))
+    return found
+
+
+def _owner_text(rec):
+    """The owner's own words in one transcript line, or None. A line is the
+    owner's when it is a user turn, not injected (meta, compact summary, a
+    sidechain, an origin other than a human), and carries text rather than a
+    tool result."""
+    if rec.get("type") != "user":
+        return None
+    if rec.get("isMeta") or rec.get("isSidechain") or rec.get("isCompactSummary") \
+            or rec.get("isVisibleInTranscriptOnly"):
+        return None
+    origin = rec.get("origin")
+    if isinstance(origin, dict) and origin.get("kind") not in (None, "human"):
+        return None
+    content = (rec.get("message") or {}).get("content")
+    if isinstance(content, str):
+        parts = [content]
+    elif isinstance(content, list):
+        parts = []
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "tool_result":
+                return None
+            if b.get("type") == "text" and isinstance(b.get("text"), str):
+                parts.append(b["text"])
+            elif b.get("type") == "image":
+                parts.append("[an image]")
+    else:
+        return None
+    text = "\n".join(parts)
+    if text.lstrip().startswith(_INJECTED):
+        return None
+    cmd = _COMMAND.search(text)
+    if cmd:
+        args = _COMMAND_ARGS.search(text)
+        args = args.group(1).strip() if args else ""
+        if cmd.group(1) in _BUILTIN_COMMANDS and not args:
+            return None
+        text = cmd.group(1) + (" " + args if args else "")
+    elif text.strip() in _BUILTIN_COMMANDS:
+        return None
+    text = _DROP_BLOCKS.sub("", text)
+    text = _PASTED.sub(lambda m: "[pasted] " + m.group(1).strip(), text)
+    text = _INTERRUPTED.sub("", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if not text:
+        return None
+    if len(text) > TURN_CHARS:
+        text = text[:TURN_CHARS].rstrip() + " [… cut]"
+    return _redact(text)
+
+
+def _bash_words(command):
+    """The programs a shell command ran, never their arguments: an argument
+    can carry a path, a customer's name or a secret, a program name cannot."""
+    words = []
+    # The first line only, up to a heredoc: what follows is the command's
+    # input (a file's text, a message), and its first words are content.
+    line = (command or "").split("\n", 1)[0].split("<<", 1)[0]
+    # A quoted argument is an argument (an inline script, a message): out
+    # whole, so a `;` inside it does not start a command. An unclosed quote
+    # ends the line.
+    line = re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", "''", line)
+    line = re.split(r"[\"'`]|\$\(", line.replace("''", " "), maxsplit=1)[0]
+    for seg in re.split(r"&&|\|\||[;|]", line):
+        for tok in seg.strip().split():
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok) or tok in _PREFIXES:
+                continue
+            w = os.path.basename(tok.strip("'\"()"))
+            if re.fullmatch(r"[A-Za-z][A-Za-z0-9._+-]{0,39}", w) and w not in _PLUMBING and w != "cd":
+                words.append(w)
+            break
+    return words
+
+
+def _used(rec):
+    """Names of what an assistant turn ran: a skill, a subagent, a program."""
+    if rec.get("type") != "assistant" or rec.get("isSidechain"):
+        return []
+    content = (rec.get("message") or {}).get("content")
+    out = []
+    for b in content if isinstance(content, list) else []:
+        if not isinstance(b, dict) or b.get("type") != "tool_use":
+            continue
+        name, inp = b.get("name") or "", b.get("input") or {}
+        if not isinstance(inp, dict):
+            inp = {}
+        if name == "Skill" and isinstance(inp.get("skill"), str):
+            out.append(f"skill {inp['skill'][:60]}")
+        elif name in ("Agent", "Task"):
+            kind = inp.get("subagent_type")
+            out.append(f"subagent {kind[:40]}" if isinstance(kind, str) and kind else "subagent")
+        elif name == "Bash":
+            out.extend(f"ran {w}" for w in _bash_words(inp.get("command")))
+        elif name:
+            out.append(name[:60])
+    return out
+
+
+def _session(path):
+    """One transcript, reduced to what a reader of how the owner works needs."""
+    turns, cwd, first, last = [], None, None, None
+    used = []
+    try:
+        fh = open(path, encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {"path": path, "error": str(exc)}
+    with fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            if cwd is None and isinstance(rec.get("cwd"), str):
+                cwd = rec["cwd"]
+            ts = rec.get("timestamp")
+            if isinstance(ts, str):
+                first = first or ts
+                last = ts
+            text = _owner_text(rec)
+            if text is not None:
+                if used and turns:
+                    turns.append("[then: " + ", ".join(used[:USED_MAX])
+                                 + (", …" if len(used) > USED_MAX else "") + "]")
+                used = []
+                turns.append("owner: " + text)
+                continue
+            for u in _used(rec):
+                if u not in used:
+                    used.append(u)
+    if used and turns:
+        turns.append("[then: " + ", ".join(used[:USED_MAX]) + (", …" if len(used) > USED_MAX else "") + "]")
+    body = "\n".join(turns)
+    return {"path": path, "cwd": cwd, "first": first, "last": last,
+            "owner_turns": sum(1 for t in turns if t.startswith("owner: ")),
+            "text": body, "tokens": -(-len(body) // CHARS_PER_TOKEN)}
+
+
+def _positive(value, flag):
+    if value < 1:
+        die(f"{flag} must be at least 1")
+    return value
+
+
+def cmd_sessions_list(args):
+    limit = _positive(args.limit, "--limit")
+    budget = _positive(args.batch_tokens, "--batch-tokens")
+    root = sessions_root(args.root)
+    found = _transcripts(root)
+    if found is None:
+        die(f"no Claude Code sessions at {root} (pass --root <dir> when they live elsewhere)")
+    chosen, skipped, unreadable = [], 0, []
+    for mtime, size, path in found:
+        if len(chosen) == limit:
+            break
+        s = _session(path)
+        if "error" in s:
+            unreadable.append(path)
+            continue
+        if not s["owner_turns"]:
+            skipped += 1
+            continue
+        tokens = min(s["tokens"], budget)
+        chosen.append({"path": path, "cwd": s["cwd"], "modified":
+                       datetime.datetime.fromtimestamp(mtime).isoformat(timespec="minutes"),
+                       "bytes": size, "owner_turns": s["owner_turns"], "tokens": tokens,
+                       "cut": s["tokens"] > budget})
+    batches, cur, cur_tokens = [], [], 0
+    for c in chosen:
+        if cur and cur_tokens + c["tokens"] > budget:
+            batches.append(cur)
+            cur, cur_tokens = [], 0
+        cur.append(c["path"])
+        cur_tokens += c["tokens"]
+    if cur:
+        batches.append(cur)
+    raw = sum(c["bytes"] for c in chosen)
+    out = {"root": root, "found": len(found), "found_bytes": sum(f[1] for f in found),
+           "limit": limit, "read": len(chosen), "skipped_no_owner": skipped,
+           "unreadable": unreadable, "raw_bytes": raw,
+           "raw_tokens": -(-raw // CHARS_PER_TOKEN),
+           "tokens": sum(c["tokens"] for c in chosen), "batch_tokens": budget,
+           "readers": len(batches), "batches": batches, "sessions": chosen,
+           "projects": len({c["cwd"] or os.path.dirname(c["path"]) for c in chosen}),
+           "since": min((c["modified"] for c in chosen), default=None),
+           "until": max((c["modified"] for c in chosen), default=None)}
+    if args.json:
+        print(json.dumps(out, ensure_ascii=False))
+        return 0
+    mb = lambda n: f"{n / 1e6:.1f} MB"
+    print(f"{out['found']} sessions found under {root} ({mb(out['found_bytes'])})")
+    if not chosen:
+        print("none has a message of the owner's to read")
+        return 0
+    print(f"would read the {out['read']} most recent with a message of the owner's, "
+          f"{out['since']} to {out['until']}, across {out['projects']} projects")
+    print(f"raw: {mb(raw)}, about {out['raw_tokens']:,} tokens; after extraction: "
+          f"about {out['tokens']:,} tokens, in {out['readers']} small-model readers")
+    if skipped:
+        print(f"{skipped} more recent sessions hold no message of the owner's and are passed over")
+    for p in unreadable:
+        print(f"could not read {p}")
+    return 0
+
+
+def cmd_sessions_extract(args):
+    budget = _positive(args.max_tokens, "--max-tokens")
+    status = 0
+    for path in args.paths:
+        s = _session(os.path.abspath(os.path.expanduser(path)))
+        if "error" in s:
+            note(f"could not read {path}: {s['error']}")
+            status = 1
+            continue
+        head = f"## session {os.path.basename(path)}"
+        meta = ", ".join(x for x in (s["cwd"], (s["first"] or "")[:10]) if x)
+        print(f"{head} ({meta})" if meta else head)
+        text = s["text"] or "(no message of the owner's)"
+        cap = budget * CHARS_PER_TOKEN
+        if len(text) > cap:
+            text = text[:cap].rstrip() + f"\n[cut: about {s['tokens'] - budget:,} more tokens]"
+        print(text)
+        print()
+    return status
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main(argv):
@@ -1380,6 +1728,23 @@ def main(argv):
     p.add_argument("--run", default="", help="the run the owner asked in, to record it there")
     p.add_argument("--json", action="store_true", help="print the result as JSON")
     p.set_defaults(func=cmd_learning_steer)
+
+    sessions = sub.add_parser("sessions", help="past Claude Code sessions, read on first use: list, extract")
+    ssub = sessions.add_subparsers(dest="sessions_command", required=True)
+    p = ssub.add_parser("list", help="the sessions first use would read, and what reading them costs")
+    p.add_argument("--root", default="", help="the transcripts' directory "
+                   "(default: $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects)")
+    p.add_argument("--limit", type=int, default=SESSIONS_LIMIT,
+                   help=f"how many of the most recent sessions to read (default {SESSIONS_LIMIT})")
+    p.add_argument("--batch-tokens", type=int, default=BATCH_TOKENS,
+                   help=f"what one small-model reader is handed, at most (default {BATCH_TOKENS})")
+    p.add_argument("--json", action="store_true", help="print one JSON object, with the batches")
+    p.set_defaults(func=cmd_sessions_list)
+    p = ssub.add_parser("extract", help="the owner's own messages in these sessions, for a reader")
+    p.add_argument("paths", nargs="+", help="transcript files, as `sessions list --json` names them")
+    p.add_argument("--max-tokens", type=int, default=BATCH_TOKENS,
+                   help=f"cut each session past this many tokens (default {BATCH_TOKENS})")
+    p.set_defaults(func=cmd_sessions_extract)
     args = ap.parse_args(argv)
     return args.func(args)
 

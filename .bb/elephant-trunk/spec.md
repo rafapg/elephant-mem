@@ -253,7 +253,7 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 
 ### Reading past sessions
 
-- [ ] **10. Reading past sessions**: the cost estimate, the skip, the small-model debrief
+- [x] **10. Reading past sessions**: the cost estimate, the skip, the small-model debrief
       that keeps how-the-owner-works only, the panorama for confirmation. · verify: reading
 
 ### Close

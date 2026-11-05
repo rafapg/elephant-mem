@@ -15,6 +15,9 @@ hash, saved without ever replacing one, and never started unless it passed.
 A learning the owner steers or forgets leaves the facts the trunk reads: its
 fact becomes `superseded` or `deprecated` in its own file, the bundle's real
 build-index.py rebuilds the manifest, and only the trunk's own how is touched.
+Past sessions read on first use are estimated without a bundle, and their
+extract keeps the owner's own messages and the names of what ran, never tool
+output, the assistant's text, a command's arguments or a credential.
 
 Pure stdlib, Python 3.10+, mirroring tests/test_wiki.py's conventions: a
 throwaway bundle in a tempdir, subprocess calls into the real script, PASS/FAIL
@@ -410,6 +413,7 @@ def _run(root):
     _run_record(root, home)
     _recipe_written(root, home)
     _steer_and_forget(root, home)
+    _past_sessions(root, home)
 
 
 def git(bundle, *args):
@@ -927,6 +931,129 @@ def _steer_and_forget(root, home):
     record("with no build-index.py nothing is forgotten, since the index would keep it read",
            r.returncode != 0 and "build-index.py" in r.stderr
            and (b / "knowledge" / "facts" / "dispatch-cc.md").read_text(encoding="utf-8") == was, r.stderr)
+
+
+
+def transcript(path, records, mtime):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def owner(text, **extra):
+    return {"type": "user", "cwd": "/work/repo", "timestamp": "2026-11-01T10:00:00Z",
+            "origin": {"kind": "human"}, "message": {"role": "user", "content": text}, **extra}
+
+
+def assistant(*blocks):
+    return {"type": "assistant", "message": {"role": "assistant", "content": list(blocks)}}
+
+
+def tool_use(name, **inp):
+    return {"type": "tool_use", "name": name, "input": inp}
+
+
+def _past_sessions(root, home):
+    # ── past sessions: the estimate ──────────────────────────────────────────
+    env = env_for(root / "nohome")          # no bundle anywhere: sessions need none
+    projects = root / "claude" / "projects"
+    secret = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"
+    rich = transcript(projects / "-work-repo" / "rich.jsonl", [
+        owner("read the open PRs before proposing, always"),
+        owner("<system-reminder>injected rules</system-reminder>"),
+        owner("<command-name>/bb:spec</command-name><command-message>bb:spec</command-message>"
+              "<command-args>then dispatch</command-args>"),
+        owner("<command-name>/compact</command-name><command-message>compact</command-message>"),
+        {**owner("a skill body"), "isMeta": True},
+        {**owner("a subagent prompt"), "isSidechain": True},
+        {**owner("a peer message"), "origin": {"kind": "peer"}},
+        owner("Another Claude session sent a message: hi"),
+        owner([{"type": "tool_result", "tool_use_id": "t1", "content": "FILE CONTENT customer Acme"}]),
+        assistant({"type": "text", "text": "ASSISTANT PROSE about the topic"},
+                  tool_use("Skill", skill="orq"),
+                  tool_use("Bash", command="TOKEN=abc orq start split --brief 'Acme; rm -rf'"
+                                           " && cat x | grep y\nsecond line words"),
+                  tool_use("Bash", command="python3 - <<'EOF'\nimport os; customer()\nEOF"),
+                  tool_use("Agent", subagent_type="general-purpose", prompt="PROMPT TEXT")),
+        owner(f"use this key {secret} and password: hunter2hunter2 please"),
+        owner("\n\n<pasted_content id=\"ab\">\nmy long dictated rule\n</pasted_content id=\"ab\">\n"),
+        owner("x" * 5000),
+    ], 3000)
+    transcript(projects / "-work-repo" / "older.jsonl", [owner("older session")], 1000)
+    transcript(projects / "-work-other" / "auto.jsonl",
+               [{**owner("<scheduled-task name=\"x\">run</scheduled-task>"),
+                 "origin": {"kind": "task-notification"}}], 4000)
+    transcript(projects / "-work-repo" / "rich" / "subagents" / "agent-1.jsonl",
+               [owner("subagent transcript")], 5000)
+    (projects / "-work-repo" / "memory").mkdir(parents=True, exist_ok=True)
+
+    r = run(TRUNK, "sessions", "list", "--root", projects, "--json", env=env)
+    try:
+        est = json.loads(r.stdout)
+    except ValueError:
+        est = None
+    record("sessions list runs with no bundle and prints one JSON object",
+           r.returncode == 0 and est is not None, r.stdout + r.stderr)
+    est = est or {}
+    record("only top-level transcripts are found, a subagent's is not",
+           est.get("found") == 3, est)
+    record("sessions with no message of the owner's are passed over and counted",
+           est.get("read") == 2 and est.get("skipped_no_owner") == 1
+           and [Path(s["path"]).name for s in est.get("sessions", [])] == ["rich.jsonl", "older.jsonl"], est)
+    record("the estimate carries raw size, extracted tokens and readers",
+           est.get("raw_bytes", 0) > est.get("tokens", 0) * 4 > 0 and est.get("readers") == 1
+           and est.get("raw_tokens") == -(-est.get("raw_bytes", 0) // 4), est)
+    r = run(TRUNK, "sessions", "list", "--root", projects, "--limit", "1", "--json", env=env)
+    one = json.loads(r.stdout) if r.returncode == 0 else {}
+    record("--limit reads fewer, the most recent first", one.get("read") == 1
+           and Path(one["sessions"][0]["path"]).name == "rich.jsonl", r.stdout + r.stderr)
+    r = run(TRUNK, "sessions", "list", "--root", projects, "--batch-tokens", "100", "--json", env=env)
+    small = json.loads(r.stdout) if r.returncode == 0 else {}
+    record("a smaller reader budget splits the sessions into more readers, none over it",
+           small.get("readers") == 2 and all(s["tokens"] <= 100 for s in small.get("sessions", []))
+           and small["sessions"][0]["cut"] is True, small)
+    r = run(TRUNK, "sessions", "list", "--root", projects, env=env)
+    record("the plain estimate names sessions, size, tokens and readers",
+           r.returncode == 0 and "3 sessions found" in r.stdout and "small-model readers" in r.stdout
+           and "1 more recent sessions hold no message" in r.stdout, r.stdout + r.stderr)
+    r = run(TRUNK, "sessions", "list", "--root", root / "nowhere", env=env)
+    record("no transcripts directory exits 1 and names it",
+           r.returncode == 1 and "no Claude Code sessions" in r.stderr, r.stderr)
+    r = run(TRUNK, "sessions", "list", "--root", projects, "--limit", "0", env=env)
+    record("a limit under 1 is refused", r.returncode == 1 and "--limit" in r.stderr, r.stderr)
+    cfg_env = dict(env, CLAUDE_CONFIG_DIR=str(root / "claude"))
+    r = run(TRUNK, "sessions", "list", "--json", env=cfg_env)
+    record("with no --root, CLAUDE_CONFIG_DIR/projects is read",
+           r.returncode == 0 and json.loads(r.stdout).get("root") == str(projects), r.stdout + r.stderr)
+
+    # ── past sessions: the extract ───────────────────────────────────────────
+    r = run(TRUNK, "sessions", "extract", rich, env=env)
+    out = r.stdout
+    record("extract runs with no bundle", r.returncode == 0, r.stderr)
+    record("the owner's own messages are kept, a skill command with its arguments",
+           "owner: read the open PRs before proposing, always" in out
+           and "owner: /bb:spec then dispatch" in out
+           and "owner: [pasted] my long dictated rule" in out, out[:2000])
+    leaked = [w for w in ("injected rules", "a skill body", "a subagent prompt", "a peer message",
+                          "Another Claude session", "FILE CONTENT", "Acme", "ASSISTANT PROSE",
+                          "PROMPT TEXT", "/compact", "customer", "second line", "TOKEN=", "abc")
+              if w in out]
+    record("tool output, the assistant's text, injected turns and arguments are left out",
+           not leaked, leaked)
+    record("what ran is named by program, skill and subagent, plumbing passed over",
+           "[then: skill orq, ran orq, ran python3, subagent general-purpose]" in out, out[:2000])
+    record("credential-shaped strings never reach a reader",
+           secret not in out and "hunter2hunter2" not in out
+           and out.count("[secret left out]") >= 2, out[:2000])
+    record("a long message is cut", "x" * 2001 not in out and "[… cut]" in out, "")
+    r = run(TRUNK, "sessions", "extract", rich, "--max-tokens", "50", env=env)
+    record("--max-tokens cuts a session and says how much was left",
+           r.returncode == 0 and "[cut: about" in r.stdout and len(r.stdout) < 400, r.stdout)
+    r = run(TRUNK, "sessions", "extract", rich, root / "missing.jsonl", env=env)
+    record("an unreadable transcript exits 1, the others still extracted",
+           r.returncode == 1 and "could not read" in r.stderr and "owner: read the open PRs" in r.stdout,
+           r.stderr)
 
 
 if __name__ == "__main__":
