@@ -2,7 +2,7 @@
 """Standalone test suite for elephant-trunk's `assets/scripts/trunk.py`.
 
 Covers the plugin's shape (its plugin.json, its CHANGELOG, its marketplace
-entry), how it finds the bundle (`--bundle`, then ELEPHANT_BUNDLE, then the
+entry, its README badge), how it finds the bundle (`--bundle`, then ELEPHANT_BUNDLE, then the
 machine pointer, with elephant-wiki's guidance when none resolves), and how it
 reads `trunk.tag` from elephant.json (the bundle's value, or `how-i-work` with a
 hint on how to set another), how `facts` lists the owner's how from
@@ -181,6 +181,12 @@ def _run(root):
     record("the plugin has its own CHANGELOG", bool(cl))
     record("the CHANGELOG has a section for plugin.json's version",
            bool(version) and f"## [{version}]" in cl, version)
+    # shields.io escapes a literal dash in a badge's text as `--`.
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    badge = re.search(r"img\.shields\.io/badge/elephant--trunk-v(.+?)-black", readme)
+    shown = badge.group(1).replace("--", "-") if badge else None
+    record("the README's elephant-trunk badge shows plugin.json's version",
+           bool(version) and shown == version, f"badge {shown}, plugin.json {version}")
 
     # tests/test_skill_invocation.py checks the 1024-character limit on
     # plugin/skills/ only; its own parser reads the trunk's, so the two agree.
