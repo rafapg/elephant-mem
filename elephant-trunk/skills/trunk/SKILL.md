@@ -350,8 +350,11 @@ Save the choice of a saved recipe (a written one is recorded as it is
 written):
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> recipe --value '{"name": "<recipe>", "fact": "<its link, or null>", "command": "<the start command, or null on claude-code>", "roles": "<one line per role>"}'
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> recipe --value '{"name": "<recipe>", "fact": <"its link", or null>, "command": <"the start command", or null on claude-code>, "roles": "<one line per role>"}'
 ```
+
+`fact` and `command` are either a quoted string or a bare `null`, outside
+any quotes: `"null"` in quotes is a string, not the absence of a value.
 
 #### Writing a recipe
 
@@ -441,7 +444,7 @@ start.
 start runs the file the next run will reuse:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe save <name> --dir <the recipe directory>
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe save <name> --dir '<the recipe directory>'
 ```
 
 It copies the checked draft, byte for byte, and refuses a draft that was not
@@ -790,8 +793,9 @@ What is left of step 4 is said and offered, never run silently:
   failed. Offer to run it now; on the owner's yes, run 4b as written, with
   `run ingested` after it.
 - **Learnings**: the record's `learnings`, each with its link, and its
-  `steers`, what was forgotten or steered since (`run show` marks each
-  learning that was). The owner can steer or forget any of them here, with
+  `steers`, what was forgotten or steered since: in `run show --json`, match
+  `steers[].link` against each learning's link (its text before the first
+  `:`), since the JSON keeps them apart. The owner can steer or forget any of them here, with
   **Steer or forget a learning**, passing this run as `--run`. What this
   session learns about how the owner works is kept as pending when it
   surfaces (**A learning surfaces mid-run**) and captured as 4c says.
@@ -1162,7 +1166,7 @@ It must pass; when it does not, commit nothing and say so. Then append one
 dated line to `knowledge/log.md`, newest first, in the form of the lines
 already there (`**Trunk**: forgot <link>`, or `**Trunk**: steered <link> to
 <the new link>`), and commit locally:
-`git -C <bundle> add -A && git -C <bundle> commit -m "trunk: forget <link>"`
+`git -C '<bundle>' add -A && git -C '<bundle>' commit -m "trunk: forget <link>"`
 (or `"trunk: steer <link> to <the new link>"`). The script keeps
 `state/trunk/` git-ignored, so no run record goes in. Never push.
 
