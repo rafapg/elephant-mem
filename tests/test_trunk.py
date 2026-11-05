@@ -1163,6 +1163,39 @@ def _past_sessions(root, home):
     record("a _pass, _pwd, _key, auth or chave key, a token or an API key in prose or after "
            "a scheme, a URL with no user, a GitLab token and a PGP key are left out",
            not missed, missed)
+    # One input per _SECRETS pattern, in its order, that only that pattern
+    # cuts: under 32 characters where the shape allows (the AIza shape is
+    # longer and so carries no digit) and with no key word, so neither
+    # _LONG_TOKEN nor a keyed or prose pass would cover for it.
+    per_pattern = [
+        ("-----BEGIN RSA PRIVATE " + "KEY-----\nMIIEab12cd\n-----END RSA PRIVATE " + "KEY-----", "MIIEab12cd"),
+        ("s" + "k-AbCdEf1234567890", "AbCdEf1234567890"),
+        ("gh" + "p_A1b2C3d4E5f6G7h8I9j0", "A1b2C3d4E5f6G7h8I9j0"),
+        ("github" + "_pat_11ABCDEFG0abcdefghij", "11ABCDEFG0abcdefghij"),
+        ("glpat" + "-aB3dE6gH9jK2mN5pQ8sT", "aB3dE6gH9jK2mN5pQ8sT"),
+        ("xo" + "xb-1234567890-abcdef", "1234567890-abcdef"),
+        ("AK" + "IAIOSFODNN7EXAMPLE", "IOSFODNN7EXAMPLE"),
+        ("AI" + "zaSyDabcdefghijklmnopqrstuvwxyzAB", "SyDabcdefghijklmnopqrstuvwxyzAB"),
+        ("ey" + "JhbGciOiJ.eyJzdWIiOiJ.dozjgNryP4", "dozjgNryP4"),
+        ("Bearer 9f8e7d6c5b4a3f2e", "9f8e7d6c5b4a3f2e"),
+        ("postgres://admin:S3cretPw9@db", "S3cretPw9"),
+        ("https://hooks.slack" + ".com/services/T0000/B0000/Xk9q", "Xk9q"),
+        ("https://discord" + ".com/api/webhooks/12345/aB3dE6", "aB3dE6"),
+    ]
+    mod = load_trunk()
+    record("every _SECRETS pattern has an input of its own",
+           len(per_pattern) == len(mod._SECRETS), (len(per_pattern), len(mod._SECRETS)))
+    missed = [text for text, value in per_pattern if value in mod._redact(text)]
+    record("each _SECRETS pattern's own shape is left out", not missed, missed)
+    covered = []
+    for i, (text, value) in enumerate(per_pattern[:len(mod._SECRETS)]):
+        rx = mod._SECRETS.pop(i)
+        try:
+            if value not in mod._redact(text):
+                covered.append(text)
+        finally:
+            mod._SECRETS.insert(i, rx)
+    record("no other pass covers for a _SECRETS pattern on its own shape", not covered, covered)
     whole = {"senha=abc": "senha=[secret left out]",
              "export GITHUB_TOKEN=ghp_" + "a1" * 18: "export GITHUB_TOKEN=[secret left out]",
              "OPENAI_API_KEY=sk-proj-" + "b2" * 12: "OPENAI_API_KEY=[secret left out]"}
