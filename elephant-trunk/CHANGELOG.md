@@ -47,3 +47,16 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   one step. A bundle with no such fact gets an empty list and a note, and one
   whose manifest was never built stops and says to rebuild it rather than
   report that the owner has no how.
+- **`trunk.py run` keeps the run record** in `<bundle>/state/trunk/runs/<name>.json`,
+  one JSON file per run: the topic, the study, the approaches, the decisions,
+  the brief, the recipe and every dispatch attempt. `run new` starts one,
+  `run set` continues it one field at a time, `run show` reads it back and
+  `run list` puts the most recently continued first (`--open` for the runs not
+  dispatched yet). A record can hold whatever the conversation touched and
+  `ingest` commits with `git add -A`, so before every write the script makes
+  sure `state/trunk/` is git-ignored in the bundle, and in a git bundle asks git
+  itself: a rule that re-includes the path, or a record already tracked, refuses
+  the write instead of leaving raw content for the next commit. A failed
+  dispatch is kept with its error and the run stays open; a run that was
+  dispatched refuses a second dispatch and says what ran and where. A missing or
+  unreadable record says so and offers to start over from the topic.

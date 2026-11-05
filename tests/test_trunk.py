@@ -5,8 +5,10 @@ Covers the plugin's shape (its plugin.json, its CHANGELOG, its marketplace
 entry), how it finds the bundle (`--bundle`, then ELEPHANT_BUNDLE, then the
 machine pointer, with elephant-wiki's guidance when none resolves), and how it
 reads `trunk.tag` from elephant.json (the bundle's value, or `how-i-work` with a
-hint on how to set another), and how `facts` lists the owner's how from
-knowledge/manifest.jsonl alone.
+hint on how to set another), how `facts` lists the owner's how from
+knowledge/manifest.jsonl alone, and how `run` writes a run record under
+state/trunk/ (git-ignored, so a `git add -A` never stages it), reads it back,
+continues it, and never dispatches a dispatched run again.
 
 Pure stdlib, Python 3.10+, mirroring tests/test_wiki.py's conventions: a
 throwaway bundle in a tempdir, subprocess calls into the real script, PASS/FAIL
@@ -397,6 +399,201 @@ def _run(root):
     r = run(TRUNK, "facts", env=env_for(root / "nohome"))
     record("facts resolves the bundle like config: no bundle stops with the same guidance",
            r.returncode != 0 and "no bundle pointer" in r.stderr, r.stderr)
+
+    _run_record(root, home)
+
+
+def git(bundle, *args):
+    return subprocess.run(["git", "-C", str(bundle), *args], capture_output=True, text=True,
+                          encoding="utf-8")
+
+
+def git_bundle(root, name, gitignore=None):
+    """A bundle that is a git work tree, as `init` leaves it, with the seed's
+    .gitignore unless another is given."""
+    b = make_bundle(root, name, {"trunk": {"tag": "como-trabalhar"}})
+    seed = (REPO_ROOT / "plugin" / "assets" / "seed" / ".gitignore").read_text(encoding="utf-8")
+    (b / ".gitignore").write_text(seed if gitignore is None else gitignore, encoding="utf-8")
+    git(b, "init", "-q")
+    return b
+
+
+def run_json(*args, env):
+    r = run(TRUNK, "run", *args, "--json", env=env)
+    try:
+        return r, json.loads(r.stdout)
+    except ValueError:
+        return r, None
+
+
+def _run_record(root, home):
+    env = env_for(home)
+    has_git = shutil.which("git") is not None
+    record("git is on PATH (the ignore checks below need it)", has_git)
+
+    # ── a run is written to state/trunk/, git-ignored ─────────────────────────
+    b = git_bundle(root, "runs")
+    r, out = run_json("new", "--bundle", b, "--topic", "Migrar o catálogo de entidades!", env=env)
+    name = out["name"] if out else ""
+    record("run new starts a record and names it after the date and the topic",
+           r.returncode == 0 and re.fullmatch(r"\d{4}-\d{2}-\d{2}-migrar-o-catalogo-de-entidades", name or ""),
+           r.stderr or r.stdout)
+    path = b / "state" / "trunk" / "runs" / f"{name}.json"
+    record("the record is one JSON file under state/trunk/runs/",
+           out is not None and path.is_file() and Path(out["path"]) == path, out)
+    rec = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    record("a new record is open, carries its topic and nothing decided yet",
+           rec.get("status") == "open" and rec.get("topic") == "Migrar o catálogo de entidades!"
+           and rec.get("dispatch") is None and rec.get("approaches") == [] and rec.get("decisions") == [],
+           rec)
+    gi_lines = (b / ".gitignore").read_text(encoding="utf-8").splitlines()
+    record("writing a run git-ignores state/trunk/ in the bundle",
+           "state/trunk/" in gi_lines and "git-ignored state/trunk/" in r.stderr, gi_lines)
+    record("the seed's ignore rules are kept", "state/recall.json" in gi_lines, gi_lines)
+    if os.name == "posix":
+        mode = path.stat().st_mode & 0o777
+        record("the raw record is readable by its owner only", mode == 0o600, oct(mode))
+
+    r2, out2 = run_json("new", "--bundle", b, "--topic", "Migrar o catálogo de entidades!", env=env)
+    record("the same topic twice gets a second name, never overwriting the first",
+           r2.returncode == 0 and out2 is not None and out2["name"] == f"{name}-2", r2.stderr or r2.stdout)
+    gi_lines = (b / ".gitignore").read_text(encoding="utf-8").splitlines()
+    record("the ignore entry is written once, however many runs",
+           gi_lines.count("state/trunk/") == 1 and "git-ignored" not in r2.stderr, gi_lines)
+    r = run(TRUNK, "run", "new", "--bundle", b, "--topic", "x", "--name", name, env=env)
+    record("an explicit --name that exists is refused", r.returncode != 0 and "already exists" in r.stderr,
+           r.stderr)
+    r = run(TRUNK, "run", "new", "--bundle", b, "--topic", "x", "--name", "../escape", env=env)
+    record("a run name cannot leave state/trunk/runs/",
+           r.returncode != 0 and not (b / "state" / "trunk" / "escape.json").exists(), r.stderr)
+
+    if has_git:
+        git(b, "add", "-A")
+        staged = git(b, "diff", "--cached", "--name-only").stdout.splitlines()
+        record("an `ingest`-style `git add -A` stages no run record",
+               staged and not any(s.startswith("state/trunk") for s in staged), staged)
+
+    # ── read back and continued ───────────────────────────────────────────────
+    S = ("run", "set", "--bundle", b, name)
+    steps = [run(TRUNK, *S, "study", "--value", "## what the memory says\nthree facts", env=env),
+             run(TRUNK, *S, "approaches", "--value", json.dumps(["split by area", "one big PR"]), env=env),
+             run(TRUNK, *S, "decision", "--value", "split by area", env=env),
+             run(TRUNK, *S, "decision", "--value", "orq, two sessions", env=env),
+             run(TRUNK, *S, "note", "--value", "owner left before dispatching", env=env)]
+    record("run set continues a run, one field at a time", all(s.returncode == 0 for s in steps),
+           "\n".join(s.stderr for s in steps))
+    brief = root / "brief.md"
+    brief.write_text("# brief\nbuild it in two sessions\n", encoding="utf-8")
+    r = run(TRUNK, *S, "brief", "--file", brief, env=env)
+    record("a long value is read from --file", r.returncode == 0, r.stderr)
+
+    r, rec = run_json("show", "--bundle", b, name, env=env)
+    record("run show --json reads the record back as written",
+           r.returncode == 0 and rec is not None and rec["study"].startswith("## what the memory says")
+           and rec["approaches"] == ["split by area", "one big PR"]
+           and [d["text"] for d in rec["decisions"]] == ["split by area", "orq, two sessions"]
+           and rec["brief"] == "# brief\nbuild it in two sessions\n"
+           and [n["text"] for n in rec["log"]] == ["owner left before dispatching"], r.stderr or rec)
+    record("continuing a run moves its updated time and keeps its created time",
+           rec is not None and rec["updated"] > rec["created"], rec and (rec["created"], rec["updated"]))
+    r = run(TRUNK, "run", "show", "--bundle", b, name, env=env)
+    record("the plain show names the topic, the approaches, the decisions and the brief",
+           r.returncode == 0 and "Migrar o catálogo" in r.stdout and "split by area" in r.stdout
+           and "orq, two sessions" in r.stdout and "build it in two sessions" in r.stdout, r.stdout)
+
+    r = run(TRUNK, *S, "approaches", "--value", '{"not": "a list"}', env=env)
+    record("approaches must be a JSON array", r.returncode != 0, r.stderr)
+    r = run(TRUNK, *S, "recipe", "--value", "not json", env=env)
+    record("a recipe must be JSON", r.returncode != 0 and "JSON" in r.stderr, r.stderr)
+    r = run(TRUNK, *S, "recipe", "--value", json.dumps({"name": "two-sessions", "check": {"ok": False, "error": "bad"}}),
+            env=env)
+    _, rec = run_json("show", "--bundle", b, name, env=env)
+    record("a recipe and its failed check are kept in the record",
+           r.returncode == 0 and rec and rec["recipe"]["check"]["error"] == "bad", r.stderr)
+    r = run(TRUNK, *S, "study", env=env)
+    record("set with no value is refused", r.returncode != 0, r.stderr)
+
+    # ── list: most recent first, open runs ────────────────────────────────────
+    r, out = run_json("list", "--bundle", b, env=env)
+    names = [x["name"] for x in out["runs"]] if out else None
+    record("run list puts the most recently continued run first",
+           r.returncode == 0 and names == [name, f"{name}-2"], names)
+
+    # ── dispatch: failure keeps it open, success closes it to re-dispatch ─────
+    D = ("run", "dispatch", "--bundle", b, name, "--via", "orq", "--command", "orq start two-sessions")
+    r = run(TRUNK, *D, "--error", "orq: no such recipe", env=env)
+    _, rec = run_json("show", "--bundle", b, name, env=env)
+    record("a failed dispatch is recorded with its error and the run stays open",
+           r.returncode == 0 and rec and rec["status"] == "open" and rec["dispatch"] is None
+           and rec["attempts"][-1]["error"] == "orq: no such recipe" and not rec["attempts"][-1]["ok"],
+           r.stderr or rec)
+    r = run(TRUNK, "run", "show", "--bundle", b, name, env=env)
+    record("show says a run was not dispatched, with the error", "not dispatched" in r.stdout
+           and "orq: no such recipe" in r.stdout, r.stdout)
+    r = run(TRUNK, *D, "--where", "orq team trunk-7", env=env)
+    _, rec = run_json("show", "--bundle", b, name, env=env)
+    record("a dispatch that ran makes the run dispatched, with the command and where",
+           r.returncode == 0 and rec and rec["status"] == "dispatched"
+           and rec["dispatch"]["command"] == "orq start two-sessions"
+           and rec["dispatch"]["where"] == "orq team trunk-7" and len(rec["attempts"]) == 2,
+           r.stderr or rec)
+    r = run(TRUNK, *D, env=env)
+    _, after = run_json("show", "--bundle", b, name, env=env)
+    record("a dispatched run is never dispatched again: refused, saying what and where",
+           r.returncode != 0 and "never dispatched again" in r.stderr and "trunk-7" in r.stderr
+           and after == rec, r.stderr)
+    r = run(TRUNK, *S, "brief", "--value", "another brief", env=env)
+    record("what was dispatched stays as dispatched", r.returncode != 0, r.stderr)
+    r = run(TRUNK, *S, "decision", "--value", "follow up next week", env=env)
+    record("the conversation continues after the dispatch", r.returncode == 0, r.stderr)
+
+    r, out = run_json("list", "--bundle", b, "--open", env=env)
+    record("run list --open leaves out the dispatched run",
+           r.returncode == 0 and out is not None and [x["name"] for x in out["runs"]] == [f"{name}-2"], out)
+
+    # ── missing or unreadable on resume ───────────────────────────────────────
+    r = run(TRUNK, "run", "show", "--bundle", b, "no-such-run", env=env)
+    record("a missing record says so and offers to start over from the topic",
+           r.returncode != 0 and "no run record" in r.stderr and "start over" in r.stderr, r.stderr)
+    (b / "state" / "trunk" / "runs" / "broken.json").write_text("{half a rec", encoding="utf-8")
+    r = run(TRUNK, "run", "show", "--bundle", b, "broken", env=env)
+    record("an unreadable record says so and offers to start over",
+           r.returncode != 0 and "unreadable" in r.stderr and "start over" in r.stderr, r.stderr)
+    r, out = run_json("list", "--bundle", b, env=env)
+    record("list skips an unreadable record and says so",
+           r.returncode == 0 and out is not None and len(out["runs"]) == 2 and "broken" in r.stderr, r.stderr)
+    empty = git_bundle(root, "no-runs")
+    r, out = run_json("list", "--bundle", empty, env=env)
+    record("a bundle with no runs lists none and writes nothing",
+           r.returncode == 0 and out is not None and out["runs"] == []
+           and not (empty / "state" / "trunk").exists(), r.stderr or out)
+
+    # ── the ignore rule, when it cannot be trusted ────────────────────────────
+    covered = git_bundle(root, "covered", "state/\n")
+    r = run(TRUNK, "run", "new", "--bundle", covered, "--topic", "t", env=env)
+    record("a bundle that already ignores state/ gets no extra entry",
+           r.returncode == 0 and (covered / ".gitignore").read_text(encoding="utf-8") == "state/\n",
+           r.stderr)
+    plain = make_bundle(root, "not-git")
+    r = run(TRUNK, "run", "new", "--bundle", plain, "--topic", "t", env=env)
+    record("a bundle that is not a git repo still records, and still gets the ignore entry",
+           r.returncode == 0 and "state/trunk/" in (plain / ".gitignore").read_text(encoding="utf-8"),
+           r.stderr)
+    if has_git:
+        reinc = git_bundle(root, "reincluded")
+        (reinc / "state" / ".gitignore").write_text("!trunk/\n", encoding="utf-8")
+        r = run(TRUNK, "run", "new", "--bundle", reinc, "--topic", "t", env=env)
+        record("a rule that re-includes state/trunk/ refuses the write, and nothing is written",
+               r.returncode != 0 and "not git-ignored" in r.stderr
+               and not (reinc / "state" / "trunk" / "runs").exists(), r.stderr)
+        tracked = git_bundle(root, "tracked", "")
+        (tracked / "state" / "trunk").mkdir(parents=True)
+        (tracked / "state" / "trunk" / "old.json").write_text("{}", encoding="utf-8")
+        git(tracked, "add", "-A")
+        r = run(TRUNK, "run", "new", "--bundle", tracked, "--topic", "t", env=env)
+        record("a bundle that already tracks state/trunk/ refuses the write",
+               r.returncode != 0 and "already tracks" in r.stderr
+               and not (tracked / "state" / "trunk" / "runs").exists(), r.stderr)
 
 
 if __name__ == "__main__":

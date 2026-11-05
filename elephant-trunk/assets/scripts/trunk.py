@@ -18,8 +18,25 @@ Commands:
                         trunk area tag, read from knowledge/manifest.jsonl only
     --area <tag>        only this area tag (repeatable; default: all three)
     --json              one JSON object on stdout
+  run new --topic <t>   start a run record; prints its name
+    [--name <n>]        the run's name (default: <date>-<slug of the topic>)
+  run show <name>       read a run record back (--json: the record itself)
+  run list              the runs, most recent first (--open: not dispatched yet)
+  run set <name> <field> (--value <v> | --file <path|->)
+                        continue a run: study, brief (text, replaced);
+                        approaches (JSON array), recipe (JSON object), replaced;
+                        decision, note (text, appended)
+  run dispatch <name> --via <orq|claude-code> --command <c> [--where <w>]
+                        [--error <e>]
+                        record a dispatch attempt; without --error the run
+                        becomes dispatched, and a dispatched run refuses another
   --bundle <path>       override bundle location (default: ELEPHANT_BUNDLE, then
                         the machine pointer ~/.config/elephant-mem/config.json)
+
+Run records live in <bundle>/state/trunk/runs/<name>.json. Before any write the
+script makes sure `state/trunk/` is git-ignored in the bundle (appending it to
+the bundle's .gitignore when needed) and, in a git bundle, asks git whether it
+is: a record git would commit is never written.
 
 The bundle is resolved exactly as elephant-wiki resolves it, and a bundle that
 cannot be found stops with the same guidance.
@@ -27,9 +44,15 @@ cannot be found stops with the same guidance.
 Pure stdlib, Python 3.10+. Cross-platform (explicit UTF-8 I/O).
 """
 import argparse
+import datetime
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
+import unicodedata
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -226,6 +249,324 @@ def cmd_facts(args):
     return 0
 
 
+# ── the run record ───────────────────────────────────────────────────────────
+#
+# A run is one JSON object in <bundle>/state/trunk/runs/<name>.json. Its raw
+# content can hold whatever the conversation touched, so it never enters the
+# bundle's history: `ingest` commits with `git add -A`, and the only thing that
+# keeps a record out of that commit is the ignore rule ensured below.
+
+RECORD_VERSION = 1
+IGNORE_ENTRY = "state/trunk/"
+# .gitignore lines that already cover state/trunk/ (state/ covers it too).
+IGNORE_COVERS = {"state/trunk/", "state/trunk", "/state/trunk/", "/state/trunk",
+                 "state/", "state", "/state/", "/state"}
+NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,79}")
+STATUS_OPEN, STATUS_DISPATCHED = "open", "dispatched"
+DISPATCH_VIAS = ("orq", "claude-code")
+# What `run set` may change: text replaced, JSON replaced, text appended.
+TEXT_FIELDS = ("study", "brief")
+JSON_FIELDS = {"approaches": list, "recipe": dict}
+APPEND_FIELDS = {"decision": "decisions", "note": "log"}
+# After the dispatch the conversation can go on, but what was dispatched stays
+# as it was dispatched.
+FROZEN_AFTER_DISPATCH = ("study", "approaches", "brief", "recipe")
+
+
+class RecordError(Exception):
+    """A run record that is missing, unreadable or not a run record."""
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="microseconds")
+
+
+def runs_dir(bundle):
+    return os.path.join(bundle, "state", "trunk", "runs")
+
+
+def record_path(bundle, name):
+    return os.path.join(runs_dir(bundle), name + ".json")
+
+
+def check_name(name):
+    if not NAME_RE.fullmatch(name or "") or ".." in name:
+        die(f'"{name}" is not a run name: lowercase letters, digits, ".", "_" and "-", '
+            f"starting with a letter or digit, at most 80 characters")
+    return name
+
+
+def slug(text, limit=48):
+    """A run name's slug from the topic: accents dropped (a Portuguese topic
+    keeps its words), anything else not alphanumeric collapsed to "-"."""
+    ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-")
+    return s[:limit].rstrip("-") or "run"
+
+
+def ensure_ignored(bundle):
+    """Make sure state/trunk/ is git-ignored before a record is written.
+
+    Appends `state/trunk/` to the bundle's .gitignore unless a line there
+    already covers it. Then, when the bundle is a git work tree, asks git
+    itself: a rule elsewhere can re-include the path (`!state/trunk/` in a
+    nested .gitignore), and a record already tracked is committed whatever the
+    ignore file says. Either way the write is refused rather than leave raw
+    conversation content for the next `git add -A`."""
+    gi = os.path.join(bundle, ".gitignore")
+    try:
+        with open(gi, encoding="utf-8") as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        text = ""
+    except OSError as exc:
+        die(f"cannot read {gi} ({exc}); state/trunk/ must be git-ignored before a run is recorded")
+    if not IGNORE_COVERS & {ln.strip() for ln in text.splitlines()}:
+        sep = "" if not text or text.endswith("\n") else "\n"
+        with open(gi, "a", encoding="utf-8") as fh:
+            fh.write(f"{sep}# elephant-trunk run records: raw, never committed\n{IGNORE_ENTRY}\n")
+        note(f"git-ignored {IGNORE_ENTRY} in {gi}")
+    git = shutil.which("git")
+    if not git:
+        return
+    probe = "state/trunk/runs/probe.json"
+    try:
+        r = subprocess.run([git, "-C", bundle, "check-ignore", "-q", probe],
+                           capture_output=True, text=True)
+        tracked = subprocess.run([git, "-C", bundle, "ls-files", "--", "state/trunk"],
+                                 capture_output=True, text=True)
+    except OSError:
+        return
+    if r.returncode not in (0, 1):
+        return  # not a git work tree (or git cannot tell): nothing will commit it
+    if r.returncode == 1:
+        die(f"{IGNORE_ENTRY} is not git-ignored in {bundle}: a rule re-includes it "
+            f"(check `git -C {bundle} check-ignore -v {probe}`); no run record was written")
+    if tracked.returncode == 0 and tracked.stdout.strip():
+        die(f"{bundle} already tracks files under {IGNORE_ENTRY} "
+            f"(`git -C {bundle} rm -r --cached state/trunk`); no run record was written")
+
+
+def write_record(bundle, rec, create=False):
+    """Write a record atomically, owner-only: a temp file in the same
+    directory, then a rename, so a crash never leaves half a record. With
+    `create`, an existing record of the same name is never replaced."""
+    ensure_ignored(bundle)
+    d = runs_dir(bundle)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    path = record_path(bundle, rec["name"])
+    if create:
+        try:
+            os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        except FileExistsError:
+            return False
+    fd, tmp = tempfile.mkstemp(prefix=".run-", suffix=".tmp", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(rec, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return True
+
+
+def read_record(bundle, name):
+    """A run record read back, or RecordError saying why it cannot be."""
+    path = record_path(bundle, name)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rec = json.load(fh)
+    except FileNotFoundError:
+        raise RecordError(f"no run record named {name} ({path})")
+    except (OSError, ValueError) as exc:
+        raise RecordError(f"the run record {path} is unreadable ({exc})")
+    if not isinstance(rec, dict) or not isinstance(rec.get("topic"), str) \
+            or rec.get("status") not in (STATUS_OPEN, STATUS_DISPATCHED):
+        raise RecordError(f"the run record {path} is not a run record")
+    return rec
+
+
+def load_or_die(bundle, name):
+    try:
+        return read_record(bundle, name)
+    except RecordError as exc:
+        die(f"{exc} — start over from the topic with `trunk.py run new --topic ...`")
+
+
+def new_record(name, topic):
+    t = now()
+    return {"version": RECORD_VERSION, "name": name, "topic": topic,
+            "status": STATUS_OPEN, "created": t, "updated": t,
+            "study": None, "approaches": [], "decisions": [], "brief": None,
+            "recipe": None, "dispatch": None, "attempts": [], "log": []}
+
+
+def list_records(bundle):
+    """Every readable record, most recently updated first, plus the names of
+    the files that could not be read."""
+    d = runs_dir(bundle)
+    try:
+        names = sorted(f[:-5] for f in os.listdir(d) if f.endswith(".json") and not f.startswith("."))
+    except FileNotFoundError:
+        return [], []
+    recs, bad = [], []
+    for n in names:
+        try:
+            recs.append(read_record(bundle, n))
+        except RecordError:
+            bad.append(n)
+    recs.sort(key=lambda r: (str(r.get("updated", "")), r.get("name", "")), reverse=True)
+    return recs, bad
+
+
+def summary(rec):
+    return {k: rec.get(k) for k in ("name", "topic", "status", "created", "updated")}
+
+
+def cmd_run_new(args):
+    bundle = resolve_bundle(args.bundle)
+    topic = args.topic.strip()
+    if not topic:
+        die("a run needs a topic")
+    if args.name:
+        name = check_name(args.name)
+        if not write_record(bundle, new_record(name, topic), create=True):
+            die(f"a run named {name} already exists — continue it, or pick another --name")
+    else:
+        base = f"{datetime.date.today().isoformat()}-{slug(topic)}"
+        for i in range(1, 1000):
+            name = base if i == 1 else f"{base}-{i}"
+            if write_record(bundle, new_record(name, topic), create=True):
+                break
+        else:
+            die(f"too many runs named {base}-*; pass --name")
+    if args.json:
+        print(json.dumps({"name": name, "path": record_path(bundle, name)}, ensure_ascii=False))
+    else:
+        print(name)
+    return 0
+
+
+def cmd_run_show(args):
+    bundle = resolve_bundle(args.bundle)
+    rec = load_or_die(bundle, check_name(args.name))
+    if args.json:
+        print(json.dumps(rec, ensure_ascii=False))
+        return 0
+    print(f"run {rec['name']} — {rec['status']}")
+    print(f"topic: {rec['topic']}")
+    print(f"created {rec.get('created')}, updated {rec.get('updated')}")
+    if rec.get("study"):
+        print(f"\n## study\n{rec['study']}")
+    if rec.get("approaches"):
+        print("\n## approaches")
+        for i, a in enumerate(rec["approaches"], 1):
+            print(f"{i}. {a if isinstance(a, str) else json.dumps(a, ensure_ascii=False)}")
+    if rec.get("decisions"):
+        print("\n## decisions")
+        for d in rec["decisions"]:
+            print(f"- {d.get('text') if isinstance(d, dict) else d}")
+    if rec.get("brief"):
+        print(f"\n## brief\n{rec['brief']}")
+    if rec.get("recipe"):
+        print(f"\n## recipe\n{json.dumps(rec['recipe'], ensure_ascii=False, indent=2)}")
+    if rec.get("dispatch"):
+        d = rec["dispatch"]
+        print(f"\n## dispatched\nvia {d.get('via')} at {d.get('at')}"
+              f"{', ' + d['where'] if d.get('where') else ''}\n{d.get('command')}")
+    failed = [a for a in rec.get("attempts", []) if not a.get("ok")]
+    if failed and rec["status"] == STATUS_OPEN:
+        last = failed[-1]
+        print(f"\n## not dispatched\nlast attempt via {last.get('via')} at {last.get('at')} "
+              f"failed: {last.get('error')}")
+    return 0
+
+
+def cmd_run_list(args):
+    bundle = resolve_bundle(args.bundle)
+    recs, bad = list_records(bundle)
+    for n in bad:
+        note(f"skipped the unreadable run record {record_path(bundle, n)}")
+    if args.open:
+        recs = [r for r in recs if r["status"] == STATUS_OPEN]
+    if args.json:
+        print(json.dumps({"bundle": bundle, "runs": [summary(r) for r in recs]}, ensure_ascii=False))
+        return 0
+    for r in recs:
+        print(f"{r['name']}\t{r['status']}\t{r.get('updated', '')}\t{r['topic']}")
+    return 0
+
+
+def _value(args):
+    if (args.value is None) == (args.file is None):
+        die("give the value with exactly one of --value or --file")
+    if args.value is not None:
+        return args.value
+    try:
+        if args.file == "-":
+            return sys.stdin.read()
+        with open(args.file, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError as exc:
+        die(f"cannot read {args.file} ({exc})")
+
+
+def cmd_run_set(args):
+    bundle = resolve_bundle(args.bundle)
+    rec = load_or_die(bundle, check_name(args.name))
+    field, raw = args.field, _value(args)
+    if rec["status"] == STATUS_DISPATCHED and field in FROZEN_AFTER_DISPATCH:
+        die(f"run {rec['name']} was already dispatched; its {field} stays as dispatched "
+            f"(add a decision or a note instead)")
+    t = now()
+    if field in TEXT_FIELDS:
+        rec[field] = raw
+    elif field in JSON_FIELDS:
+        try:
+            value = json.loads(raw)
+        except ValueError as exc:
+            die(f"{field} must be JSON ({exc})")
+        kind = JSON_FIELDS[field]
+        if not isinstance(value, kind):
+            die(f"{field} must be a JSON {'array' if kind is list else 'object'}")
+        rec[field] = value
+    else:
+        if not raw.strip():
+            die(f"an empty {field} adds nothing")
+        rec.setdefault(APPEND_FIELDS[field], []).append({"at": t, "text": raw.strip()})
+    rec["updated"] = t
+    write_record(bundle, rec)
+    return 0
+
+
+def cmd_run_dispatch(args):
+    bundle = resolve_bundle(args.bundle)
+    rec = load_or_die(bundle, check_name(args.name))
+    if rec["status"] == STATUS_DISPATCHED:
+        d = rec.get("dispatch") or {}
+        die(f"run {rec['name']} was already dispatched via {d.get('via')} at {d.get('at')}"
+            f"{' (' + d['where'] + ')' if d.get('where') else ''}; it is never dispatched again")
+    t = now()
+    attempt = {"at": t, "via": args.via, "command": args.dispatch_command, "where": args.where or None,
+               "ok": args.error is None, "error": args.error}
+    rec.setdefault("attempts", []).append(attempt)
+    if attempt["ok"]:
+        rec["status"] = STATUS_DISPATCHED
+        rec["dispatch"] = {k: attempt[k] for k in ("at", "via", "command", "where")}
+    rec["updated"] = t
+    write_record(bundle, rec)
+    if args.json:
+        print(json.dumps(summary(rec), ensure_ascii=False))
+    else:
+        print(f"run {rec['name']}: {'dispatched' if attempt['ok'] else 'not dispatched'}")
+    return 0
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main(argv):
@@ -242,6 +583,37 @@ def main(argv):
                    help="only this area tag (repeatable; default: all three)")
     p.add_argument("--json", action="store_true", help="print one JSON object")
     p.set_defaults(func=cmd_facts)
+
+    run = sub.add_parser("run", help="the run record: new, show, list, set, dispatch")
+    rsub = run.add_subparsers(dest="run_command", required=True)
+    p = rsub.add_parser("new", parents=[common], help="start a run record")
+    p.add_argument("--topic", required=True, help="the topic, in one line")
+    p.add_argument("--name", default="", help="the run's name (default: <date>-<slug of the topic>)")
+    p.add_argument("--json", action="store_true", help="print the name and path as one JSON object")
+    p.set_defaults(func=cmd_run_new)
+    p = rsub.add_parser("show", parents=[common], help="read a run record back")
+    p.add_argument("name")
+    p.add_argument("--json", action="store_true", help="print the record itself")
+    p.set_defaults(func=cmd_run_show)
+    p = rsub.add_parser("list", parents=[common], help="the runs, most recent first")
+    p.add_argument("--open", action="store_true", help="only runs not dispatched yet")
+    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.set_defaults(func=cmd_run_list)
+    p = rsub.add_parser("set", parents=[common], help="continue a run: set or add one field")
+    p.add_argument("name")
+    p.add_argument("field", choices=[*TEXT_FIELDS, *JSON_FIELDS, *APPEND_FIELDS])
+    p.add_argument("--value", default=None, help="the value")
+    p.add_argument("--file", default=None, help="read the value from this file (- for stdin)")
+    p.set_defaults(func=cmd_run_set)
+    p = rsub.add_parser("dispatch", parents=[common], help="record a dispatch attempt")
+    p.add_argument("name")
+    p.add_argument("--via", required=True, choices=DISPATCH_VIAS)
+    p.add_argument("--command", dest="dispatch_command", required=True,
+                   help="the command that started the work")
+    p.add_argument("--where", default="", help="where the work runs (orq team, workspace, session)")
+    p.add_argument("--error", default=None, help="the attempt failed with this error")
+    p.add_argument("--json", action="store_true", help="print the run's summary as JSON")
+    p.set_defaults(func=cmd_run_dispatch)
     args = ap.parse_args(argv)
     return args.func(args)
 
