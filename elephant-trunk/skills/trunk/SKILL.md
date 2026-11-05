@@ -72,10 +72,17 @@ language they use in the conversation.
 
    - **Exit 1** (the bundle is not found): stop. Relay the script's stderr as it
      is, it carries the same guidance elephant-wiki gives, and do nothing else.
-   - **`tag_source` is `default`**: the stderr says the trunk reads
-     `how-i-work` and how to set another tag in `elephant.json`. Relay that one
-     line, once, and go on. When `problem` is set, relay it too: a value in
-     `elephant.json` was present but not usable.
+   - **`problem` is set**: `elephant.json` is there but its tag cannot be
+     used (it does not parse, it is not an object, or `trunk.tag` is not a
+     non-empty string). Relay the problem as it is and stop before step 1:
+     the owner's facts carry the tag the broken file meant, so reading
+     `how-i-work` instead would find none of them, start a first use and
+     capture its answers under a tag that goes unread once the file is fixed.
+     `facts` refuses in this case too. Go on only once the owner has fixed
+     `elephant.json` and `config --json` shows no `problem`.
+   - **`tag_source` is `default`** (and no `problem`): the stderr says the
+     trunk reads `how-i-work` and how to set another tag in `elephant.json`.
+     Relay that one line, once, and go on.
 
 ## 1. Study
 
@@ -89,9 +96,11 @@ It reads `knowledge/manifest.jsonl` only, never `query`: recalling the owner's
 own way of working through `query` costs a whole retrieval for a handful of
 short facts.
 
-- **Exit 1** (the manifest cannot be read): relay the stderr, which names the
-  `build-index.py` to run, and stop. An unbuilt index does not mean the owner
-  has no how, so never continue as if it did.
+- **Exit 1** (the manifest cannot be read, or `elephant.json` has a
+  `problem`, which the JSON then names): relay the stderr, which names the
+  `build-index.py` to run or the problem to fix, and stop. An unbuilt index or
+  an unusable tag does not mean the owner has no how, so never continue as if
+  it did, and never go to **First use** from here.
 - **`facts` is empty**: this is the first use. The trunk does not guess. Go to
   **First use** below and come back here once facts exist. First use is
   offered once per session: when it ended with nothing captured (the owner

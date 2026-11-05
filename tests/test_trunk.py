@@ -424,6 +424,28 @@ def _run(root):
     record("its plain output is empty: the data stream carries facts only",
            r.returncode == 0 and r.stdout == "", r.stdout)
 
+    # elephant.json present but unusable: reading how-i-work instead would list
+    # none of the owner's facts, send the skill into first use and capture its
+    # answers under a tag that goes unread once the file is fixed.
+    for label, text in (("a malformed", '{"trunk": {"tag": "como-trabalhar"},}'),
+                        ("a non-object", "[]"), ("a non-string trunk.tag", '{"trunk": {"tag": 5}}')):
+        broken = make_bundle(root, f"broken-{len(checks)}", text)
+        write_manifest(broken, [fact_row("/facts/h.md", ["how-i-work", "trunk-study"]),
+                                fact_row("/facts/c.md", ["como-trabalhar", "trunk-study"])])
+        r, out = facts_json("--bundle", broken, env=env_for(home))
+        record(f"{label} elephant.json stops facts with exit 1 and reads no fact under the default tag",
+               r.returncode == 1 and out is not None and out["facts"] == [] and out["tag"] is None,
+               r.stderr or r.stdout)
+        record(f"{label} elephant.json names its problem in facts --json and on stderr",
+               out is not None and out.get("problem") and "elephant.json" in r.stderr
+               and out["problem"] in r.stderr, r.stderr or r.stdout)
+        r = run(TRUNK, "facts", "--forgotten", "--bundle", broken, env=env_for(home))
+        record(f"{label} elephant.json stops facts --forgotten too, with nothing on stdout",
+               r.returncode == 1 and r.stdout == "", r.stderr or r.stdout)
+    r, out = facts_json("--bundle", empty, env=env_for(home))
+    record("a usable elephant.json carries a null problem in facts --json",
+           r.returncode == 0 and out is not None and "problem" in out and out["problem"] is None, out)
+
     unbuilt = make_bundle(root, "unbuilt")
     r = run(TRUNK, "facts", "--bundle", unbuilt, env=env_for(home))
     record("a bundle with no manifest stops and says to rebuild it, rather than report no how",

@@ -15,7 +15,9 @@ Commands:
   config                print the bundle and the how-I-work tag the trunk reads
     --json              the same, as one JSON object on stdout
   facts                 list the active facts carrying the how-I-work tag plus a
-                        trunk area tag, read from knowledge/manifest.jsonl only
+                        trunk area tag, read from knowledge/manifest.jsonl only;
+                        exits 1, with `problem` in --json, when elephant.json is
+                        present but its trunk.tag cannot be used
     --area <tag>        only this area tag (repeatable; default: all three)
     --forgotten         the learnings forgotten or steered instead
     --json              one JSON object on stdout
@@ -273,8 +275,22 @@ def how_facts(bundle, tag, areas=AREA_TAGS):
 def cmd_facts(args):
     bundle = resolve_bundle(args.bundle)
     cfg = config(bundle)
-    announce_tag(cfg)
     areas = [a for a in AREA_TAGS if not args.area or a in args.area]
+    if cfg["problem"]:
+        # elephant.json is there but its tag cannot be used. Reading the
+        # default tag would list none of the owner's facts (they carry the tag
+        # the broken file meant), send the skill into first use, and capture
+        # the answers under a tag that goes unread once the file is fixed. So
+        # nothing is read until it is fixed, and the problem travels in the
+        # JSON as well as on stderr.
+        note(f"{cfg['problem']}; fix elephant.json first: the trunk reads no fact until its "
+             f"tag is usable ({SET_TAG_HINT})")
+        if args.json:
+            print(json.dumps({"bundle": bundle, "tag": None, "tag_source": cfg["tag_source"],
+                              "problem": cfg["problem"], "areas": areas,
+                              "forgotten": args.forgotten, "facts": []}, ensure_ascii=False))
+        return 1
+    announce_tag(cfg)
     try:
         if args.forgotten:
             facts, skipped = forgotten_facts(bundle, cfg["tag"], areas), 0
@@ -291,8 +307,8 @@ def cmd_facts(args):
         note(f'no {which} fact carries "{cfg["tag"]}" plus a trunk area tag ({", ".join(areas)})')
     if args.json:
         print(json.dumps({"bundle": bundle, "tag": cfg["tag"], "tag_source": cfg["tag_source"],
-                          "areas": areas, "forgotten": args.forgotten, "facts": facts},
-                         ensure_ascii=False))
+                          "problem": None, "areas": areas, "forgotten": args.forgotten,
+                          "facts": facts}, ensure_ascii=False))
         return 0
     for f in facts:
         extra = f"\t{f['status']}" if args.forgotten else ""
