@@ -802,6 +802,30 @@ def _run_record(root, home):
         r = run(TRUNK, "run", "ingested", "--bundle", fb, "fp", env=env)
         record("a fact that names the run, with no created timestamp, is not taken for a copy",
                r.returncode == 0, r.stderr)
+        # A legitimate source note names the run in its resource and may copy
+        # the record's created timestamp, verbatim, as its occurred: only the
+        # JSON key form tells a copy of the record.
+        fb, src = fresh(len(checks))
+        rec_fp = json.loads(src.read_text(encoding="utf-8"))
+        (fb / "knowledge" / "sources").mkdir()
+        (fb / "knowledge" / "sources" / "fp.md").write_text(
+            f'---\ntype: source\nresource: "state/trunk/runs/fp.json"\noccurred: {rec_fp["created"]}\n'
+            f"---\nRun fp studied the split and dispatched it.\n", encoding="utf-8")
+        git(fb, "add", "-A")
+        git(fb, *G, "commit", "-q", "-m", "ingest")
+        r = run(TRUNK, "run", "ingested", "--bundle", fb, "fp", env=env)
+        record("a source note whose occurred copies the created timestamp, naming the run, is not a copy",
+               r.returncode == 0, r.stderr)
+        fb, src = fresh(len(checks))
+        rec_fp = json.loads(src.read_text(encoding="utf-8"))
+        (fb / "raw" / "other.json").write_text(
+            json.dumps({"created": rec_fp["created"], "topic": "another run"}, indent=2) + "\n",
+            encoding="utf-8")
+        git(fb, "add", "-A")
+        git(fb, *G, "commit", "-q", "-m", "ingest")
+        r = run(TRUNK, "run", "ingested", "--bundle", fb, "fp", env=env)
+        record("a JSON file with the record's created key but not its name is not taken for a copy",
+               r.returncode == 0, r.stderr)
         # `ingest` commits with `git add -A`, so a CSV in Latin-1 (cp1252 is
         # common in Brazil) rides along with the source: its bytes are not
         # UTF-8, and the diff the fingerprint reads carries them.

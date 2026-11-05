@@ -109,10 +109,11 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   reporting each learning with its link. Right after ingest's commit,
   `trunk.py run ingested` records the ingest, and refuses it when that commit
   touched `state/trunk/`, added a byte-for-byte copy of a file from there, or
-  added lines carrying the record's `created` timestamp together with its name
-  to any other file, which finds a copy with its final newline dropped,
-  reserialized as compact JSON or changed since by `run set`; a fact that only
-  names the run is not taken for a copy. The commit's diff is read as UTF-8
+  added lines carrying the record's `"created": "<timestamp>"` key, as JSON
+  writes it, together with its name to any other file, which finds a copy with
+  its final newline dropped, reserialized as compact JSON or changed since by
+  `run set`; a fact that only names the run, or a source note that names it
+  and copies the timestamp as its `occurred`, is not taken for a copy. The commit's diff is read as UTF-8
   with undecodable bytes replaced, so a CSV in Latin-1 or cp1252 that
   `git add -A` carried along does not stop the check. Only that one commit is
   read, and a partial copy (the study pasted into a source) is not found. `run set <name>

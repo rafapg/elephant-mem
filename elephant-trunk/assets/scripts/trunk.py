@@ -54,10 +54,11 @@ Commands:
                         that the ingest commit (default: the bundle's HEAD)
                         touched nothing there, added no byte-for-byte copy of
                         a file from there, and added no lines carrying this
-                        record's `created` timestamp together with its name;
-                        then records the commit. Only that commit is read: an
-                        earlier or later one, or a partial copy (the study
-                        pasted into a source), is not checked
+                        record's "created": "<timestamp>" key, as JSON writes
+                        it, together with its name; then records the
+                        commit. Only that commit is read: an earlier or later
+                        one, or a partial copy (the study pasted into a
+                        source), is not checked
   recipe draft <run> --name <n> --roles <r> --file <path|->
                         [--test <path>] [--command <c>]
                         a new recipe written for this run: kept as a draft under
@@ -895,13 +896,17 @@ def _copied_records(bundle, commit):
 
 def _fingerprinted(bundle, commit, rec):
     """The paths outside state/trunk/ whose lines added by `commit` carry the
-    record's fingerprint: its `created` timestamp (to the microsecond) and its
-    name, both in the same file. A copy that is not byte for byte (a newline
+    record's fingerprint: its `created` key with its timestamp (to the
+    microsecond) as JSON writes it, `"created": "<timestamp>"`, and its name,
+    both in the same file. A copy that is not byte for byte (a newline
     dropped, the JSON reserialized, the record changed since by `run set`)
-    still carries both."""
+    still carries both. The timestamp alone is not enough: a source note's
+    `occurred:` may copy it, and the same note names the run in its
+    `resource:`, so only the JSON key tells a copy of the record."""
     created, name = rec.get("created"), rec.get("name")
     if not isinstance(created, str) or not created or not isinstance(name, str) or not name:
         return []
+    key = re.compile(r'"created"\s*:\s*"' + re.escape(created) + '"')
     diff = _git(bundle, "diff-tree", "-p", "-r", "--root", "--no-commit-id", "--no-renames",
                 "--no-ext-diff", "--no-textconv", "--no-color", commit)
     if not diff or diff[0] != 0:
@@ -922,7 +927,7 @@ def _fingerprinted(bundle, commit, rec):
             added.setdefault(path, []).append(line[1:])
     return [p for p, lines in added.items()
             if not (p + "/").startswith(IGNORE_ENTRY)
-            and created in "\n".join(lines) and name in "\n".join(lines)]
+            and key.search("\n".join(lines)) and name in "\n".join(lines)]
 
 
 def cmd_run_ingested(args):
@@ -930,10 +935,10 @@ def cmd_run_ingested(args):
     the raw record stayed out of the bundle's history: nothing under
     state/trunk/ is tracked, the ingest commit touched nothing there, it
     added no byte-for-byte copy of a file from there anywhere else, and no
-    file it added lines to carries the record's fingerprint (`created` and
-    the name). Only that one commit is read: a copy in an earlier or a later
-    commit, or a part of the record (the study pasted into a source), is not
-    found."""
+    file it added lines to carries the record's fingerprint (its `created`
+    key as JSON writes it, and the name). Only that one commit is read: a
+    copy in an earlier or a later commit, or a part of the record (the study
+    pasted into a source), is not found."""
     bundle = resolve_bundle(args.bundle)
     rec = load_for_update(bundle, check_name(args.name))
     if rec["status"] != STATUS_DISPATCHED:
