@@ -21,7 +21,8 @@ Commands:
   run new --topic <t>   start a run record; prints its name
     [--name <n>]        the run's name (default: <date>-<slug of the topic>)
   run show <name>       read a run record back (--json: the record itself)
-  run list              the runs, most recent first (--open: not dispatched yet)
+  run list              the runs, most recent first (--open: not dispatched yet);
+                        --json also names the records that could not be read
   run set <name> <field> (--value <v> | --file <path|->)
                         continue a run: study, brief (text, replaced);
                         approaches (JSON array), recipe (JSON object), replaced;
@@ -525,7 +526,10 @@ def cmd_run_list(args):
     if args.open:
         recs = [r for r in recs if r["status"] == STATUS_OPEN]
     if args.json:
-        print(json.dumps({"bundle": bundle, "runs": [summary(r) for r in recs]}, ensure_ascii=False))
+        # The unreadable ones are listed too, by path, so a resume that picks
+        # from this list can say which records it could not offer.
+        print(json.dumps({"bundle": bundle, "runs": [summary(r) for r in recs],
+                          "unreadable": [record_path(bundle, n) for n in bad]}, ensure_ascii=False))
         return 0
     for r in recs:
         print(f"{r['name']}\t{r['status']}\t{r.get('updated', '')}\t{r['topic']}")

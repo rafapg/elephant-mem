@@ -611,6 +611,8 @@ def _run_record(root, home):
     r, out = run_json("list", "--bundle", b, env=env)
     record("list skips an unreadable record and says so",
            r.returncode == 0 and out is not None and len(out["runs"]) == 2 and "broken" in r.stderr, r.stderr)
+    record("list --json names the unreadable record by path, for the resume picker to say",
+           out is not None and [os.path.basename(p) for p in out.get("unreadable", [])] == ["broken.json"], out)
     empty = git_bundle(root, "no-runs")
     r, out = run_json("list", "--bundle", empty, env=env)
     record("a bundle with no runs lists none and writes nothing",

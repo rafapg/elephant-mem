@@ -101,3 +101,16 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   so an edited one would break the resume of every team started from it. After
   the start it is saved with a `trunk-recipe` fact (`recipe fact` links it),
   and `run dispatch` refuses a written recipe that was not checked and saved.
+- **The `trunk` skill, continuing a run.** A new session saw nothing of the
+  one that left a run, so it continues from the record alone
+  (`/elephant-trunk:trunk continue <name>`). A run named, even in part or by
+  its topic, is read back; with none named, the open runs are listed most
+  recent first and the owner picks, and `run list --json` now names the
+  records it could not read so the list can say which were left out. The trunk
+  says where the run stopped and picks up there: the study, the approaches, the
+  conversation, or the start that failed. A `dispatch` recorded by an earlier
+  session starts nothing; a retry waits for the owner's word in this one. A run
+  already dispatched is shown, with what was dispatched, where and what
+  followed, and is never dispatched again; an ingest that never ran is offered.
+  A missing or unreadable record is said so, and the trunk offers to start over
+  from the topic without deleting the file.

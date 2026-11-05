@@ -9,9 +9,10 @@ description: >
   dispatched) comes from the owner's own tagged facts, never from this file.
   Use when the owner names it (/elephant-trunk:trunk <topic>) or hands a topic
   over to be studied and taken to dispatched work ("trunk this", "study this
-  and dispatch it", "take this to a PR"). Not for a plain recall question
-  about a topic (that is elephant-mem:query) or for work the owner is already
-  doing in this session.
+  and dispatch it", "take this to a PR"), and to continue a run an earlier
+  session left ("continue the trunk run <name>", "resume the trunk", "where
+  did the trunk stop"). Not for a plain recall question about a topic (that is
+  elephant-mem:query) or for work the owner is already doing in this session.
 ---
 
 # elephant-trunk:trunk
@@ -41,9 +42,13 @@ language they use in the conversation.
 
 ## 0. The topic and the bundle
 
-1. **The topic.** Take it from the invocation, in the owner's words. With no
-   topic, ask for it in one line and wait. A topic is not a spec: do not ask
-   clarifying questions yet, the study is where they come from.
+1. **The topic, or a run to continue.** Take it from the invocation, in the
+   owner's words. When the owner asks to continue a run instead (they say
+   continue or resume, or name a run, or the invocation is exactly the name of
+   one), find the bundle in item 2 and go to **Continue a run** below; no new
+   run is opened. With no topic and no run, ask for the topic in one line and
+   wait. A topic is not a spec: do not ask clarifying questions yet, the study
+   is where they come from.
 2. **The bundle and the tag.**
 
    ```bash
@@ -448,7 +453,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run dispatch <name> --vi
 
 A run the script says was already dispatched is never started again: show
 what was dispatched and where (`run show <name>`), and continue the
-conversation from there.
+conversation from there, as **A dispatched run** in **Continue a run** says.
 
 ## 4. Follow
 
@@ -539,7 +544,117 @@ Close with one short message: the run's name, what is running and where (or
 the pull request, on plain Claude Code), the ingest's commit, and the
 learnings, one line each with its area and its `link`, saying the owner can
 steer one or ask to forget it. With nothing learned, say so in one line. The
-trunk stops here; a later session continues the run from its record.
+trunk stops here; a later session continues the run from its record
+(`/elephant-trunk:trunk continue <name>`).
+
+## Continue a run
+
+A run left by an earlier session is continued from its record, never from
+memory of that session: this session saw none of it. The bundle was found in
+step 0.
+
+### Which run
+
+- **Named.** Read it back:
+
+  ```bash
+  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run show <name> --json
+  ```
+
+  When the owner's words are not exactly a run's name (a part of it, or the
+  topic in other words), list the runs with `run list --json` and match the
+  words against each `name` and `topic`. One match is said in one line and
+  read back; several are listed for the owner to pick, as below; none is said
+  so, and the open runs are offered instead.
+- **Not named.** List the open runs, most recent first:
+
+  ```bash
+  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run list --open --json
+  ```
+
+  Show them numbered, in that order, one line each: the name, the topic and
+  when it was last continued. Ask which, and wait. Every path in `unreadable`
+  is named in one line as a record that could not be read, and not offered.
+  With no open run, say so; the dispatched ones (`run list --json`, status
+  `dispatched`) are named in one line each, since one of them may be what the
+  owner meant, and the owner can also hand over a new topic.
+
+**The record is missing or unreadable** (`run show` exits 1): relay the
+stderr as it is and offer to start over from the topic. Ask the owner for the
+topic in one line (an unreadable record cannot be trusted to give it), then
+go to 1a and open a new run in 1b. The broken file is left where it is: the
+trunk deletes no record.
+
+### Where it stopped
+
+Read the record (the `run show --json` above) and tell the owner, in a few
+lines, the run's name and topic, when it was started and last continued, what
+it holds (the study, how many approaches, the decisions so far, the brief, the
+recipe) and where it stopped. Where it stopped is the first row that matches,
+top down:
+
+| the record                                                                                  | where it stopped                                     | the run continues at                                    |
+| ------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------- |
+| `status` is `dispatched`                                                                    | the work was dispatched                              | **A dispatched run**, below                             |
+| the last of `attempts` failed                                                               | the start failed, with its `error`                   | the retry, below                                        |
+| `recipe.written` with a `check` whose `ok` is false                                         | a written recipe failed its check                    | the three ways on of **Writing a recipe**, in 3c        |
+| a `dispatch:` decision, then a `not dispatched: the brief lacks` note                       | the brief lacked the form the dispatch needs         | step 2, with what was missing                           |
+| a `dispatch:` decision and nothing after it                                                 | between the owner's word and the start               | the retry, below                                        |
+| `approaches`, and no `dispatch:` decision                                                   | in the conversation                                  | step 2                                                  |
+| a `study` and no `approaches`                                                               | after the study                                      | 1d                                                      |
+| the topic only                                                                              | before the study                                     | 1c                                                      |
+
+"After" is by `at`: decisions and notes both carry one. Before any step runs
+again, load the owner's how with 1a, as for a new run: the record keeps what
+was decided, not how the owner works, and the facts may have changed since.
+Reopening the conversation (step 2) starts from the record: recall the
+approaches and every decision so far, and answer from the study, going back to
+a source when a question needs it, as step 2 says.
+
+**A word given in an earlier session starts nothing.** The `dispatch:`
+decision in the record is history: the owner's "dispatch" authorizes the start
+only in the conversation where it was said. **The retry** is a new dispatch,
+so it waits for the owner to say to dispatch in this session. Show where it
+stopped (the failed attempt's command and error, when there is one) and ask;
+on the owner's word, record it with a new `dispatch:` decision and run step 3
+whole, from its read back. What the record holds is reused, not rewritten,
+unless the owner changes it: the brief still goes through the form check, the
+saved recipe is shown again, and a written recipe that was saved before the
+failed start is started from that same file (`recipe save` says it was saved
+already). 3a runs again in full: this session may be on another machine, and
+orq's availability is checked here.
+
+### A dispatched run
+
+A run already dispatched is **never dispatched again**, whatever the owner
+asks: `run dispatch` refuses it, and the trunk never starts its command or its
+work a second time. Show what was dispatched and where, from the record: the
+way (`dispatch.via`), where it runs (`dispatch.where`), when (`dispatch.at`),
+the command as run, the recipe, and a short summary of the brief. Then what
+followed: the ingests and their commits, the learnings with their links, and
+the notes, the last one first (on plain Claude Code they are the work's
+milestones).
+
+What is left of step 4 is said and offered, never run silently:
+
+- **On orq**, a status or board command the `trunk-dispatch` facts name can be
+  run to say where the sessions stand now. It reads and starts nothing.
+- **On plain Claude Code**, when the last note is neither a pull request nor a
+  stop, the work stopped short in the session that ran it. The trunk does not
+  take it up again: that would be a second dispatch. Say the last milestone,
+  and that the owner can carry the rest on as their own work or start a new
+  run on what is left.
+- **No ingest recorded** (`ingests` is empty): the ingest of 4b never ran or
+  failed. Offer to run it now; on the owner's yes, run 4b as written, with
+  `run ingested` after it.
+- **Learnings**: what this session learns about how the owner works goes
+  through 4c, as in any run.
+
+Then the conversation continues from there: answer from the record, and
+record each new decision or note with `run set` as in step 2. The study, the
+approaches, the brief and the recipe stay as they were dispatched (the script
+refuses to change them). Further work the owner wants on the topic is a new
+run (`run new`), whose topic can name this one.
 
 ## First use
 
@@ -590,7 +705,10 @@ and reported.
   fact, a recipe) is filtered by the content and the expectation of whoever shared it;
   sensitive content and things shared in confidence stay out.
 - **Nothing starts without the owner's word.** The owner's "dispatch" is the
-  only authorization to start sessions. The trunk never deploys, never
-  merges and never pushes the bundle.
+  only authorization to start sessions, and only in the conversation where it
+  is said: a word recorded by an earlier session starts nothing. The trunk
+  never deploys, never merges and never pushes the bundle.
+- **A dispatched run is never dispatched again.** Continuing it shows what was
+  dispatched and where; more work is a new run.
 - **A saved recipe is never edited.** A team started from it resumes from
   that file; a better version is a new recipe with a new name and fact.

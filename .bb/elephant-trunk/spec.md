@@ -238,7 +238,7 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 
 ### Continue a run
 
-- [ ] **7. Continue a run**: a new session resumes a named or picked run; a dispatched run
+- [x] **7. Continue a run**: a new session resumes a named or picked run; a dispatched run
       is shown, never re-dispatched (happy path 9). · verify: reading
 
 ### Steer and forget
