@@ -467,6 +467,16 @@ def _run_record(root, home):
     if os.name == "posix":
         mode = path.stat().st_mode & 0o777
         record("the raw record is readable by its owner only", mode == 0o600, oct(mode))
+    trunk = load_trunk()
+    broken = {"name": "2026-11-05-a-write-that-fails", "topic": {1, 2}}   # a set: json cannot write it
+    try:
+        trunk.write_record(str(b), broken, create=True)
+        raised = False
+    except TypeError:
+        raised = True
+    left = sorted(p.name for p in (b / "state" / "trunk" / "runs").iterdir() if p.name != f"{name}.json")
+    record("a new record whose write fails leaves no placeholder or temp file, so its name stays free",
+           raised and left == [], left)
 
     r2, out2 = run_json("new", "--bundle", b, "--topic", "Migrar o catálogo de entidades!", env=env)
     record("the same topic twice gets a second name, never overwriting the first",

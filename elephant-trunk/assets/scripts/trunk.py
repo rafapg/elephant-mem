@@ -407,17 +407,22 @@ def write_record(bundle, rec, create=False):
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
         except FileExistsError:
             return False
-    fd, tmp = tempfile.mkstemp(prefix=".run-", suffix=".tmp", dir=d)
+    tmp = None
     try:
+        fd, tmp = tempfile.mkstemp(prefix=".run-", suffix=".tmp", dir=d)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(rec, fh, ensure_ascii=False, indent=2)
             fh.write("\n")
         os.replace(tmp, path)
     except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        # Nothing half-done stays: the temp file, and with `create` the empty
+        # placeholder that reserved the name, which would keep it taken.
+        for leftover in (tmp, path if create else None):
+            if leftover:
+                try:
+                    os.unlink(leftover)
+                except OSError:
+                    pass
         raise
     return True
 
