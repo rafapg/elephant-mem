@@ -1599,7 +1599,10 @@ def _owner_text(rec):
 
 def _bash_words(command):
     """The programs a shell command ran, never their arguments: an argument
-    can carry a path, a customer's name or a secret, a program name cannot."""
+    can carry a path, a customer's name or a secret. A program name carries
+    much less, but not nothing: a script named for a client
+    (`./scripts/acme-migrate.sh`) comes through as `acme-migrate.sh`, and
+    nothing in this script knows a client's name to take it out."""
     words = []
     # The first line only, up to a heredoc: what follows is the command's
     # input (a file's text, a message), and its first words are content.
