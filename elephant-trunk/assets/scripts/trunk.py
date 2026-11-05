@@ -1071,18 +1071,30 @@ def _fm_value(lines, key):
 
 
 def _fm_tags(lines):
-    """A frontmatter's top-level `tags`: a flow list, a block list or one
-    scalar, each tag unquoted and stripped."""
+    """A frontmatter's top-level `tags`: a flow list (wrapped over several
+    lines too, read to its `]`), a block list (comment and blank lines between
+    its items passed over) or one scalar, each tag unquoted and stripped: the
+    shapes build-index's own fallback parser reads."""
     i = _top_index(lines, "tags")
     if i is None:
         return []
-    bare = re.split(r"\s+#", lines[i].split(":", 1)[1], maxsplit=1)[0].strip()
-    if bare.startswith("[") and bare.endswith("]"):
-        return [t for t in (_scalar(x).strip() for x in _flow_items(bare)) if t]
-    if bare:
-        return [_scalar(bare).strip()]
+    def bare(text):
+        return re.split(r"\s+#", text, maxsplit=1)[0].strip()
+    value = bare(lines[i].split(":", 1)[1])
+    if value.startswith("["):
+        j = i + 1
+        while not value.endswith("]") and j < len(lines) and not re.match(r"^\S[^:]*:", lines[j]):
+            value = f"{value} {bare(lines[j])}".strip()
+            j += 1
+        if not value.endswith("]"):
+            value += "]"
+        return [t for t in (_scalar(x).strip() for x in _flow_items(value)) if t]
+    if value:
+        return [_scalar(value).strip()]
     out = []
     for ln in lines[i + 1:]:
+        if not ln.strip() or ln.strip().startswith("#"):
+            continue
         m = re.match(r"^[ \t]*-[ \t]+(.*)$", ln)
         if not m:
             break
@@ -1221,8 +1233,11 @@ def _read_links(bundle, tag):
 def _learning(bundle, tag, link):
     """The fact file of a learning the trunk reads, or read before it was
     forgotten: a `/facts/` link to a fact carrying the how-I-work tag plus an
-    area tag. Its own frontmatter decides, not the manifest, which drops a
-    fact once it is no longer active. Returns (link, path, lines, body)."""
+    area tag. An active fact is a learning when `facts` lists it: the same
+    manifest, read by the same code, so a tag shape build-index accepts is
+    never refused here. Only a fact already forgotten or steered, which the
+    manifest no longer carries, is judged by its own frontmatter. Returns
+    (link, path, lines, body)."""
     link = (link or "").strip()
     # A backslash is refused outright: on Windows it separates a path, so
     # `/facts/..\\x.md` would leave facts/ past a `/`-only `..` check.
@@ -1241,10 +1256,14 @@ def _learning(bundle, tag, link):
     split = _fm_split(text)
     if split is None:
         die(f"{path} has no frontmatter to edit")
-    if not _is_learning(split[0], tag):
-        die(f'{link} is not a learning the trunk reads (a fact with "{tag}" plus one of '
-            f"{', '.join(AREA_TAGS)}); the trunk steers and forgets only its own how — "
-            f"another fact is retired with elephant-mem's maintain")
+    if _fm_status(split[0]) == "active":
+        learning = link in _read_links(bundle, tag)
+    else:
+        learning = bool(_is_learning(split[0], tag))
+    if not learning:
+        die(f'{link} is not a learning the trunk reads (a fact `facts --json` lists, with "{tag}" '
+            f"plus one of {', '.join(AREA_TAGS)}, after the index is rebuilt); the trunk steers "
+            f"and forgets only its own how — another fact is retired with elephant-mem's maintain")
     return link, path, split[0], split[1]
 
 

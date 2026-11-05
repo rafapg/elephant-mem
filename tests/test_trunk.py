@@ -992,6 +992,42 @@ def _steer_and_forget(root, home):
         record(label, r.returncode != 0 and "not a fact link" in r.stderr, r.stderr)
     (b / "knowledge" / "outside.md").unlink()
 
+    # Two tag shapes build-index reads that a parser of the trunk's own did
+    # not: a flow list wrapped over two lines, and a block list with a comment
+    # between its items. `facts` lists them, so forget must take them.
+    shapes = {"wrapped": f"tags: [{T},\n  trunk-study]",
+              "blockcomment": f"tags:\n  - trunk-study\n  # the owner's tag\n  - {T}"}
+    shaped = {}
+    for nm, tags_text in shapes.items():
+        link = write_fact(b, f"shape-{nm}", [T, "trunk-study"])
+        path = b / "knowledge" / link.lstrip("/")
+        path.write_text(path.read_text(encoding="utf-8").replace(f"tags: [{T}, trunk-study]", tags_text),
+                        encoding="utf-8")
+        shaped[nm] = link
+    build_index(b)
+    _, f = facts_json("--bundle", b, env=env)
+    record("facts lists a learning whose tags wrap a flow list or carry a comment in a block list",
+           set(shaped.values()) <= set(links(f) or []), f)
+    for nm, link in shaped.items():
+        r, out = learning("forget", "--bundle", b, link, env=env)
+        record(f"forget takes the learning facts lists, tags as a {nm} list",
+               r.returncode == 0 and out and out["changed"] is True, r.stderr)
+    _, f = facts_json("--bundle", b, "--forgotten", env=env)
+    record("facts --forgotten lists them once forgotten, read through the same tag shapes",
+           set(shaped.values()) <= set(links(f) or []), f)
+    for nm, link in shaped.items():
+        r, out = learning("forget", "--bundle", b, link, env=env)
+        record(f"forgetting the {nm} one again changes nothing and says so",
+               r.returncode == 0 and out and out["changed"] is False and "already" in r.stderr, r.stderr)
+    unindexed = write_fact(b, "unindexed", [T, "trunk-study"])
+    path = b / "knowledge" / unindexed.lstrip("/")
+    was = path.read_text(encoding="utf-8")
+    r = run(TRUNK, "learning", "forget", "--bundle", b, unindexed, env=env)
+    record("an active fact the manifest does not list is not a learning the trunk reads, whatever "
+           "its frontmatter says", r.returncode != 0 and "not a learning" in r.stderr
+           and path.read_text(encoding="utf-8") == was, r.stderr)
+    path.unlink()
+
     # ── steer ────────────────────────────────────────────────────────────────
     new = write_fact(b, "dispatch-cc", [T, "trunk-dispatch"])
     build_index(b)
