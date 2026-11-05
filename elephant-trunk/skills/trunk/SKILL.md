@@ -39,7 +39,11 @@ Every bundle read and write goes through the plugin's own script,
 `${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py`, run from the plugin and never
 from the bundle. Each command below spells the full path: shell variables do
 not survive from one Bash call to the next. `--help` on any command lists its
-options. Speak to the owner in the
+options. Free text on a command line (a topic, a decision, a command, an error,
+a JSON value) goes inside single quotes, as the templates show, so a backtick,
+a `$(`, a `$` or a `"` in it is passed as written and never run; write each
+apostrophe in the text as `'\''`. Text over several lines goes through
+`--file -` and a heredoc instead (see 1c). Speak to the owner in the
 language they use in the conversation.
 
 ## 0. The topic and the bundle
@@ -110,7 +114,7 @@ run, and offer to capture it.
 ### 1b. Open the run record
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run new --topic "<the topic, verbatim>" --json
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run new --topic '<the topic, verbatim>' --json
 ```
 
 It prints the run's `name`. Tell the owner the name in one line: it is how a
@@ -178,7 +182,7 @@ say plainly when something was not studied.
 - **Record each decision as it is made**, one sentence each, not at the end:
 
   ```bash
-  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> decision --value "<what was decided, and why>"
+  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> decision --value '<what was decided, and why>'
   ```
 
   An owner who leaves mid-conversation leaves a record with the study, the
@@ -193,7 +197,7 @@ say plainly when something was not studied.
   initiative more than once. When the owner says it, record it:
 
   ```bash
-  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> decision --value "dispatch: <the approach as converged>"
+  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> decision --value 'dispatch: <the approach as converged>'
   ```
 
   and go to step 3.
@@ -232,7 +236,7 @@ whose condition matches this work.
   plain Claude Code, record it:
 
   ```bash
-  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> decision --value "dispatch via claude-code: orq not available (<what was missing>)"
+  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> decision --value 'dispatch via claude-code: orq not available (<what was missing>)'
   ```
 
   If they decline, the run stays open with nothing dispatched; stop here and
@@ -279,7 +283,7 @@ is dispatched**: say what is missing, item by item, record it, and go back to
 the conversation (step 2). The owner's next "dispatch" starts step 3 again.
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> note --value "not dispatched: the brief lacks <what is missing>"
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> note --value 'not dispatched: the brief lacks <what is missing>'
 ```
 
 When the brief passes, save it (the filtered text, as the dispatch will read
@@ -354,7 +358,7 @@ like it. Write the two files to a temporary path, pass them in, then delete
 the temporary copies:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe draft <name> --name <recipe> --roles "<one line per role>" --file <recipe.py> --test <test_recipe.py> --command "<the start command, filled in for this run>" --json
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe draft <name> --name <recipe> --roles '<one line per role>' --file <recipe.py> --test <test_recipe.py> --command '<the start command, filled in for this run>' --json
 ```
 
 It prints the draft's paths. **Check the draft there**, running the check from
@@ -363,8 +367,8 @@ tooling's help or README names), and record what happened, whichever way it
 went:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe checked <name> --command "<the check, as run>"
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe checked <name> --command "<the check, as run>" --error "<its failure: the first lines, any token it printed cut out>"
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe checked <name> --command '<the check, as run>'
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe checked <name> --command '<the check, as run>' --error '<its failure: the first lines, any token it printed cut out>'
 ```
 
 The script holds the check to the draft's hash: a draft edited after
@@ -419,14 +423,14 @@ dispatch of a written recipe that is not checked and saved.
   team, the workspace):
 
   ```bash
-  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run dispatch <name> --via orq --command "<the command, as run>" --where "<team or workspace>"
+  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run dispatch <name> --via orq --command '<the command, as run>' --where '<team or workspace>'
   ```
 
 - **It failed**: record the attempt with its error (its first lines, with any
   token or secret it printed cut out), so the record says not dispatched:
 
   ```bash
-  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run dispatch <name> --via orq --command "<the command, as run>" --error "<the error>"
+  python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run dispatch <name> --via orq --command '<the command, as run>' --error '<the error>'
   ```
 
   Tell the owner it was not dispatched, with the error. The run stays open; a
@@ -451,7 +455,7 @@ this run's learnings, so 4c does not capture it again and 4d reports it:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe fact <name> --link <its link>
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value "<its link>: recipe <recipe>, for <when it fits>"
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value '<its link>: recipe <recipe>, for <when it fits>'
 ```
 
 A capture that did not land is a note, and the recipe stays saved without a
@@ -461,7 +465,7 @@ fact: say so in 4d, with the saved path, so the owner can capture it by hand.
 the work starting in this session, then go to step 4, where the work runs.
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run dispatch <name> --via claude-code --command "<one line: the plan this session runs>" --where "this session (<working directory>)"
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run dispatch <name> --via claude-code --command '<one line: the plan this session runs>' --where 'this session (<working directory>)'
 ```
 
 A run the script says was already dispatched is never started again: show
@@ -480,7 +484,7 @@ nothing running, say so and record it; the run stays dispatched and is never
 started again by the trunk:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> note --value "started, not confirmed: <what the check showed>"
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> note --value 'started, not confirmed: <what the check showed>'
 ```
 
 The trunk does not watch the sessions to the pull request: that is their job.
@@ -492,7 +496,7 @@ record as the work goes, one note per milestone (a role done, a check green,
 the pull request opened, with its link):
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> note --value "<the milestone>"
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> note --value '<the milestone>'
 ```
 
 The trunk ends when the work ends: a pull request opened for the owner, or the
@@ -555,7 +559,7 @@ Only the owner brings a forgotten how back, by stating it again; what they
 state is captured as any how they state. Record each learning that landed:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value "<its link>: <the how, in one line>"
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value '<its link>: <the how, in one line>'
 ```
 
 A capture that did not land is recorded as a note, and reported as not
@@ -933,7 +937,7 @@ interview came from **Continue a run**; otherwise in the run 1b opens, right
 after it opens:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value "<its link>: <the how, in one line>"
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value '<its link>: <the how, in one line>'
 ```
 
 ## Capturing a how
