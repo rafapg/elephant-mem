@@ -1126,6 +1126,10 @@ def _past_sessions(root, home):
     whole = {"senha=abc": "senha=[secret left out]",
              "export GITHUB_TOKEN=ghp_" + "a1" * 18: "export GITHUB_TOKEN=[secret left out]",
              "OPENAI_API_KEY=sk-proj-" + "b2" * 12: "OPENAI_API_KEY=[secret left out]"}
+    commit = "https://github.com/Inspira-Legal/stillare/commit/3fa9c2d1e4b5a6978877665544332211aabbccdd"
+    record("a commit link loses its hash and keeps its repo",
+           redact(commit) == "https://github.com/Inspira-Legal/stillare/commit/[secret left out]",
+           redact(commit))
     record("a value two passes match is marked once, the marker never cut by a later pass",
            {t: redact(t) for t in whole} == whole, {t: redact(t) for t in whole})
     kept = ["read the open PRs before proposing, always", "/bb:spec then dispatch",
@@ -1135,10 +1139,11 @@ def _past_sessions(root, home):
             "open docs/2026/Q3/RoadmapPlanningNotesFinal",
             "the password reset flow goes through /bb:spec and auth0",
             "the password file is ~/.config/app/creds.json, keep it there",
+            "path src/components/UserProfileCard2/index.tsx",
             "read https://docs.github.com/en/webhooks/about-webhooks first",
             "set max_tokens=4096", '"max_tokens": 4096,']
-    record("ordinary words, a skill command, a path, a mixed-case link or path, a page "
-           "about webhooks and a token count survive the redaction",
+    record("ordinary words, a skill command, a path, a mixed-case link or path, a numbered "
+           "component, a page about webhooks and a token count survive the redaction",
            [redact(t) for t in kept] == kept, [redact(t) for t in kept])
     r = run(TRUNK, "sessions", "extract", rich, "--max-tokens", "50", env=env)
     record("--max-tokens cuts a session and says how much was left",

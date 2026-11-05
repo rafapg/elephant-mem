@@ -1469,15 +1469,17 @@ def _redact(text):
         if not (re.search(r"\d", s) and re.search(r"[A-Za-z]", s)):
             return s
         if "/" in s:
-            # A path, a URL's path or a slashed token. A token when one of
-            # its segments is shaped like a token on its own, or when two of
+            # A path, a URL's path or a slashed token. A token when two of
             # its words read as random text: a repo path or a PR link, mixed
-            # case or not, reads as names.
-            if any(len(seg) >= 16 and re.search(r"\d", seg) and re.search(r"[A-Za-z]", seg)
-                   for seg in s.split("/")):
-                return _CUT
+            # case or not, reads as names. Otherwise only a segment shaped
+            # like a token on its own (a commit hash) is cut, so a commit
+            # link keeps its repo and a path keeps its folders.
             noisy = sum(1 for w in re.split(r"[/_.+=-]", s) if _NOISE.search(w))
-            return _CUT if noisy >= 2 else s
+            if noisy >= 2:
+                return _CUT
+            return "/".join(
+                _CUT if len(seg) >= 16 and re.search(r"\d", seg) and re.search(r"[A-Za-z]", seg)
+                and _NOISE.search(seg) else seg for seg in s.split("/"))
         return _CUT
     return _LONG_TOKEN.sub(long_token, text).replace(_CUT, "[secret left out]")
 
