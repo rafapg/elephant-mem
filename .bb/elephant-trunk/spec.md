@@ -210,7 +210,7 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 
 ### Foundation
 
-- [ ] **1. The plugin exists**: `elephant-trunk/` with its `plugin.json`, CHANGELOG and
+- [x] **1. The plugin exists**: `elephant-trunk/` with its `plugin.json`, CHANGELOG and
       marketplace entry; resolves the bundle like elephant-wiki and reads `trunk.tag`. · verify: `python3 tests/test_trunk.py`
 
 ### Memory and record
