@@ -1458,6 +1458,9 @@ def _past_sessions(root, home):
         owner("<bash-input>cat .env.production</bash-input>"),
         owner("<bash-stdout></bash-stdout><bash-stderr>BASH STDERR permission denied"
               "</bash-stderr>"),
+        # An output turn whose block never closes: no block to drop, so only
+        # the turn's opening tag tells it apart from the owner's words.
+        owner("<bash-stdout>CUSTOMER=Initech Ltd, the output cut before its close"),
         owner("\n\n<pasted_content id=\"ab\">\nmy long dictated rule\n</pasted_content id=\"ab\">\n"),
         owner("x" * 5000),
         owner("y" * 1980 + " " + secret + " and more"),
@@ -1527,8 +1530,8 @@ def _past_sessions(root, home):
            not leaked, leaked)
     record("what ran is named by program, skill and subagent, plumbing passed over",
            "[then: skill orq, ran orq, ran python3, subagent general-purpose]" in out, out[:2000])
-    bash_leaked = [w for w in ("bash-", "Globex", "DB_PASS", "swordfish9", "BASH STDERR",
-                               "prod-db", "get secret", "yaml", ".env.production")
+    bash_leaked = [w for w in ("bash-", "Globex", "Initech", "DB_PASS", "swordfish9",
+                               "BASH STDERR", "prod-db", "get secret", "yaml", ".env.production")
                    if w in out]
     record("the owner's bash-mode output is left out, a stdout turn and a stderr turn",
            not bash_leaked, bash_leaked)
@@ -1568,6 +1571,8 @@ def _past_sessions(root, home):
         "APP_KEY=base64:Zm9vYmFy": "Zm9vYmFy",
         "AUTH=Zm9vOmJhcg": "Zm9vOmJhcg",
         "chave: 9f8e7d6c5b4a": "9f8e7d6c5b4a",
+        # Letters only: neither the prose pass nor the long-token pass cuts it.
+        "chave: qwertyuiopas": "qwertyuiopas",
         "Authorization: Token 9f8e7d6c5b4a3f2e1d0c": "9f8e7d6c5b4a3f2e1d0c",
         "run it with --token 9f8e7d6c5b4a3f2e1d0c": "9f8e7d6c5b4a3f2e1d0c",
         "the token is 9f8e7d6c5b4a3f2e1d0c": "9f8e7d6c5b4a3f2e1d0c",
