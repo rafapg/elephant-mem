@@ -662,10 +662,50 @@ def _git(bundle, *args):
     return r.returncode, r.stdout.strip()
 
 
+def _blob_ids(data):
+    """The ids git would give `data` as a blob, sha1 and sha256 repositories
+    alike, as written and with CRLF turned to LF (what autocrlf stores)."""
+    ids = set()
+    for d in {data, data.replace(b"\r\n", b"\n")}:
+        head = b"blob %d\0" % len(d)
+        ids.add(hashlib.sha1(head + d).hexdigest())
+        ids.add(hashlib.sha256(head + d).hexdigest())
+    return ids
+
+
+def _copied_records(bundle, commit):
+    """The paths outside state/trunk/ where `commit` added a byte-for-byte copy
+    of a file under it: a run record or a recipe draft that ingest copied
+    elsewhere (raw/, say) entered the history all the same."""
+    ids = set()
+    for d, _, files in os.walk(os.path.join(bundle, "state", "trunk")):
+        for f in files:
+            try:
+                with open(os.path.join(d, f), "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            if data.strip():
+                ids |= _blob_ids(data)
+    if not ids:
+        return []
+    tree = _git(bundle, "diff-tree", "-r", "--root", "--no-commit-id", "--no-renames", commit)
+    if not tree or tree[0] != 0:
+        return []
+    found = []
+    for line in tree[1].splitlines():
+        meta, _, path = line.partition("\t")
+        fields = meta.split()
+        if len(fields) >= 5 and fields[4] != "D" and fields[3] in ids:
+            found.append(path)
+    return found
+
+
 def cmd_run_ingested(args):
     """Record that `ingest` ran over a dispatched run's record, after checking
     the raw record stayed out of the bundle's history: nothing under
-    state/trunk/ is tracked, and the ingest commit touched nothing there."""
+    state/trunk/ is tracked, the ingest commit touched nothing there, and it
+    added no copy of a file from there anywhere else."""
     bundle = resolve_bundle(args.bundle)
     rec = load_or_die(bundle, check_name(args.name))
     if rec["status"] != STATUS_DISPATCHED:
@@ -686,6 +726,11 @@ def cmd_run_ingested(args):
         if touched and touched[0] == 0 and touched[1]:
             die(f"commit {commit[:12]} carries files under {IGNORE_ENTRY}: the raw record entered "
                 f"the bundle's history; it must be rewritten before anything is pushed or shared")
+        copied = _copied_records(bundle, commit)
+        if copied:
+            die(f"commit {commit[:12]} carries a copy of a run record or recipe draft at "
+                f"{', '.join(copied)}: the raw record entered the bundle's history; it must be "
+                f"rewritten before anything is pushed or shared")
     t = now()
     rec.setdefault("ingests", []).append({"at": t, "commit": commit})
     rec["updated"] = t

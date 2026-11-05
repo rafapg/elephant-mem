@@ -628,6 +628,13 @@ def _run_record(root, home):
         _, lrec = run_json("show", "--bundle", leak, lname, env=env)
         record("an ingest commit that carried the raw record is refused even once untracked",
                r.returncode != 0 and "entered" in r.stderr and lrec and lrec["ingests"] == [], r.stderr)
+        (leak / "raw").mkdir()
+        shutil.copy2(leak / "state" / "trunk" / "runs" / f"{lname}.json", leak / "raw" / "run.json")
+        git(leak, "add", "-A")
+        git(leak, *G, "commit", "-q", "-m", "ingest: copied to raw")
+        r = run(TRUNK, "run", "ingested", "--bundle", leak, lname, env=env)
+        record("an ingest that copied the raw record elsewhere is refused, naming the copy",
+               r.returncode != 0 and "raw/run.json" in r.stderr and "entered" in r.stderr, r.stderr)
 
     r, out = run_json("list", "--bundle", b, "--open", env=env)
     record("run list --open leaves out the dispatched run",
