@@ -20,7 +20,7 @@ Three plugins ship from one marketplace (`.claude-plugin/marketplace.json`):
 
 `elephant-mem`, `elephant-wiki` and `elephant-trunk` version **separately**. They
 are distinct plugins, installed separately, and the wiki changes far less often
-— as of `elephant-mem` 0.1.0-beta.7 the wiki is on 0.1.0-beta.4. The trunk
+— as of `elephant-mem` 1.0.0-rc.2 the wiki is on 0.1.0-beta.4. The trunk
 started its own count at 0.1.0-beta.1. A gap between the numbers is expected and
 is **not** a sign the wiki or the trunk is behind.
 
