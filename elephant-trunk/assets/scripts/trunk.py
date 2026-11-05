@@ -47,7 +47,9 @@ Commands:
                         [--error <e>]
                         record how the start went, ending the claim: without
                         --error the run becomes dispatched, with it the run is
-                        open again for a retry; a dispatched run refuses another
+                        open again for a retry; refuses a run that is not
+                        starting (claim it first) and warns when --command is
+                        not the claimed one; a dispatched run refuses another
   run ingested <name> [--commit <sha>]
                         after `ingest` ran over a dispatched run's record:
                         checks that nothing under state/trunk/ is tracked and
@@ -809,6 +811,9 @@ def cmd_run_claim(args):
 
 
 def cmd_run_dispatch(args):
+    """Record how the start of a claimed run went. Only a `starting` run is
+    recorded: a dispatch with no claim before it would let a session that
+    skipped the claim race one that made it, both commands running."""
     bundle = resolve_bundle(args.bundle)
     rec = load_for_update(bundle, check_name(args.name))
     _refuse_dispatched(rec)
@@ -816,6 +821,14 @@ def cmd_run_dispatch(args):
         problem = written_recipe_problem(rec.get("recipe"))
         if problem:
             die(f"nothing is dispatched: {problem}")
+    if rec["status"] != STATUS_STARTING:
+        die(f"run {rec['name']} was not claimed: `run claim` it with the command about to run, "
+            f"run the command only once the claim succeeded, then record here how it went; "
+            f"nothing was recorded")
+    claimed = (rec.get("claim") or {}).get("command")
+    if claimed and claimed != args.dispatch_command:
+        note(f"run {rec['name']} was claimed for {claimed!r}, and --command records "
+             f"{args.dispatch_command!r}; recording the command given here")
     t = now()
     attempt = {"at": t, "via": args.via, "command": args.dispatch_command, "where": args.where or None,
                "ok": args.error is None, "error": args.error}

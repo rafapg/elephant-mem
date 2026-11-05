@@ -469,7 +469,9 @@ relay the stderr as it is. The run was already dispatched (show it, as
 **A dispatched run** says), another session is starting it right now (say
 so, with the claim it names, and start nothing), or a written recipe is not
 checked and saved. Every claim ends with one `run dispatch` below, which
-records how the start went and releases the claim.
+records how the start went and releases the claim. `run dispatch` refuses a
+run that was not claimed, and warns on stderr when its `--command` is not the
+claimed one: pass the claimed command, as it ran.
 
 **On orq**, once the claim succeeded, run the command or commands exactly as
 shown, never more than once.

@@ -76,9 +76,12 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   refuses a run that is `starting` or `dispatched`: of six concurrent claims on
   one run, exactly one won in every round. Every write of a record takes the
   same lock, and a lock left by a killed process stops the write after ten
-  seconds, naming the file. `run dispatch` ends the claim: a start that ran
-  makes the run `dispatched`, and one recorded with `--error` is kept with its
-  error and reopens the run for a retry to claim. A run that was dispatched
+  seconds, naming the file. `run dispatch` ends the claim and records only a
+  run that is `starting`, so a session that skipped the claim cannot race one
+  that made it; a `--command` that is not the claimed one is recorded with a
+  warning on stderr. A start that ran makes the run `dispatched`, and one
+  recorded with `--error` is kept with its error and reopens the run for a
+  retry to claim. A run that was dispatched
   refuses a second claim or dispatch and says what ran and where. A missing or
   unreadable record says so and offers to start over from the topic.
 - **The `trunk` skill, study and converse** (`/elephant-trunk:trunk <topic>`).

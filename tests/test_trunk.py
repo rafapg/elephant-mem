@@ -634,6 +634,14 @@ def _run_record(root, home):
 
     # ── dispatch: failure keeps it open, success closes it to re-dispatch ─────
     D = ("run", "dispatch", "--bundle", b, name, "--via", "orq", "--command", "orq start two-sessions")
+    C = ("run", "claim", *D[2:])
+    _, before = run_json("show", "--bundle", b, name, env=env)
+    r = run(TRUNK, *D, env=env)
+    _, after = run_json("show", "--bundle", b, name, env=env)
+    record("a dispatch with no claim before it is refused, recording nothing",
+           r.returncode != 0 and "was not claimed" in r.stderr and "run claim" in r.stderr
+           and after == before, r.stderr)
+    run(TRUNK, *C, env=env)
     r = run(TRUNK, *D, "--error", "orq: no such recipe", env=env)
     _, rec = run_json("show", "--bundle", b, name, env=env)
     record("a failed dispatch is recorded with its error and the run stays open",
@@ -643,6 +651,7 @@ def _run_record(root, home):
     r = run(TRUNK, "run", "show", "--bundle", b, name, env=env)
     record("show says a run was not dispatched, with the error", "not dispatched" in r.stdout
            and "orq: no such recipe" in r.stdout, r.stdout)
+    run(TRUNK, *C, env=env)
     r = run(TRUNK, *D, "--where", "orq team trunk-7", env=env)
     _, rec = run_json("show", "--bundle", b, name, env=env)
     record("a dispatch that ran makes the run dispatched, with the command and where",
@@ -725,8 +734,9 @@ def _run_record(root, home):
         leak = git_bundle(root, "leaked")
         _, lo = run_json("new", "--bundle", leak, "--topic", "t", env=env)
         lname = lo["name"] if lo else "x"
-        run(TRUNK, "run", "dispatch", "--bundle", leak, lname, "--via", "claude-code",
-            "--command", "this session", env=env)
+        for verb in ("claim", "dispatch"):
+            run(TRUNK, "run", verb, "--bundle", leak, lname, "--via", "claude-code",
+                "--command", "this session", env=env)
         git(leak, "add", "-A")
         git(leak, "add", "-f", f"state/trunk/runs/{lname}.json")
         git(leak, *G, "commit", "-q", "-m", "ingest: leaked")
@@ -767,8 +777,9 @@ def _run_record(root, home):
             git(fb, *G, "commit", "-q", "-m", "init")
             _, fo = run_json("new", "--bundle", fb, "--topic", "fingerprint", "--name", "fp", env=env)
             run(TRUNK, "run", "set", "--bundle", fb, "fp", "study", "--value", "the study", env=env)
-            run(TRUNK, "run", "dispatch", "--bundle", fb, "fp", "--via", "claude-code",
-                "--command", "this session", env=env)
+            for verb in ("claim", "dispatch"):
+                run(TRUNK, "run", verb, "--bundle", fb, "fp", "--via", "claude-code",
+                    "--command", "this session", env=env)
             (fb / "raw").mkdir()
             return fb, fb / "state" / "trunk" / "runs" / "fp.json"
         for label, copy in (
@@ -953,6 +964,7 @@ def _claim(root, home):
     record("a failed start is recorded and the run is open again, its claim over",
            r.returncode == 0 and rec.get("status") == "open" and rec.get("claim") is None
            and rec.get("dispatch") is None and [a["ok"] for a in rec.get("attempts", [])] == [False], r.stderr)
+    record("a dispatch with the claimed command warns of nothing", "was claimed for" not in r.stderr, r.stderr)
     r = run(TRUNK, *C, env=env)
     record("a resume retries a failed start by claiming the run again", r.returncode == 0
            and show("c1").get("status") == "starting", r.stderr)
@@ -973,6 +985,15 @@ def _claim(root, home):
            r.returncode != 0 and show("c1").get("status") == "dispatched"
            and len(show("c1").get("attempts", [])) == 2, r.stderr)
 
+    # ── the command recorded is not the one claimed ──────────────────────────
+    run(TRUNK, "run", "new", "--bundle", b, "--topic", "drift", "--name", "c2", env=env)
+    run(TRUNK, "run", "claim", "--bundle", b, "c2", "--via", "orq", "--command", "orq start a K-2", env=env)
+    r = run(TRUNK, "run", "dispatch", "--bundle", b, "c2", "--via", "orq", "--command", "orq start b K-2", env=env)
+    record("a dispatch whose command is not the claimed one is recorded, warning with both on stderr",
+           r.returncode == 0 and "was claimed for" in r.stderr and "orq start a K-2" in r.stderr
+           and "orq start b K-2" in r.stderr
+           and show("c2").get("dispatch", {}).get("command") == "orq start b K-2", r.stderr)
+
     # ── concurrent claims: exactly one wins ──────────────────────────────────
     rounds, wins, kept = 5, [], []
     for i in range(rounds):
@@ -991,6 +1012,7 @@ def _claim(root, home):
     for i in range(rounds):
         n = f"race-d-{i}"
         run(TRUNK, "run", "new", "--bundle", b, "--topic", "race", "--name", n, env=env)
+        run(TRUNK, "run", "claim", "--bundle", b, n, "--via", "orq", "--command", "orq start racer", env=env)
         codes, _ = _claim_race(b, n, 6, "dispatch", env)
         wins.append(codes.count(0))
         attempts.append(len(show(n).get("attempts", [])))
@@ -1132,6 +1154,7 @@ def _recipe_written(root, home):
     record("a recipe's fact is a /facts/ link", r.returncode != 0, r.stderr)
 
     # ── started, then its fact ───────────────────────────────────────────────
+    run(TRUNK, "run", "claim", *D[2:], env=env)
     r = run(TRUNK, *D, "--where", "orq team k1", env=env)
     record("a saved recipe that passed its check is started", r.returncode == 0
            and show().get("status") == "dispatched", r.stderr)
@@ -1149,6 +1172,7 @@ def _recipe_written(root, home):
     run(TRUNK, "run", "set", "--bundle", b, n2, "recipe", "--value",
         json.dumps({"name": "impl_review", "fact": "/facts/r.md", "command": "orq start impl_review", "roles": "x"}),
         env=env)
+    run(TRUNK, "run", "claim", "--bundle", b, n2, "--via", "orq", "--command", "orq start impl_review", env=env)
     r = run(TRUNK, "run", "dispatch", "--bundle", b, n2, "--via", "orq", "--command", "orq start impl_review", env=env)
     record("a saved recipe picked from the facts starts with no check of its own", r.returncode == 0, r.stderr)
 
@@ -1215,7 +1239,8 @@ def _steer_and_forget(root, home):
     name = o["name"] if o else "x"
     run(TRUNK, "run", "set", "--bundle", b, name, "learning", "--value", f"{study}: read the open PRs first",
         env=env)
-    run(TRUNK, "run", "dispatch", "--bundle", b, name, "--via", "claude-code", "--command", "plan", env=env)
+    for verb in ("claim", "dispatch"):
+        run(TRUNK, "run", verb, "--bundle", b, name, "--via", "claude-code", "--command", "plan", env=env)
 
     # ── forget ───────────────────────────────────────────────────────────────
     study_file = b / "knowledge" / "facts" / "study-open-prs.md"
