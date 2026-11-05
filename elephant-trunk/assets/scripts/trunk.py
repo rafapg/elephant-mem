@@ -178,9 +178,13 @@ def read_tag(bundle):
 
     Returns (tag, source, problem). `source` is "elephant.json" when the
     bundle sets `trunk.tag`, else "default". `problem` is None, or a sentence
-    saying why a value present in elephant.json was not used. A missing or
-    malformed config never stops the trunk: it falls back to the default and
-    says so, the same leniency elephant-wiki shows when it reads hooks."""
+    saying why a value present in elephant.json was not used. A missing
+    elephant.json or `trunk.tag` reads the default. A present one that cannot
+    be used (it does not parse, is not an object, or carries a `trunk.tag`
+    that is not a non-empty string) returns the default with a problem, and
+    the caller decides: `config` names the problem and prints the default,
+    while `facts` stops with exit 1, and the skill with it, until the file is
+    fixed, since the default would read none of the owner's facts."""
     path = os.path.join(bundle, "elephant.json")
     try:
         with open(path, encoding="utf-8") as fh:

@@ -322,10 +322,14 @@ own key.
   trunk looks for active facts carrying this tag plus one of the fixed area tags
   `trunk-study`, `trunk-dispatch` or `trunk-recipe`, straight from
   `knowledge/manifest.jsonl`. Set it when your facts already carry another tag
-  (`como-trabalhar`, say), so they are read as they are. A missing key reads
-  `how-i-work` and the trunk says how to set another; a value that is not a
-  non-empty string falls back to the same default and says why. `trunk.py config`
-  prints what it resolved.
+  (`como-trabalhar`, say), so they are read as they are. A missing key, or no
+  `elephant.json` at all, reads `how-i-work` and the trunk says how to set
+  another. A value that cannot be used (not a non-empty string, or a `trunk`
+  that is not an object), or an `elephant.json` that does not parse or is not
+  a JSON object, stops `trunk.py facts` with exit 1, and the skill with it,
+  until the file is fixed: reading the default instead would list none of your
+  facts and capture new ones under a tag that goes unread once it is fixed.
+  `trunk.py config` names the problem and prints what it resolved.
 - Like every key here, `update` never re-syncs it. The plugin's script runs from
   the plugin and is never copied into the bundle.
 - The raw run records live in `<bundle>/state/trunk/`, which the plugin keeps
