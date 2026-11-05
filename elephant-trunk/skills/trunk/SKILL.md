@@ -127,10 +127,10 @@ short facts.
 **Two facts that contradict each other.** When two facts give opposite
 instructions for the same step (one says read the repo's open PRs first, the
 other says never), do not pick one. Show both, with their `link` and
-`occurred`, and ask the owner which holds. The winner is a learning: keep it
-as pending (**A learning surfaces mid-run**, below), then offer once to
-capture it (see **Capturing a how** below), and use the winner for this run
-either way.
+`occurred`, and ask the owner which holds. The winner is a learning: offer
+once to capture it (see **Capturing a how** below), and use the winner for
+this run either way. No run exists yet to keep it in; 1b keeps it, with what
+the owner answered to the offer.
 
 **An area with no fact.** No fact for the step at hand (no `trunk-study` fact
 when the study starts, or none at all after a first use that captured
@@ -156,8 +156,18 @@ on without a record only if the owner says so.
 When **First use** captured facts in this session, record each one in the new
 run now, as **The interview** says at its end, so 4c does not capture it again
 and 4d reports it with the run's learnings. A learning 1a surfaced before the
-run existed (the winner of two facts that contradicted each other) is recorded
-as pending in it now, the same way.
+run existed (the winner of two facts that contradicted each other) is kept as
+pending in it now (**A learning surfaces mid-run**) and settled at once by
+what the owner answered to 1a's offer, so 4c does not capture it again. When
+the owner captured it, record it with its link:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value '<its link>: <the how, in one line>' --pending <n>
+```
+
+When they declined, settle it with the `learning declined` note, as **A
+learning surfaces mid-run** says. Only one the owner neither captured nor
+declined stays pending, for 4c.
 
 ### 1c. Study the topic
 
