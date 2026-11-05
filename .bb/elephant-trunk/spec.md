@@ -243,7 +243,7 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 
 ### Steer and forget
 
-- [ ] **8. Steer and forget a learning**: the owner redirects a learning or asks to forget
+- [x] **8. Steer and forget a learning**: the owner redirects a learning or asks to forget
       one, and a forgotten learning is no longer read. · verify: `python3 tests/test_trunk.py`
 
 ### Interview

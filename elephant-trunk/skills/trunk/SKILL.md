@@ -11,7 +11,9 @@ description: >
   over to be studied and taken to dispatched work ("trunk this", "study this
   and dispatch it", "take this to a PR"), and to continue a run an earlier
   session left ("continue the trunk run <name>", "resume the trunk", "where
-  did the trunk stop"). Not for a plain recall question about a topic (that is
+  did the trunk stop"), and to steer or forget what the trunk learned about
+  how the owner works ("forget that learning", "that's not how I dispatch").
+  Not for a plain recall question about a topic (that is
   elephant-mem:query) or for work the owner is already doing in this session.
 ---
 
@@ -46,7 +48,10 @@ language they use in the conversation.
    owner's words. When the owner asks to continue a run instead (they say
    continue or resume, or name a run, or the invocation is exactly the name of
    one), find the bundle in item 2 and go to **Continue a run** below; no new
-   run is opened. With no topic and no run, ask for the topic in one line and
+   run is opened. When the owner asks to steer or forget a learning (they say
+   forget, or correct how the trunk said they work, or the invocation is
+   `forget <link>`), find the bundle and go to **Steer or forget a learning**;
+   no run is opened for it. With no topic and no run, ask for the topic in one line and
    wait. A topic is not a spec: do not ask clarifying questions yet, the study
    is where they come from.
 2. **The bundle and the tag.**
@@ -526,10 +531,20 @@ that fit or did not. Only that: never something about the topic, never content
 of a session, a secret or third-party content.
 
 Learning is autonomous. Capture each one without asking, with **Capturing a
-how**, and check it with `facts --area`. Two exceptions: a how the owner
+how**, and check it with `facts --area`. Three exceptions: a how the owner
 already captured in this run is not captured again (a recipe written in this
-run already has its `trunk-recipe` fact from 3e), and one the owner declined
-to capture in this run stays uncaptured. Record each learning that landed:
+run already has its `trunk-recipe` fact from 3e), one the owner declined
+to capture in this run stays uncaptured, and one the owner forgot or steered
+away from is never learned again. Before capturing, list those:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" facts --forgotten --json
+```
+
+and read the ones in the same area. A learning that says what one of them
+said is set aside, and 4d names it as set aside because the owner forgot it.
+Only the owner brings a forgotten how back, by stating it again; what they
+state is captured as any how they state. Record each learning that landed:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value "<its link>: <the how, in one line>"
@@ -543,7 +558,8 @@ recorded.
 Close with one short message: the run's name, what is running and where (or
 the pull request, on plain Claude Code), the ingest's commit, and the
 learnings, one line each with its area and its `link`, saying the owner can
-steer one or ask to forget it. With nothing learned, say so in one line. The
+steer one or ask to forget it (**Steer or forget a learning**). With nothing
+learned, say so in one line. The
 trunk stops here; a later session continues the run from its record
 (`/elephant-trunk:trunk continue <name>`).
 
@@ -647,8 +663,11 @@ What is left of step 4 is said and offered, never run silently:
 - **No ingest recorded** (`ingests` is empty): the ingest of 4b never ran or
   failed. Offer to run it now; on the owner's yes, run 4b as written, with
   `run ingested` after it.
-- **Learnings**: what this session learns about how the owner works goes
-  through 4c, as in any run.
+- **Learnings**: the record's `learnings`, each with its link, and its
+  `steers`, what was forgotten or steered since (`run show` marks each
+  learning that was). The owner can steer or forget any of them here, with
+  **Steer or forget a learning**, passing this run as `--run`. What this
+  session learns about how the owner works goes through 4c, as in any run.
 
 Then the conversation continues from there: answer from the record, and
 record each new decision or note with `run set` as in step 2. The study, the
@@ -696,6 +715,76 @@ During the conversation a capture is offered once. What the owner neither
 captured nor declined by the end of the run is captured in 4c without asking,
 and reported.
 
+## Steer or forget a learning
+
+What the trunk learned about how the owner works is the owner's to correct, at
+any point: right after 4d's report, while continuing a run, or invoked for it
+alone. They can **steer** a learning (it is not quite how they work, here is
+how) or **forget** one (it should not have been learned). Either way the fact
+is never deleted, git keeps its history: it changes status in its own file, the
+script rebuilds the bundle's index, and the trunk no longer reads it.
+
+**Which learning.** By its link, as 4d and `run show` print it, or in the
+owner's words: match them against the facts `facts --json` lists (`desc`, and
+the fact file when the line is not enough). One match is named in one line,
+with its link; several are listed for the owner to pick; none is said so. The
+trunk steers and forgets only its own how: the script refuses a fact without
+the how-I-work tag plus an area tag, which is the owner's to retire with
+elephant-mem's `maintain`.
+
+**Forget.** The owner's request is the authorization. Name the fact in one
+line, its link and what it says, and run:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" learning forget <link> --run <name> --json
+```
+
+`--run` is the run this conversation is on, when there is one: the forget is
+recorded there. The fact becomes `deprecated`, elephant-mem's own status for
+a retired fact, so `query` and `briefing` stop presenting it as current too.
+The script rebuilds the index and checks the trunk no longer reads it. Forgetting
+undoes nothing already dispatched; from here on this run does not use it.
+
+**Steer.** The owner says how it really is.
+
+1. Capture the corrected how with **Capturing a how**: the same area tag
+   unless the owner puts it in another, the owner's own words, and a line
+   saying it replaces the learning `<link>`. Check it with `facts --area`.
+2. Steer the old learning to it:
+
+   ```bash
+   python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" learning steer <link> --to <the new link> --run <name> --json
+   ```
+
+   The old fact becomes `superseded`, with the new one in its
+   `superseded-by` and itself in the new one's `supersedes`; the script
+   rebuilds the index and checks the trunk reads the new one in its place.
+
+A capture that did not land (it does not show up in `facts --area`) steers
+nothing: say so, and offer to forget the old learning instead.
+
+**Exit 1**: relay the stderr as it is. Not a learning of the trunk's, a link
+to no fact, or a missing `build-index.py` change nothing. A `build-index.py`
+that failed after the edit leaves the fact file changed and the old index in
+place, so the trunk still reads it: say so, stop, and commit nothing.
+
+**Then validate, log and commit**, as elephant-mem's own writes do:
+
+```bash
+python3 "<bundle>/scripts/validate-okf.py"
+```
+
+It must pass; when it does not, commit nothing and say so. Then append one
+dated line to `knowledge/log.md`, newest first, in the form of the lines
+already there (`**Trunk**: forgot <link>`, or `**Trunk**: steered <link> to
+<the new link>`), and commit locally:
+`git -C <bundle> add -A && git -C <bundle> commit -m "trunk: forget <link>"`
+(or `"trunk: steer <link> to <the new link>"`). The script keeps
+`state/trunk/` git-ignored, so no run record goes in. Never push.
+
+Tell the owner in one line what changed: the link, forgotten or steered to
+which fact, and that the trunk no longer reads it.
+
 ## Rules
 
 - **The how comes from facts.** Nothing in this file is a preference of this
@@ -710,5 +799,7 @@ and reported.
   never deploys, never merges and never pushes the bundle.
 - **A dispatched run is never dispatched again.** Continuing it shows what was
   dispatched and where; more work is a new run.
+- **A forgotten learning is never read.** The trunk reads only active facts,
+  and never learns again what the owner forgot or steered away from.
 - **A saved recipe is never edited.** A team started from it resumes from
   that file; a better version is a new recipe with a new name and fact.

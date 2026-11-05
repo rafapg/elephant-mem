@@ -12,6 +12,9 @@ continues it, never dispatches a dispatched run again, and records the ingest
 of a dispatched run only when its commit left the raw record out. A recipe
 written for a run is kept as a draft beside the record, checked against its
 hash, saved without ever replacing one, and never started unless it passed.
+A learning the owner steers or forgets leaves the facts the trunk reads: its
+fact becomes `superseded` or `deprecated` in its own file, the bundle's real
+build-index.py rebuilds the manifest, and only the trunk's own how is touched.
 
 Pure stdlib, Python 3.10+, mirroring tests/test_wiki.py's conventions: a
 throwaway bundle in a tempdir, subprocess calls into the real script, PASS/FAIL
@@ -38,6 +41,7 @@ PLUGIN = REPO_ROOT / "elephant-trunk"
 TRUNK = PLUGIN / "assets" / "scripts" / "trunk.py"
 WIKI = REPO_ROOT / "elephant-wiki" / "assets" / "scripts" / "wiki.py"
 MARKETPLACE = REPO_ROOT / ".claude-plugin" / "marketplace.json"
+BUILD_INDEX = REPO_ROOT / "plugin" / "assets" / "scripts" / "build-index.py"
 
 checks = []
 
@@ -405,6 +409,7 @@ def _run(root):
 
     _run_record(root, home)
     _recipe_written(root, home)
+    _steer_and_forget(root, home)
 
 
 def git(bundle, *args):
@@ -780,6 +785,148 @@ def _recipe_written(root, home):
         env=env)
     r = run(TRUNK, "run", "dispatch", "--bundle", b, n2, "--via", "orq", "--command", "orq start impl_review", env=env)
     record("a saved recipe picked from the facts starts with no check of its own", r.returncode == 0, r.stderr)
+
+
+def write_fact(bundle, name, tags, status="active", relations=None, desc=None):
+    """A fact file as capture writes it from templates/fact.md, the template's
+    own comment on `status:` included. Returns its /facts/ link."""
+    rel = relations if relations is not None else "  supersedes: []\n  superseded-by: []\n"
+    (bundle / "knowledge" / "facts" / f"{name}.md").write_text(
+        "---\ntype: fact\n"
+        f"description: \"{desc or 'How the owner works: ' + name}\"\n"
+        "entities: []\n"
+        f"relations:\n{rel}"
+        "sources: []\nconfidence: high\n"
+        f"status: {status}        # active | deprecated | superseded\n"
+        f"tags: [{', '.join(tags)}]\n"
+        "created: 2026-11-01\nupdated: 2026-11-01\noccurred: 2026-11-01\n---\n\n"
+        f"The owner works this way: {name}.\n\n**Why it matters / context:** a test.\n",
+        encoding="utf-8")
+    return f"/facts/{name}.md"
+
+
+def build_index(bundle):
+    return subprocess.run([sys.executable, str(bundle / "scripts" / "build-index.py")], cwd=str(bundle),
+                          capture_output=True, text=True, encoding="utf-8")
+
+
+def learning(*args, env):
+    r = run(TRUNK, "learning", *args, "--json", env=env)
+    try:
+        return r, json.loads(r.stdout)
+    except ValueError:
+        return r, None
+
+
+def _steer_and_forget(root, home):
+    env = env_for(home)
+    b = git_bundle(root, "learnings")
+    (b / "scripts").mkdir()
+    (b / "knowledge" / "facts").mkdir()
+    shutil.copy2(BUILD_INDEX, b / "scripts" / "build-index.py")
+    T = "como-trabalhar"
+    study = write_fact(b, "study-open-prs", [T, "trunk-study"])
+    dispatch = write_fact(b, "dispatch-orq", [T, "trunk-dispatch"])
+    other = write_fact(b, "slack-voice", [T])
+    plain = write_fact(b, "plain-fact", ["decision", "trunk-study"])
+    block = write_fact(b, "recipe-split", [T, "trunk-recipe"],
+                       relations="  supersedes: []\n  superseded-by:\n    - /facts/older.md\n")
+    r = build_index(b)
+    record("the learnings bundle builds its index", r.returncode == 0, r.stderr)
+    _, out = facts_json("--bundle", b, env=env)
+    record("before anything is forgotten the trunk reads its three learnings",
+           set(links(out) or []) == {study, dispatch, block}, out)
+
+    _, o = run_json("new", "--bundle", b, "--topic", "learnings", env=env)
+    name = o["name"] if o else "x"
+    run(TRUNK, "run", "set", "--bundle", b, name, "learning", "--value", f"{study}: read the open PRs first",
+        env=env)
+    run(TRUNK, "run", "dispatch", "--bundle", b, name, "--via", "claude-code", "--command", "plan", env=env)
+
+    # ── forget ───────────────────────────────────────────────────────────────
+    study_file = b / "knowledge" / "facts" / "study-open-prs.md"
+    before = study_file.read_text(encoding="utf-8")
+    r, out = learning("forget", "--bundle", b, study, "--run", name, env=env)
+    record("forget exits 0 and says it changed the fact", r.returncode == 0 and out and out["changed"]
+           and out["status"] == "deprecated", r.stderr)
+    _, f = facts_json("--bundle", b, env=env)
+    record("a forgotten learning is no longer read", study not in (links(f) or [study])
+           and set(links(f) or []) == {dispatch, block}, f)
+    after = study_file.read_text(encoding="utf-8")
+    record("the forgotten fact's file says deprecated, with the rest of it as it was",
+           re.search(r"^status: deprecated$", after, re.M) is not None
+           and re.search(r"^updated: \d{4}-\d\d-\d\d$", after, re.M) is not None
+           and after.split("\n---\n", 1)[1] == before.split("\n---\n", 1)[1]
+           and 'description: "How the owner works: study-open-prs"' in after, after)
+    _, f = facts_json("--bundle", b, "--forgotten", env=env)
+    record("facts --forgotten lists it, so the trunk does not learn it again",
+           links(f) == [study] and f["facts"][0]["status"] == "deprecated", f)
+    r, out = learning("forget", "--bundle", b, study, env=env)
+    record("forgetting it again changes nothing and says so",
+           r.returncode == 0 and out and out["changed"] is False and "already" in r.stderr
+           and study_file.read_text(encoding="utf-8") == after, r.stderr)
+    for label, link in (("a how-I-work fact with no trunk area tag", other),
+                        ("a fact with an area tag but not the how-I-work tag", plain)):
+        path = b / "knowledge" / link.lstrip("/")
+        was = path.read_text(encoding="utf-8")
+        r = run(TRUNK, "learning", "forget", "--bundle", b, link, env=env)
+        record(f"{label} is not the trunk's to forget", r.returncode != 0 and "maintain" in r.stderr
+               and path.read_text(encoding="utf-8") == was, r.stderr)
+    r = run(TRUNK, "learning", "forget", "--bundle", b, "/facts/nope.md", env=env)
+    record("a link to no fact is refused", r.returncode != 0 and "no fact at" in r.stderr, r.stderr)
+    r = run(TRUNK, "learning", "forget", "--bundle", b, "/facts/../elephant.json", env=env)
+    record("a link that leaves facts/ is refused", r.returncode != 0 and "not a fact link" in r.stderr, r.stderr)
+
+    # ── steer ────────────────────────────────────────────────────────────────
+    new = write_fact(b, "dispatch-cc", [T, "trunk-dispatch"])
+    build_index(b)
+    r, out = learning("steer", "--bundle", b, dispatch, "--to", new, "--run", name, env=env)
+    record("steer exits 0", r.returncode == 0 and out and out["status"] == "superseded", r.stderr)
+    _, f = facts_json("--bundle", b, env=env)
+    record("a steered learning is no longer read, and the one it was steered to is",
+           set(links(f) or []) == {new, block}, f)
+    old_text = (b / "knowledge" / "facts" / "dispatch-orq.md").read_text(encoding="utf-8")
+    new_text = (b / "knowledge" / "facts" / "dispatch-cc.md").read_text(encoding="utf-8")
+    record("the steered fact is superseded by the new one, and the new one supersedes it",
+           re.search(r"^status: superseded$", old_text, re.M) is not None
+           and f"  superseded-by: [{new}]" in old_text and f"  supersedes: [{dispatch}]" in new_text
+           and re.search(r"^status: active", new_text, re.M) is not None, old_text + new_text)
+    r = run(TRUNK, "learning", "steer", "--bundle", b, block, "--to", other, env=env)
+    record("a learning is not steered to a fact the trunk does not read",
+           r.returncode != 0 and "status: superseded" not in
+           (b / "knowledge" / "facts" / "recipe-split.md").read_text(encoding="utf-8"), r.stderr)
+    r = run(TRUNK, "learning", "steer", "--bundle", b, study, "--to", new, env=env)
+    record("a forgotten learning is not steered", r.returncode != 0 and "deprecated" in r.stderr, r.stderr)
+    newer = write_fact(b, "recipe-split-v2", [T, "trunk-recipe"])
+    build_index(b)
+    r, out = learning("steer", "--bundle", b, block, "--to", newer, env=env)
+    block_text = (b / "knowledge" / "facts" / "recipe-split.md").read_text(encoding="utf-8")
+    record("a block-list superseded-by gains the new link as one more item",
+           r.returncode == 0 and f"    - /facts/older.md\n    - {newer}\n" in block_text, r.stderr + block_text)
+    r = build_index(b)
+    record("the edited facts still build", r.returncode == 0, r.stderr)
+
+    # ── the run record ───────────────────────────────────────────────────────
+    _, rec = run_json("show", "--bundle", b, name, env=env)
+    steers = (rec or {}).get("steers", [])
+    record("a dispatched run records what was forgotten and steered in it",
+           [(s["link"], s["action"], s["to"]) for s in steers]
+           == [(study, "forgotten", None), (dispatch, "steered", new)], steers)
+    r = run(TRUNK, "run", "show", "--bundle", b, name, env=env)
+    record("run show marks the learning that was forgotten",
+           f"{study}: read the open PRs first (forgotten)" in r.stdout
+           and f"{dispatch}: steered to {new}" in r.stdout, r.stdout)
+    r = git(b, "status", "--porcelain", "--untracked-files=all")
+    record("nothing the steer or the forget wrote is staged from state/trunk/",
+           "state/trunk" not in r.stdout, r.stdout)
+
+    # ── no build-index, nothing changed ──────────────────────────────────────
+    (b / "scripts" / "build-index.py").unlink()
+    was = (b / "knowledge" / "facts" / "dispatch-cc.md").read_text(encoding="utf-8")
+    r = run(TRUNK, "learning", "forget", "--bundle", b, new, env=env)
+    record("with no build-index.py nothing is forgotten, since the index would keep it read",
+           r.returncode != 0 and "build-index.py" in r.stderr
+           and (b / "knowledge" / "facts" / "dispatch-cc.md").read_text(encoding="utf-8") == was, r.stderr)
 
 
 if __name__ == "__main__":

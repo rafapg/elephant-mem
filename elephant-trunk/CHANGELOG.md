@@ -114,3 +114,17 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   followed, and is never dispatched again; an ingest that never ran is offered.
   A missing or unreadable record is said so, and the trunk offers to start over
   from the topic without deleting the file.
+- **The `trunk` skill, steering and forgetting a learning.** Learning is
+  autonomous, so the owner needed a way to correct what the trunk took from
+  them. `trunk.py learning forget <link>` sets the fact `deprecated` and
+  `learning steer <link> --to <link>` sets it `superseded`, linked both ways to
+  the fact the owner captured in its place: elephant-mem's own statuses, so
+  `query` and `briefing` stop presenting it as current too, and nothing is
+  deleted. The script then rebuilds the bundle's index and checks that the
+  trunk no longer reads it, since the manifest is all the trunk reads and a
+  stale one would keep it read; with no `build-index.py` it changes nothing.
+  It touches only the trunk's own how, refusing any fact without the
+  how-I-work tag plus an area tag. `facts --forgotten` lists what was forgotten
+  or steered, read from the fact files because the manifest keeps active facts
+  only, so the next run does not learn it again, and `--run` records each
+  steer in the run, where `run show` marks the learning.

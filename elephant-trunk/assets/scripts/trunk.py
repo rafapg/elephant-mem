@@ -17,6 +17,7 @@ Commands:
   facts                 list the active facts carrying the how-I-work tag plus a
                         trunk area tag, read from knowledge/manifest.jsonl only
     --area <tag>        only this area tag (repeatable; default: all three)
+    --forgotten         the learnings forgotten or steered instead
     --json              one JSON object on stdout
   run new --topic <t>   start a run record; prints its name
     [--name <n>]        the run's name (default: <date>-<slug of the topic>)
@@ -47,6 +48,13 @@ Commands:
                         replacing a recipe already there
   recipe fact <run> --link <l>
                         the trunk-recipe fact the saved recipe was captured with
+  learning forget <link> [--run <name>]
+                        forget a learning: its fact becomes `deprecated`, the
+                        index is rebuilt, and the trunk no longer reads it
+  learning steer <link> --to <link> [--run <name>]
+                        steer a learning to the fact that replaces it: the old
+                        one becomes `superseded`, linked both ways, and the
+                        trunk reads the new one in its place
   --bundle <path>       override bundle location (default: ELEPHANT_BUNDLE, then
                         the machine pointer ~/.config/elephant-mem/config.json)
 
@@ -83,6 +91,11 @@ POINTER = os.path.expanduser("~/.config/elephant-mem/config.json")
 # skill reads the owner's how for each step through one of them.
 DEFAULT_TAG = "how-i-work"
 AREA_TAGS = ("trunk-study", "trunk-dispatch", "trunk-recipe")
+# A learning the owner forgot is `deprecated`, one they steered elsewhere is
+# `superseded`: elephant-mem's own fact statuses, so every reader of the
+# bundle, not only the trunk, stops presenting it as current.
+FORGOTTEN, STEERED = "deprecated", "superseded"
+FORGOTTEN_STATUSES = (FORGOTTEN, STEERED)
 
 SET_TAG_HINT = ('to read another tag, set it in elephant.json: '
                 '"trunk": {"tag": "<your-tag>"}')
@@ -221,7 +234,8 @@ def how_facts(bundle, tag, areas=AREA_TAGS):
                 continue
             if row.get("type") != "fact":
                 continue
-            if str(row.get("status", "active")).strip().lower() != "active":
+            status = str(row.get("status", "active")).strip().lower()
+            if status != "active":
                 continue
             tags = _tags(row.get("tags"))
             hit = [a for a in wanted if a in tags]
@@ -236,6 +250,7 @@ def how_facts(bundle, tag, areas=AREA_TAGS):
                 "link": link,
                 "areas": hit,
                 "desc": str(row.get("desc", "")),
+                "status": status,
                 "tags": tags,
                 "occurred": str(row.get("occurred", "")),
                 "confidence": str(row.get("confidence", "")),
@@ -249,7 +264,10 @@ def cmd_facts(args):
     announce_tag(cfg)
     areas = [a for a in AREA_TAGS if not args.area or a in args.area]
     try:
-        facts, skipped = how_facts(bundle, cfg["tag"], areas)
+        if args.forgotten:
+            facts, skipped = forgotten_facts(bundle, cfg["tag"], areas), 0
+        else:
+            facts, skipped = how_facts(bundle, cfg["tag"], areas)
     except OSError:
         manifest = os.path.join(bundle, "knowledge", "manifest.jsonl")
         die(f"cannot read {manifest} — rebuild it with "
@@ -257,13 +275,16 @@ def cmd_facts(args):
     if skipped:
         note(f"skipped {skipped} unreadable line(s) in knowledge/manifest.jsonl")
     if not facts:
-        note(f'no active fact carries "{cfg["tag"]}" plus a trunk area tag ({", ".join(areas)})')
+        which = "forgotten or steered" if args.forgotten else "active"
+        note(f'no {which} fact carries "{cfg["tag"]}" plus a trunk area tag ({", ".join(areas)})')
     if args.json:
         print(json.dumps({"bundle": bundle, "tag": cfg["tag"], "tag_source": cfg["tag_source"],
-                          "areas": areas, "facts": facts}, ensure_ascii=False))
+                          "areas": areas, "forgotten": args.forgotten, "facts": facts},
+                         ensure_ascii=False))
         return 0
     for f in facts:
-        print(f"{','.join(f['areas'])}\t{f['path']}\t{f['desc']}")
+        extra = f"\t{f['status']}" if args.forgotten else ""
+        print(f"{','.join(f['areas'])}\t{f['path']}\t{f['desc']}{extra}")
     return 0
 
 
@@ -422,7 +443,7 @@ def new_record(name, topic):
             "status": STATUS_OPEN, "created": t, "updated": t,
             "study": None, "approaches": [], "decisions": [], "brief": None,
             "recipe": None, "dispatch": None, "attempts": [], "log": [],
-            "ingests": [], "learnings": []}
+            "ingests": [], "learnings": [], "steers": []}
 
 
 def list_records(bundle):
@@ -507,10 +528,17 @@ def cmd_run_show(args):
         print("\n## ingested")
         for i in rec["ingests"]:
             print(f"- {i.get('at')}{', commit ' + i['commit'] if i.get('commit') else ''}")
+    steers = {s.get("link"): s for s in rec.get("steers", []) if isinstance(s, dict)}
     if rec.get("learnings"):
         print("\n## learned")
         for item in rec["learnings"]:
-            print(f"- {item.get('text') if isinstance(item, dict) else item}")
+            text = item.get("text") if isinstance(item, dict) else item
+            steer = steers.get(str(text).split(":", 1)[0].strip())
+            print(f"- {text}{' (' + _steer_line(steer) + ')' if steer else ''}")
+    if steers:
+        print("\n## steered and forgotten")
+        for s in rec["steers"]:
+            print(f"- {s.get('link')}: {_steer_line(s)}, at {s.get('at')}")
     if rec.get("log"):
         print("\n## notes")
         for item in rec["log"]:
@@ -879,6 +907,379 @@ def cmd_recipe_fact(args):
     return 0
 
 
+# ── steering and forgetting a learning ───────────────────────────────────────
+#
+# What the trunk learns about how the owner works is a fact like any other, so
+# forgetting or steering one is elephant-mem's own move: never a deletion (git
+# keeps the history), a status. A forgotten learning becomes `deprecated`; one
+# the owner steered becomes `superseded`, linked both ways to the fact that
+# replaced it. Either way it leaves the manifest's active facts once the index
+# is rebuilt, and the manifest is all the trunk reads. Only the trunk's own how
+# is touched here (the how-I-work tag plus an area tag): any other fact is the
+# owner's to retire with elephant-mem's `maintain`.
+
+FM_RE = re.compile(r"\A---[ \t]*\n(.*?\n)---[ \t]*(?:\n|\Z)", re.S)
+TOP_KEY_RE = r"^{key}:[ \t]*(.*)$"
+
+
+def _fm_split(text):
+    """(frontmatter lines, the text after it), or None with no frontmatter."""
+    m = FM_RE.match(text)
+    if not m:
+        return None
+    return m.group(1).splitlines(), text[m.end():]
+
+
+def _fm_join(lines, body):
+    return "---\n" + "\n".join(lines) + "\n---\n" + body
+
+
+def _scalar(raw):
+    """A frontmatter scalar as build-index reads it: a quoted value unquoted
+    (its escapes read), else the trailing ` #` comment cut; stripped."""
+    v = raw.strip()
+    if v[:1] == '"':
+        i = 1
+        while i < len(v) and v[i] != '"':
+            i += 2 if v[i] == "\\" else 1
+        try:
+            return json.loads(v[:i + 1])
+        except ValueError:
+            return v[1:i]
+    if v[:1] == "'":
+        m = re.match(r"'((?:[^']|'')*)'", v)
+        return m.group(1).replace("''", "'") if m else v[1:]
+    return re.split(r"\s+#", v, maxsplit=1)[0].strip()
+
+
+def _top_index(lines, key):
+    rx = re.compile(TOP_KEY_RE.format(key=re.escape(key)))
+    return next((i for i, ln in enumerate(lines) if rx.match(ln)), None)
+
+
+def _fm_status(lines):
+    i = _top_index(lines, "status")
+    if i is None:
+        return "active"
+    return _scalar(re.match(TOP_KEY_RE.format(key="status"), lines[i]).group(1)).lower() or "active"
+
+
+def _fm_value(lines, key):
+    i = _top_index(lines, key)
+    return None if i is None else re.match(TOP_KEY_RE.format(key=re.escape(key)), lines[i]).group(1)
+
+
+def _fm_tags(lines):
+    """A frontmatter's top-level `tags`: a flow list, a block list or one
+    scalar, each tag unquoted and stripped."""
+    i = _top_index(lines, "tags")
+    if i is None:
+        return []
+    bare = re.split(r"\s+#", lines[i].split(":", 1)[1], maxsplit=1)[0].strip()
+    if bare.startswith("[") and bare.endswith("]"):
+        return [t for t in (_scalar(x).strip() for x in _flow_items(bare)) if t]
+    if bare:
+        return [_scalar(bare).strip()]
+    out = []
+    for ln in lines[i + 1:]:
+        m = re.match(r"^[ \t]*-[ \t]+(.*)$", ln)
+        if not m:
+            break
+        if _scalar(m.group(1)).strip():
+            out.append(_scalar(m.group(1)).strip())
+    return out
+
+
+def _is_learning(lines, tag, areas=AREA_TAGS):
+    """The area tags this frontmatter carries when it is the trunk's how (a
+    fact with the how-I-work tag plus an area tag), else []."""
+    if _scalar(_fm_value(lines, "type") or "") != "fact":
+        return []
+    tags = _fm_tags(lines)
+    return [a for a in AREA_TAGS if a in areas and a in tags] if tag in tags else []
+
+
+def forgotten_facts(bundle, tag, areas=AREA_TAGS):
+    """The learnings the owner forgot or steered: the trunk's facts whose
+    status is deprecated or superseded, most recently updated first. They are
+    never in the manifest (build-index keeps active facts only), so this reads
+    the fact files themselves; it is not how the owner works, only what the
+    trunk must not learn again."""
+    base = os.path.join(bundle, "knowledge", "facts")
+    out = []
+    for d, _, files in os.walk(base):
+        for f in files:
+            if not f.endswith(".md"):
+                continue
+            path = os.path.join(d, f)
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    split = _fm_split(fh.read())
+            except (OSError, UnicodeDecodeError):
+                continue
+            if split is None:
+                continue
+            lines = split[0]
+            status, hit = _fm_status(lines), _is_learning(lines, tag, areas)
+            if status not in FORGOTTEN_STATUSES or not hit:
+                continue
+            rel = os.path.relpath(path, os.path.join(bundle, "knowledge")).replace(os.sep, "/")
+            out.append({"path": path, "link": "/" + rel, "areas": hit,
+                        "desc": _scalar(_fm_value(lines, "description") or ""),
+                        "status": status, "tags": _fm_tags(lines),
+                        "updated": _scalar(_fm_value(lines, "updated") or ""),
+                        "occurred": _scalar(_fm_value(lines, "occurred") or ""),
+                        "confidence": _scalar(_fm_value(lines, "confidence") or "")})
+    out.sort(key=lambda x: x["link"])
+    out.sort(key=lambda x: x["updated"], reverse=True)
+    return out
+
+
+def _set_top(lines, key, value):
+    """Set a top-level scalar, replacing its line (and any comment on it), or
+    appending it when the frontmatter has none."""
+    i = _top_index(lines, key)
+    if i is None:
+        lines.append(f"{key}: {value}")
+    else:
+        lines[i] = f"{key}: {value}"
+
+
+def _flow_items(value):
+    inner = value.strip()[1:-1]
+    return [x.strip() for x in inner.split(",") if x.strip()]
+
+
+def _add_relation(lines, rel, link):
+    """Add `link` to `relations.<rel>` in a fact's frontmatter, in whatever
+    form the list is written: `[]` and `[a, b]` (the template's), a block list,
+    a single scalar, or absent. Returns False when it was already there; raises
+    ValueError on a shape it cannot edit without guessing."""
+    r = _top_index(lines, "relations")
+    if r is None:
+        lines += ["relations:", f"  {rel}: [{link}]"]
+        return True
+    head = re.match(TOP_KEY_RE.format(key="relations"), lines[r]).group(1).strip()
+    if head and _scalar(head) not in ("{}", ""):
+        raise ValueError("relations is written inline; edit it by hand")
+    if head:
+        lines[r] = "relations:"
+    end = r + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end][:1] in (" ", "\t")):
+        end += 1
+    children = [i for i in range(r + 1, end) if lines[i].strip()]
+    indent = re.match(r"[ \t]*", lines[children[0]]).group(0) if children else "  "
+    rx = re.compile(rf"^({re.escape(indent)}){re.escape(rel)}:[ \t]*(.*)$")
+    at = next((i for i in children if rx.match(lines[i])), None)
+    if at is None:
+        lines.insert(r + 1, f"{indent}{rel}: [{link}]")
+        return True
+    value = rx.match(lines[at]).group(2)
+    bare = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+    if bare.startswith("["):
+        if not bare.endswith("]"):
+            raise ValueError(f"relations.{rel} is a list over several lines; edit it by hand")
+        items = _flow_items(bare)
+        if link in [_scalar(x) for x in items]:
+            return False
+        lines[at] = f"{indent}{rel}: [{', '.join(items + [link])}]"
+        return True
+    if bare:
+        if _scalar(bare) == link:
+            return False
+        lines[at] = f"{indent}{rel}: [{bare}, {link}]"
+        return True
+    # A block list, or nothing at all under the key.
+    item_rx = re.compile(r"^([ \t]+)-[ \t]+(.*)$")
+    last, item_indent = at, indent + "  "
+    for i in range(at + 1, end):
+        m = item_rx.match(lines[i])
+        if not m or len(m.group(1)) <= len(indent):
+            break
+        if _scalar(m.group(2)) == link:
+            return False
+        last, item_indent = i, m.group(1)
+    if last == at:
+        lines[at] = f"{indent}{rel}: [{link}]"
+    else:
+        lines.insert(last + 1, f"{item_indent}- {link}")
+    return True
+
+
+def _read_links(bundle, tag):
+    """The links the trunk reads now, from the manifest."""
+    try:
+        facts, _ = how_facts(bundle, tag)
+    except OSError:
+        die(f"cannot read {os.path.join(bundle, 'knowledge', 'manifest.jsonl')} — rebuild it with "
+            f"python3 {os.path.join(bundle, 'scripts', 'build-index.py')}")
+    return [f["link"] for f in facts]
+
+
+def _learning(bundle, tag, link):
+    """The fact file of a learning the trunk reads, or read before it was
+    forgotten: a `/facts/` link to a fact carrying the how-I-work tag plus an
+    area tag. Its own frontmatter decides, not the manifest, which drops a
+    fact once it is no longer active. Returns (link, path, lines, body)."""
+    link = (link or "").strip()
+    if not link.startswith("/facts/") or ".." in link.split("/") or not link.endswith(".md"):
+        die(f'"{link}" is not a fact link: it starts with /facts/ and ends in .md, '
+            f"as `facts --json` prints it")
+    path = os.path.join(bundle, "knowledge", *link.lstrip("/").split("/"))
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        die(f"no fact at {link} ({path}) — check the link with `facts --json`")
+    except (OSError, UnicodeDecodeError) as exc:
+        die(f"cannot read {path} ({exc})")
+    split = _fm_split(text)
+    if split is None:
+        die(f"{path} has no frontmatter to edit")
+    if not _is_learning(split[0], tag):
+        die(f'{link} is not a learning the trunk reads (a fact with "{tag}" plus one of '
+            f"{', '.join(AREA_TAGS)}); the trunk steers and forgets only its own how — "
+            f"another fact is retired with elephant-mem's maintain")
+    return link, path, split[0], split[1]
+
+
+def _write_fact(path, text):
+    d = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(prefix=".fact-", suffix=".tmp", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _rebuild_index(bundle):
+    """Run the bundle's own build-index.py, so the manifest the trunk reads
+    says what the fact files now say."""
+    script = os.path.join(bundle, "scripts", "build-index.py")
+    r = subprocess.run([sys.executable, script], cwd=bundle, capture_output=True,
+                       text=True, encoding="utf-8")
+    if r.returncode != 0:
+        tail = "\n".join((r.stderr or r.stdout).strip().splitlines()[-5:])
+        die(f"the fact file was edited but {script} failed, so the trunk still reads the "
+            f"old index; fix it and run it again:\n{tail}")
+
+
+def _builder_or_die(bundle):
+    script = os.path.join(bundle, "scripts", "build-index.py")
+    if not os.path.isfile(script):
+        die(f"{script} is missing, and without it the index would keep the learning read; "
+            f"nothing was changed (restore the bundle's scripts with elephant-mem's update)")
+
+
+def _steer_line(s):
+    if s.get("action") == "steered":
+        return f"steered to {s.get('to')}"
+    return "forgotten"
+
+
+def _log_steer(bundle, run_name, entry):
+    rec = load_or_die(bundle, run_name)
+    entry = {"at": now(), **entry}
+    rec.setdefault("steers", []).append(entry)
+    rec["updated"] = entry["at"]
+    write_record(bundle, rec)
+
+
+def _verify_read(bundle, tag, changed, gone, kept=None):
+    """Rebuild the index when a fact changed (or the manifest still lists
+    `gone`, an index left stale), then check the trunk reads what it should."""
+    if changed or gone in _read_links(bundle, tag):
+        _rebuild_index(bundle)
+    read = _read_links(bundle, tag)
+    if gone in read:
+        die(f"{gone} is still listed as active in knowledge/manifest.jsonl after the rebuild")
+    if kept and kept not in read:
+        die(f"{kept} is not read by the trunk after the rebuild; check its tags with `facts --json`")
+
+
+def cmd_learning_forget(args):
+    bundle = resolve_bundle(args.bundle)
+    tag = config(bundle)["tag"]
+    run_name = check_name(args.run) if args.run else None
+    if run_name:
+        load_or_die(bundle, run_name)
+    _builder_or_die(bundle)
+    link, path, lines, body = _learning(bundle, tag, args.link)
+    status = _fm_status(lines)
+    if status == "active":
+        _set_top(lines, "status", FORGOTTEN)
+        _set_top(lines, "updated", datetime.date.today().isoformat())
+        ensure_ignored(bundle)
+        _write_fact(path, _fm_join(lines, body))
+        status, changed = FORGOTTEN, True
+    elif status in FORGOTTEN_STATUSES:
+        note(f"{link} is already {status}; the trunk does not read it")
+        changed = False
+    else:
+        die(f"{link} has status {status}, which the trunk already does not read; nothing to forget")
+    _verify_read(bundle, tag, changed, link)
+    if run_name:
+        _log_steer(bundle, run_name, {"link": link, "action": "forgotten", "to": None})
+    if args.json:
+        print(json.dumps({"link": link, "path": path, "status": status, "changed": changed,
+                          "run": run_name}, ensure_ascii=False))
+    else:
+        print(f"forgot {link}: the trunk no longer reads it")
+    return 0
+
+
+def cmd_learning_steer(args):
+    bundle = resolve_bundle(args.bundle)
+    tag = config(bundle)["tag"]
+    run_name = check_name(args.run) if args.run else None
+    if run_name:
+        load_or_die(bundle, run_name)
+    _builder_or_die(bundle)
+    old, old_path, old_lines, old_body = _learning(bundle, tag, args.link)
+    new, new_path, new_lines, new_body = _learning(bundle, tag, args.to)
+    if old == new:
+        die("a learning is steered to another fact, not to itself")
+    if _fm_status(new_lines) != "active":
+        die(f"{new} is not active; a learning is steered to the how the owner holds now "
+            f"(capture it first, then steer)")
+    old_status = _fm_status(old_lines)
+    if old_status not in ("active", STEERED):
+        die(f"{old} has status {old_status}; the trunk no longer reads it, so there is nothing "
+            f"to steer (capture the new how on its own)")
+    try:
+        changed_old = _add_relation(old_lines, "superseded-by", new)
+        changed_new = _add_relation(new_lines, "supersedes", old)
+    except ValueError as exc:
+        die(f"nothing was changed: {exc}")
+    if old_status == STEERED and not changed_old:
+        note(f"{old} was already steered to {new}")
+    changed_old = changed_old or old_status != STEERED
+    today = datetime.date.today().isoformat()
+    ensure_ignored(bundle)
+    if changed_new:
+        _set_top(new_lines, "updated", today)
+        _write_fact(new_path, _fm_join(new_lines, new_body))
+    if changed_old:
+        _set_top(old_lines, "status", STEERED)
+        _set_top(old_lines, "updated", today)
+        _write_fact(old_path, _fm_join(old_lines, old_body))
+    _verify_read(bundle, tag, changed_old or changed_new, old, kept=new)
+    if run_name:
+        _log_steer(bundle, run_name, {"link": old, "action": "steered", "to": new})
+    if args.json:
+        print(json.dumps({"link": old, "to": new, "status": STEERED,
+                          "changed": changed_old or changed_new, "run": run_name}, ensure_ascii=False))
+    else:
+        print(f"steered {old} to {new}: the trunk reads {new} in its place")
+    return 0
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main(argv):
@@ -893,6 +1294,8 @@ def main(argv):
                        help="list the owner's how: facts with the how-I-work tag plus a trunk area tag")
     p.add_argument("--area", action="append", choices=AREA_TAGS,
                    help="only this area tag (repeatable; default: all three)")
+    p.add_argument("--forgotten", action="store_true",
+                   help="the learnings forgotten or steered instead, never read as the owner's how")
     p.add_argument("--json", action="store_true", help="print one JSON object")
     p.set_defaults(func=cmd_facts)
 
@@ -961,6 +1364,22 @@ def main(argv):
     p.add_argument("run", help="the run's name")
     p.add_argument("--link", required=True, help="the fact's link, /facts/...")
     p.set_defaults(func=cmd_recipe_fact)
+
+    learning = sub.add_parser("learning", help="steer a learning to another fact, or forget it")
+    lsub = learning.add_subparsers(dest="learning_command", required=True)
+    p = lsub.add_parser("forget", parents=[common],
+                        help="forget a learning: its fact becomes deprecated and is no longer read")
+    p.add_argument("link", help="the learning's fact link, /facts/...")
+    p.add_argument("--run", default="", help="the run the owner asked in, to record it there")
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
+    p.set_defaults(func=cmd_learning_forget)
+    p = lsub.add_parser("steer", parents=[common],
+                        help="steer a learning to the fact that replaces it: the old one is superseded")
+    p.add_argument("link", help="the learning's fact link, /facts/...")
+    p.add_argument("--to", required=True, help="the fact that replaces it, captured first, /facts/...")
+    p.add_argument("--run", default="", help="the run the owner asked in, to record it there")
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
+    p.set_defaults(func=cmd_learning_steer)
     args = ap.parse_args(argv)
     return args.func(args)
 
