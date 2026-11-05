@@ -43,7 +43,10 @@ options. Free text on a command line (a topic, a decision, a command, an error,
 a JSON value) goes inside single quotes, as the templates show, so a backtick,
 a `$(`, a `$` or a `"` in it is passed as written and never run; write each
 apostrophe in the text as `'\''`. Text over several lines goes through
-`--file -` and a heredoc instead (see 1c). Speak to the owner in the
+`--file -` and a quoted heredoc instead (see 1c), whose delimiter,
+`TRUNK_END_OF_TEXT`, must be no line of the text: a line that is exactly the
+delimiter ends the heredoc there and the lines after it run as shell. Should
+the text hold that line, pick another delimiter for that call. Speak to the owner in the
 language they use in the conversation.
 
 ## 0. The topic and the bundle
@@ -152,9 +155,9 @@ candidates and what points to each.
 When the study is done, save it to the record:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> study --file - <<'EOF'
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> study --file - <<'TRUNK_END_OF_TEXT'
 <the study: what was read, what was found, each finding with its provenance>
-EOF
+TRUNK_END_OF_TEXT
 ```
 
 ### 1d. Present the approaches
@@ -165,9 +168,9 @@ by what the study found; an approach the study cannot support is not shown.
 Then save them, replacing any earlier set:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> approaches --file - <<'EOF'
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> approaches --file - <<'TRUNK_END_OF_TEXT'
 [{"title": "...", "summary": "...", "tradeoffs": "...", "recommended": false}]
-EOF
+TRUNK_END_OF_TEXT
 ```
 
 `title` and `summary` are required; `tradeoffs` and `recommended` are there
@@ -290,9 +293,9 @@ When the brief passes, save it (the filtered text, as the dispatch will read
 it; an artifact's location goes in a note):
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> brief --file - <<'EOF'
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> brief --file - <<'TRUNK_END_OF_TEXT'
 <the brief>
-EOF
+TRUNK_END_OF_TEXT
 ```
 
 ### 3c. The recipe
