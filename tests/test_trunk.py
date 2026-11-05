@@ -887,8 +887,13 @@ def _steer_and_forget(root, home):
                and path.read_text(encoding="utf-8") == was, r.stderr)
     r = run(TRUNK, "learning", "forget", "--bundle", b, "/facts/nope.md", env=env)
     record("a link to no fact is refused", r.returncode != 0 and "no fact at" in r.stderr, r.stderr)
-    r = run(TRUNK, "learning", "forget", "--bundle", b, "/facts/../elephant.json", env=env)
-    record("a link that leaves facts/ is refused", r.returncode != 0 and "not a fact link" in r.stderr, r.stderr)
+    (b / "knowledge" / "outside.md").write_text("---\ntags: [x]\n---\n", encoding="utf-8")
+    for label, link in (("a link that leaves facts/ is refused", "/facts/../outside.md"),
+                        ("a link that leaves facts/ through a backslash is refused",
+                         "/facts/..\\outside.md")):
+        r = run(TRUNK, "learning", "forget", "--bundle", b, link, env=env)
+        record(label, r.returncode != 0 and "not a fact link" in r.stderr, r.stderr)
+    (b / "knowledge" / "outside.md").unlink()
 
     # ── steer ────────────────────────────────────────────────────────────────
     new = write_fact(b, "dispatch-cc", [T, "trunk-dispatch"])

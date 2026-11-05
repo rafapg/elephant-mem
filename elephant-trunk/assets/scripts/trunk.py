@@ -1131,7 +1131,10 @@ def _learning(bundle, tag, link):
     area tag. Its own frontmatter decides, not the manifest, which drops a
     fact once it is no longer active. Returns (link, path, lines, body)."""
     link = (link or "").strip()
-    if not link.startswith("/facts/") or ".." in link.split("/") or not link.endswith(".md"):
+    # A backslash is refused outright: on Windows it separates a path, so
+    # `/facts/..\\x.md` would leave facts/ past a `/`-only `..` check.
+    if not link.startswith("/facts/") or "\\" in link or ".." in link.split("/") \
+            or not link.endswith(".md"):
         die(f'"{link}" is not a fact link: it starts with /facts/ and ends in .md, '
             f"as `facts --json` prints it")
     path = os.path.join(bundle, "knowledge", *link.lstrip("/").split("/"))
