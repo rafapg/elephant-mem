@@ -215,7 +215,7 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 
 ### Memory and record
 
-- [ ] **2. Reading the owner's how**: a stdlib script lists active facts carrying the
+- [x] **2. Reading the owner's how**: a stdlib script lists active facts carrying the
       how-I-work tag plus a trunk area tag, from the manifest only. · verify: `python3 tests/test_trunk.py`
 - [ ] **3. The run record**: a run is written to `state/trunk/`, git-ignored in the
       bundle, read back and continued. · verify: `python3 tests/test_trunk.py`
