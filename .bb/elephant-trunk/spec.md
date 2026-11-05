@@ -233,7 +233,7 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 
 ### A recipe when none fits
 
-- [ ] **6. Writing a recipe**: a new orq recipe for the case, shown, checked before it
+- [x] **6. Writing a recipe**: a new orq recipe for the case, shown, checked before it
       starts, saved with a `trunk-recipe` fact. · verify: reading
 
 ### Continue a run

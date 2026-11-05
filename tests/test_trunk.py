@@ -9,7 +9,9 @@ hint on how to set another), how `facts` lists the owner's how from
 knowledge/manifest.jsonl alone, and how `run` writes a run record under
 state/trunk/ (git-ignored, so a `git add -A` never stages it), reads it back,
 continues it, never dispatches a dispatched run again, and records the ingest
-of a dispatched run only when its commit left the raw record out.
+of a dispatched run only when its commit left the raw record out. A recipe
+written for a run is kept as a draft beside the record, checked against its
+hash, saved without ever replacing one, and never started unless it passed.
 
 Pure stdlib, Python 3.10+, mirroring tests/test_wiki.py's conventions: a
 throwaway bundle in a tempdir, subprocess calls into the real script, PASS/FAIL
@@ -402,6 +404,7 @@ def _run(root):
            r.returncode != 0 and "no bundle pointer" in r.stderr, r.stderr)
 
     _run_record(root, home)
+    _recipe_written(root, home)
 
 
 def git(bundle, *args):
@@ -640,6 +643,141 @@ def _run_record(root, home):
         record("a bundle that already tracks state/trunk/ refuses the write",
                r.returncode != 0 and "already tracks" in r.stderr
                and not (tracked / "state" / "trunk" / "runs").exists(), r.stderr)
+
+
+def _recipe_written(root, home):
+    env = env_for(home)
+    b = git_bundle(root, "recipes")
+    _, out = run_json("new", "--bundle", b, "--topic", "Split the export by area", env=env)
+    name = out["name"] if out else "x"
+    rdir = root / "orq-recipes"
+    rdir.mkdir()
+    src = root / "split_by_area.py"
+    src.write_text("def run(t):\n    return 'done'\n", encoding="utf-8")
+    test = root / "test_split_by_area.py"
+    test.write_text("def test_it():\n    pass\n", encoding="utf-8")
+    R = ("recipe",)
+    show = lambda: run_json("show", "--bundle", b, name, env=env)[1] or {}
+
+    # ── draft: kept beside the record, git-ignored, hashed ───────────────────
+    r = run(TRUNK, *R, "draft", "--bundle", b, name, "--name", "Split-Area", "--roles", "build",
+            "--file", src, env=env)
+    record("a recipe name that is not lowercase letters, digits and _ is refused",
+           r.returncode != 0 and "not a recipe name" in r.stderr, r.stderr)
+    r = run(TRUNK, *R, "draft", "--bundle", b, name, "--name", "split_by_area",
+            "--roles", "build: one session per area\nreview: reads the diff", "--file", src,
+            "--test", test, "--command", "orq start split_by_area k1 --repo /r --brief b.md", "--json",
+            env=env)
+    try:
+        dr = json.loads(r.stdout)
+    except ValueError:
+        dr = {}
+    draft = b / "state" / "trunk" / "recipes" / name / "split_by_area.py"
+    record("recipe draft keeps the recipe and its check file under state/trunk/recipes/<run>/",
+           r.returncode == 0 and Path(dr.get("draft", "")) == draft and draft.is_file()
+           and (draft.parent / "test_split_by_area.py").is_file(), r.stderr or dr)
+    rec = show()
+    rc = rec.get("recipe") or {}
+    record("the draft becomes the run's recipe: name, roles, command, unchecked, unsaved, no fact",
+           rc.get("name") == "split_by_area" and rc.get("roles", "").startswith("build:")
+           and rc.get("command", "").startswith("orq start split_by_area") and rc.get("check") is None
+           and rc.get("fact") is None and (rc.get("written") or {}).get("saved") is None
+           and (rc.get("written") or {}).get("sha256") == dr.get("sha256"), rc)
+    git(b, "add", "-A")
+    staged = git(b, "diff", "--cached", "--name-only").stdout.splitlines()
+    record("an `ingest`-style `git add -A` stages no recipe draft",
+           not any(x.startswith("state/trunk") for x in staged), staged)
+    r = run(TRUNK, "run", "set", "--bundle", b, name, "recipe", "--value",
+            json.dumps({"name": "x", "written": {"saved": "/tmp/x.py"}, "check": {"ok": True}}), env=env)
+    record("run set cannot forge a written recipe or its check",
+           r.returncode != 0 and "recipe draft" in r.stderr and show().get("recipe", {}).get("name") == "split_by_area",
+           r.stderr)
+
+    # ── nothing starts before a passed check ─────────────────────────────────
+    D = ("run", "dispatch", "--bundle", b, name, "--via", "orq", "--command", "orq start split_by_area k1")
+    r = run(TRUNK, *D, env=env)
+    record("an unchecked written recipe is never started: nothing is dispatched",
+           r.returncode != 0 and "never checked" in r.stderr and show().get("status") == "open"
+           and show().get("attempts") == [], r.stderr)
+    r = run(TRUNK, *R, "save", "--bundle", b, name, "--dir", rdir, env=env)
+    record("an unchecked recipe is not saved", r.returncode != 0 and not any(rdir.iterdir()), r.stderr)
+    r = run(TRUNK, *R, "checked", "--bundle", b, name, "--command", "pytest test_split_by_area.py",
+            "--error", "AssertionError: review never asked\nline 2", env=env)
+    rec = show()
+    record("a failed check keeps the recipe, the failure and a note; the run stays open",
+           r.returncode == 0 and rec.get("status") == "open" and rec["recipe"]["check"]["ok"] is False
+           and "review never asked" in rec["recipe"]["check"]["error"] and draft.is_file()
+           and any("failed its check" in n["text"] for n in rec.get("log", [])), r.stderr or rec)
+    r = run(TRUNK, *D, env=env)
+    record("a recipe that failed its check is never started",
+           r.returncode != 0 and "failed its check" in r.stderr and show().get("attempts") == [], r.stderr)
+    r = run(TRUNK, "run", "show", "--bundle", b, name, env=env)
+    record("the plain show names the recipe and its failed check",
+           "split_by_area" in r.stdout and "review never asked" in r.stdout, r.stdout)
+
+    # ── the check is held against what was drafted ───────────────────────────
+    r = run(TRUNK, *R, "draft", "--bundle", b, name, "--name", "split_by_area", "--roles", "build",
+            "--file", src, "--test", test, env=env)
+    r = run(TRUNK, *R, "checked", "--bundle", b, name, "--command", "pytest", env=env)
+    draft.write_text("def run(t):\n    return 'edited'\n", encoding="utf-8")
+    r = run(TRUNK, *R, "save", "--bundle", b, name, "--dir", rdir, env=env)
+    record("a draft edited after its check is not saved",
+           r.returncode != 0 and "changed after its check" in r.stderr and not any(rdir.iterdir()), r.stderr)
+    r = run(TRUNK, *R, "checked", "--bundle", b, name, "--command", "pytest", env=env)
+    record("a check is not recorded over a draft edited behind the record's back",
+           r.returncode != 0 and "changed since" in r.stderr, r.stderr)
+    run(TRUNK, *R, "draft", "--bundle", b, name, "--name", "split_by_area", "--roles", "build",
+        "--file", src, "--test", test, env=env)
+    run(TRUNK, *R, "checked", "--bundle", b, name, "--command", "pytest", env=env)
+    r = run(TRUNK, *D, env=env)
+    record("a checked recipe is started only once it is saved",
+           r.returncode != 0 and "not saved" in r.stderr, r.stderr)
+
+    # ── save: never replacing a recipe already there ─────────────────────────
+    (rdir / "split_by_area.py").write_text("# an older team's recipe\n", encoding="utf-8")
+    r = run(TRUNK, *R, "save", "--bundle", b, name, "--dir", rdir, env=env)
+    record("a recipe already in the directory is never replaced",
+           r.returncode != 0 and "never replaced" in r.stderr
+           and (rdir / "split_by_area.py").read_text(encoding="utf-8") == "# an older team's recipe\n"
+           and not (rdir / "test_split_by_area.py").exists(), r.stderr)
+    (rdir / "split_by_area.py").unlink()
+    r = run(TRUNK, *R, "save", "--bundle", b, name, "--dir", root / "no-such-dir", env=env)
+    record("a recipe directory that does not exist is refused", r.returncode != 0, r.stderr)
+    r = run(TRUNK, *R, "save", "--bundle", b, name, "--dir", rdir, "--json", env=env)
+    try:
+        sv = json.loads(r.stdout)
+    except ValueError:
+        sv = {}
+    record("the checked recipe is saved byte for byte, with its check file",
+           r.returncode == 0 and Path(sv.get("saved", "")) == rdir / "split_by_area.py"
+           and (rdir / "split_by_area.py").read_bytes() == src.read_bytes()
+           and (rdir / "test_split_by_area.py").read_bytes() == test.read_bytes(), r.stderr or sv)
+    r = run(TRUNK, *R, "save", "--bundle", b, name, "--dir", rdir, env=env)
+    record("saving again changes nothing and says it was saved already",
+           r.returncode == 0 and "already saved" in r.stderr, r.stderr)
+    r = run(TRUNK, *R, "fact", "--bundle", b, name, "--link", "split_by_area", env=env)
+    record("a recipe's fact is a /facts/ link", r.returncode != 0, r.stderr)
+
+    # ── started, then its fact ───────────────────────────────────────────────
+    r = run(TRUNK, *D, "--where", "orq team k1", env=env)
+    record("a saved recipe that passed its check is started", r.returncode == 0
+           and show().get("status") == "dispatched", r.stderr)
+    r = run(TRUNK, *R, "fact", "--bundle", b, name, "--link", "/facts/2026-11/recipe-split-by-area.md", env=env)
+    rec = show()
+    record("the recipe's trunk-recipe fact is linked after the start",
+           r.returncode == 0 and rec["recipe"]["fact"] == "/facts/2026-11/recipe-split-by-area.md", r.stderr)
+    r = run(TRUNK, *R, "draft", "--bundle", b, name, "--name", "other", "--roles", "x", "--file", src, env=env)
+    record("a dispatched run's recipe is not drafted again",
+           r.returncode != 0 and "already dispatched" in r.stderr, r.stderr)
+
+    # ── a picked saved recipe is not held to a check it never needed ─────────
+    _, o2 = run_json("new", "--bundle", b, "--topic", "picked", env=env)
+    n2 = o2["name"] if o2 else "y"
+    run(TRUNK, "run", "set", "--bundle", b, n2, "recipe", "--value",
+        json.dumps({"name": "impl_review", "fact": "/facts/r.md", "command": "orq start impl_review", "roles": "x"}),
+        env=env)
+    r = run(TRUNK, "run", "dispatch", "--bundle", b, n2, "--via", "orq", "--command", "orq start impl_review", env=env)
+    record("a saved recipe picked from the facts starts with no check of its own", r.returncode == 0, r.stderr)
 
 
 if __name__ == "__main__":

@@ -87,3 +87,17 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   each learning with its link. `trunk.py run ingested` records the ingest and
   refuses it when the commit carried the raw record, since `ingest` commits with
   `git add -A`; `run set <name> learning` keeps what was learned in the record.
+- **The `trunk` skill, a recipe when none fits.** When no saved recipe fits
+  work bound for orq, the trunk writes one from the closest saved recipe and
+  the tooling's own documentation, carrying the roles and stop conditions of
+  that kind of work and nothing of the topic, with a check that drives every
+  role to its end. `trunk.py recipe draft` keeps it beside the run record,
+  git-ignored, and records its hash; `recipe checked` records the check against
+  that hash, so a draft edited afterwards is refused, and a failed check keeps
+  the recipe and the failure while nothing is dispatched. The recipe is shown
+  whole with the dispatch, and `recipe save` copies it into the tooling's
+  recipe directory only once it passed, never replacing a recipe already
+  there: `orq resume` reloads a team's recipe from the path it started with,
+  so an edited one would break the resume of every team started from it. After
+  the start it is saved with a `trunk-recipe` fact (`recipe fact` links it),
+  and `run dispatch` refuses a written recipe that was not checked and saved.

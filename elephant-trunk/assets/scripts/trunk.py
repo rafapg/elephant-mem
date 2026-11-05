@@ -34,6 +34,18 @@ Commands:
                         after `ingest` ran over a dispatched run's record:
                         checks no run record entered the bundle's history and
                         records the ingest commit (default: the bundle's HEAD)
+  recipe draft <run> --name <n> --roles <r> --file <path|->
+                        [--test <path>] [--command <c>]
+                        a new recipe written for this run: kept as a draft under
+                        state/trunk/recipes/<run>/ and recorded as the run's recipe
+  recipe checked <run> --command <c> [--error <e>]
+                        record the check the draft went through; a failure keeps
+                        the draft and the error, and nothing is dispatched
+  recipe save <run> --dir <d>
+                        copy the checked draft into the recipe directory, never
+                        replacing a recipe already there
+  recipe fact <run> --link <l>
+                        the trunk-recipe fact the saved recipe was captured with
   --bundle <path>       override bundle location (default: ELEPHANT_BUNDLE, then
                         the machine pointer ~/.config/elephant-mem/config.json)
 
@@ -49,6 +61,7 @@ Pure stdlib, Python 3.10+. Cross-platform (explicit UTF-8 I/O).
 """
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -551,6 +564,9 @@ def cmd_run_set(args):
         kind = JSON_FIELDS[field]
         if not isinstance(value, kind):
             die(f"{field} must be a JSON {'array' if kind is list else 'object'}")
+        if field == "recipe" and "written" in value:
+            die("a recipe written for this run is recorded with `trunk.py recipe draft`, "
+                "which keeps the draft its check is held against")
         rec[field] = value
     else:
         if not raw.strip():
@@ -568,6 +584,10 @@ def cmd_run_dispatch(args):
         d = rec.get("dispatch") or {}
         die(f"run {rec['name']} was already dispatched via {d.get('via')} at {d.get('at')}"
             f"{' (' + d['where'] + ')' if d.get('where') else ''}; it is never dispatched again")
+    if args.via == "orq":
+        problem = written_recipe_problem(rec.get("recipe"))
+        if problem:
+            die(f"nothing is dispatched: {problem}")
     t = now()
     attempt = {"at": t, "via": args.via, "command": args.dispatch_command, "where": args.where or None,
                "ok": args.error is None, "error": args.error}
@@ -632,6 +652,229 @@ def cmd_run_ingested(args):
     return 0
 
 
+# ── a recipe written for the run ─────────────────────────────────────────────
+#
+# When no saved recipe fits, the skill writes one. It is a draft first, under
+# state/trunk/recipes/<run>/ (git-ignored, like the record), and becomes the
+# run's recipe with a `written` block the script alone fills: where the draft
+# is, its sha256, where it was saved. The check is held against that hash, so
+# what is saved and started is byte for byte what passed. A saved recipe is
+# never replaced: a team the dispatch tool started from it reloads it from that
+# path when it resumes (orq does), and an edit would make the resume diverge.
+
+RECIPE_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+
+def recipe_drafts(bundle, run):
+    return os.path.join(bundle, "state", "trunk", "recipes", run)
+
+
+def _digest(paths):
+    """One sha256 over the files of a written recipe, in order, or None when
+    one of them is gone."""
+    h = hashlib.sha256()
+    for p in paths:
+        try:
+            with open(p, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            return None
+        h.update(len(data).to_bytes(8, "big"))
+        h.update(data)
+    return h.hexdigest()
+
+
+def _written_files(written):
+    return [p for p in (written.get("draft"), written.get("test")) if p]
+
+
+def written_recipe_problem(recipe):
+    """Why a recipe written for the run cannot start, or None when it can (or
+    when the run's recipe was not written by the trunk)."""
+    if not isinstance(recipe, dict) or not isinstance(recipe.get("written"), dict):
+        return None
+    name, written, check = recipe.get("name"), recipe["written"], recipe.get("check")
+    if not isinstance(check, dict):
+        return f"the recipe {name} written for this run was never checked"
+    if check.get("ok") is not True:
+        return f"the recipe {name} written for this run failed its check ({check.get('error')})"
+    if check.get("sha256") != written.get("sha256") or _digest(_written_files(written)) != written.get("sha256"):
+        return f"the draft of the recipe {name} changed after its check; draft it again and check it"
+    if not written.get("saved"):
+        return f"the recipe {name} passed its check but was not saved (`trunk.py recipe save`)"
+    return None
+
+
+def _write_private(path, data):
+    d = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(prefix=".recipe-", suffix=".tmp", dir=d)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _read_bytes(spec, what):
+    try:
+        if spec == "-":
+            return sys.stdin.buffer.read()
+        with open(spec, "rb") as fh:
+            return fh.read()
+    except OSError as exc:
+        die(f"cannot read the {what} {spec} ({exc})")
+
+
+def _open_for_recipe(args, after_dispatch=False):
+    bundle = resolve_bundle(args.bundle)
+    rec = load_or_die(bundle, check_name(args.run))
+    if rec["status"] == STATUS_DISPATCHED and not after_dispatch:
+        die(f"run {rec['name']} was already dispatched; its recipe stays as dispatched")
+    return bundle, rec
+
+
+def _written_or_die(rec):
+    recipe = rec.get("recipe")
+    if not isinstance(recipe, dict) or not isinstance(recipe.get("written"), dict):
+        die(f"run {rec['name']} has no recipe written for it (`trunk.py recipe draft` first)")
+    return recipe
+
+
+def cmd_recipe_draft(args):
+    bundle, rec = _open_for_recipe(args)
+    name = args.name
+    if not RECIPE_NAME_RE.fullmatch(name or ""):
+        die(f'"{name}" is not a recipe name: a lowercase letter, then lowercase letters, '
+            f"digits and \"_\", at most 64 characters")
+    if args.file == "-" and args.test == "-":
+        die("only one of --file and --test can be read from stdin")
+    source = _read_bytes(args.file, "recipe")
+    test = _read_bytes(args.test, "check") if args.test else None
+    if not source.strip():
+        die("an empty recipe starts nothing")
+    if not args.roles.strip():
+        die("say the recipe's roles in --roles, one line per role")
+    ensure_ignored(bundle)
+    d = recipe_drafts(bundle, rec["name"])
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    draft = os.path.join(d, name + ".py")
+    test_path = os.path.join(d, f"test_{name}.py") if test is not None else None
+    _write_private(draft, source)
+    if test_path:
+        _write_private(test_path, test)
+    written = {"draft": draft, "test": test_path, "sha256": None, "saved": None, "saved_test": None}
+    written["sha256"] = _digest(_written_files(written))
+    rec["recipe"] = {"name": name, "fact": None, "command": args.recipe_command or None,
+                     "roles": args.roles.strip(), "written": written, "check": None}
+    rec["updated"] = now()
+    write_record(bundle, rec)
+    if args.json:
+        print(json.dumps({"name": name, **written}, ensure_ascii=False))
+    else:
+        print(draft)
+    return 0
+
+
+def cmd_recipe_checked(args):
+    bundle, rec = _open_for_recipe(args)
+    recipe = _written_or_die(rec)
+    written = recipe["written"]
+    current = _digest(_written_files(written))
+    if current is None:
+        die(f"the draft of the recipe {recipe['name']} is gone ({written.get('draft')}); draft it again")
+    if current != written.get("sha256"):
+        die(f"the draft of the recipe {recipe['name']} changed since `recipe draft`; "
+            f"draft it again, so the record holds what was checked")
+    if not args.check_command.strip():
+        die("say the check that ran in --command")
+    t = now()
+    ok = args.error is None
+    recipe["check"] = {"at": t, "ok": ok, "command": args.check_command.strip(),
+                       "error": None if ok else args.error.strip(), "sha256": current}
+    if not ok:
+        first = (args.error.strip().splitlines() or [""])[0]
+        rec.setdefault("log", []).append(
+            {"at": t, "text": f"recipe {recipe['name']} failed its check, nothing dispatched: {first}"})
+    rec["updated"] = t
+    write_record(bundle, rec)
+    if args.json:
+        print(json.dumps({"name": recipe["name"], "check": recipe["check"]}, ensure_ascii=False))
+    else:
+        print(f"recipe {recipe['name']}: {'check passed' if ok else 'check failed, nothing is dispatched'}")
+    return 0
+
+
+def cmd_recipe_save(args):
+    bundle, rec = _open_for_recipe(args)
+    recipe = _written_or_die(rec)
+    written = recipe["written"]
+    if written.get("saved"):
+        note(f"the recipe {recipe['name']} was already saved; a saved recipe is never saved again")
+    else:
+        problem = written_recipe_problem({**recipe, "written": {**written, "saved": "pending"}})
+        if problem:
+            die(f"not saved: {problem}")
+        target = os.path.abspath(os.path.expanduser(args.dir))
+        if not os.path.isdir(target):
+            die(f"{target} is not a directory; the recipe directory is the one the dispatch "
+                f"tool reads recipes from")
+        dest = os.path.join(target, recipe["name"] + ".py")
+        dest_test = os.path.join(target, f"test_{recipe['name']}.py") if written.get("test") else None
+        taken = [p for p in (dest, dest_test) if p and os.path.lexists(p)]
+        if taken:
+            die(f"{taken[0]} already exists and a saved recipe is never replaced: a team started "
+                f"from it resumes from that file; draft this one under another --name")
+        made = []
+        try:
+            for src, dst in ((written["draft"], dest), (written.get("test"), dest_test)):
+                if not dst:
+                    continue
+                with open(src, "rb") as fh:
+                    data = fh.read()
+                fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                made.append(dst)
+                with os.fdopen(fd, "wb") as out:
+                    out.write(data)
+        except OSError as exc:
+            for p in made:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+            die(f"cannot save the recipe {recipe['name']} in {target} ({exc})")
+        written["saved"], written["saved_test"] = dest, dest_test
+        rec["updated"] = now()
+        write_record(bundle, rec)
+    if args.json:
+        print(json.dumps({"name": recipe["name"], "saved": written["saved"],
+                          "saved_test": written.get("saved_test")}, ensure_ascii=False))
+    else:
+        print(written["saved"])
+    return 0
+
+
+def cmd_recipe_fact(args):
+    """The trunk-recipe fact a saved recipe was captured with. It is filled in
+    after the start too: the link says where the recipe is found for reuse, not
+    what was dispatched, which stays as it was."""
+    bundle, rec = _open_for_recipe(args, after_dispatch=True)
+    recipe = _written_or_die(rec)
+    if not recipe["written"].get("saved"):
+        die(f"the recipe {recipe['name']} was not saved; its fact comes after `recipe save`")
+    link = args.link.strip()
+    if not link.startswith("/facts/"):
+        die(f'"{link}" is not a fact link: it starts with /facts/, as `facts --json` prints it')
+    recipe["fact"] = link
+    rec["updated"] = now()
+    write_record(bundle, rec)
+    return 0
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main(argv):
@@ -685,6 +928,35 @@ def main(argv):
     p.add_argument("--commit", default="", help="the ingest commit (default: the bundle's HEAD)")
     p.add_argument("--json", action="store_true", help="print the run's summary and its ingests as JSON")
     p.set_defaults(func=cmd_run_ingested)
+
+    recipe = sub.add_parser("recipe", help="a recipe written for a run: draft, checked, save, fact")
+    csub = recipe.add_subparsers(dest="recipe_command_name", required=True)
+    p = csub.add_parser("draft", parents=[common], help="keep a new recipe as the run's draft")
+    p.add_argument("run", help="the run's name")
+    p.add_argument("--name", required=True, help="the recipe's name (its file is <name>.py)")
+    p.add_argument("--roles", required=True, help="the recipe's roles, one line per role")
+    p.add_argument("--file", required=True, help="the recipe's source (- for stdin)")
+    p.add_argument("--test", default="", help="a check file kept beside it as test_<name>.py")
+    p.add_argument("--command", dest="recipe_command", default="", metavar="COMMAND",
+                   help="the command that will start it, filled in for this run")
+    p.add_argument("--json", action="store_true", help="print the draft's paths and hash as JSON")
+    p.set_defaults(func=cmd_recipe_draft)
+    p = csub.add_parser("checked", parents=[common], help="record the check the draft went through")
+    p.add_argument("run", help="the run's name")
+    p.add_argument("--command", dest="check_command", required=True, metavar="COMMAND",
+                   help="the check, as run")
+    p.add_argument("--error", default=None, help="the check failed with this error")
+    p.add_argument("--json", action="store_true", help="print the check as JSON")
+    p.set_defaults(func=cmd_recipe_checked)
+    p = csub.add_parser("save", parents=[common], help="copy the checked draft into the recipe directory")
+    p.add_argument("run", help="the run's name")
+    p.add_argument("--dir", required=True, help="the directory the dispatch tool reads recipes from")
+    p.add_argument("--json", action="store_true", help="print where it was saved as JSON")
+    p.set_defaults(func=cmd_recipe_save)
+    p = csub.add_parser("fact", parents=[common], help="the trunk-recipe fact the saved recipe carries")
+    p.add_argument("run", help="the run's name")
+    p.add_argument("--link", required=True, help="the fact's link, /facts/...")
+    p.set_defaults(func=cmd_recipe_fact)
     args = ap.parse_args(argv)
     return args.func(args)
 

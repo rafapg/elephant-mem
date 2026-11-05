@@ -286,16 +286,80 @@ which one and why, citing its `link`.
 - On **plain Claude Code**, the same roles and stop conditions are played by
   subagents of this session. With no recipe that fits, the split is this
   session's own, stated in one line per role with the dispatch in 3d.
-- **No saved recipe fits the work on orq**: writing a new one is not built in
-  this version. Say that none fits, name the closest one and what it lacks,
-  and offer to dispatch with it as it is or on plain Claude Code. Write no
-  recipe of your own.
+- **No saved recipe fits the work on orq**: write a new one, with **Writing a
+  recipe** below. Say so in one line, naming the closest saved recipe and
+  what it lacks for this work.
 
-Save the choice:
+Save the choice of a saved recipe (a written one is recorded as it is
+written):
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> recipe --value '{"name": "<recipe>", "fact": "<its link, or null>", "command": "<the start command, or null on claude-code>", "roles": "<one line per role>"}'
 ```
+
+#### Writing a recipe
+
+Only on orq, and only when no saved recipe fits. The recipe is written in the
+form the orq tooling runs (for orq, a Python file with a `run(t)` the tooling
+loads): read two things before writing a line, the closest saved recipe (its
+file, from its `trunk-recipe` fact, when there is one) and the tooling's own
+documentation of recipes (its `--help`, its README). Never write a recipe from memory.
+
+1. **Where it will live.** The directory the tooling reads recipes from by
+   name: from the `trunk-recipe` facts (where the saved ones are), else from
+   the tooling's own help, which names it. When neither says, ask the owner.
+2. **What it carries.** The roles and the stop conditions of this kind of
+   work, and nothing of this topic: the work itself reaches the sessions
+   through the brief at the start (`--brief` on orq), so the recipe can be
+   reused by the next run that fits. No repository path, no person's or
+   customer's name, no content from memory, no secret, no credential: a
+   value the sessions need comes in at start (a `--set`), or from where it
+   lives (an environment variable, a connection the owner manages). Every role ends in a pull request opened for
+   the owner or a stop that says why; none merges, none deploys.
+3. **Its name** is new: lowercase letters, digits and `_`, saying the split
+   (`split_by_area`), not the topic. A name already in the recipe directory
+   is never reused, even for a better version: a team started from a saved
+   recipe reloads it from that file when it resumes (`orq resume` aborts with
+   "resume diverged" when a replayed step differs), so a saved recipe is never
+   edited. A changed recipe is a new name and a new fact.
+4. **Its check**, written with it: the check the `trunk-recipe` or
+   `trunk-dispatch` facts name for a recipe, else the tooling's own way to
+   test a recipe without starting sessions (orq's README names a test harness
+   that runs a recipe over a fake terminal with scripted replies). The check
+   drives the recipe through every role to its end, with one scripted reply
+   per request (and, where a role can send the work back, a reply that does),
+   so a role that is never reached fails it.
+
+Keep the draft, its check and the start command in the record. The draft lives
+beside the record, under `<bundle>/state/trunk/recipes/<name>/`, git-ignored
+like it. Write the two files to a temporary path, pass them in, then delete
+the temporary copies:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe draft <name> --name <recipe> --roles "<one line per role>" --file <recipe.py> --test <test_recipe.py> --command "<the start command, filled in for this run>" --json
+```
+
+It prints the draft's paths. **Check the draft there**, running the check from
+where the tooling needs it (for orq's harness, its checkout, which the
+tooling's help or README names), and record what happened, whichever way it
+went:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe checked <name> --command "<the check, as run>"
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe checked <name> --command "<the check, as run>" --error "<its failure: the first lines, any token it printed cut out>"
+```
+
+The script holds the check to the draft's hash: a draft edited after
+`recipe draft` is refused, so what is checked is what was recorded.
+
+- **The check failed**: **nothing is dispatched.** The record keeps the
+  recipe and the failure. Tell the owner, with the failure, and offer three
+  ways on: fix the recipe and check it again (a new `recipe draft`, then
+  `recipe checked`), the closest saved recipe as it is, or plain Claude Code.
+  Nothing goes on to 3d until the owner picks; a fix that fails again is the
+  same choice again, never a retry loop of your own.
+- **The check passed**: go on to 3d. The recipe is saved in 3e, with the
+  start, not before the owner sees it.
 
 ### 3d. Show it
 
@@ -308,7 +372,28 @@ of this run. The owner's "dispatch" is the authorization: show this, then go
 straight to 3e. If what 3a to 3c produced changed the work the owner agreed to
 (a different repository, a part left out), ask before starting instead.
 
+A **written recipe** is shown whole: its roles and stop conditions, the draft's
+path, the check it passed (the command), the directory it will be saved in and
+the `trunk-recipe` fact it will be saved with. Writing a recipe is part of the
+work the owner agreed to only when it says nothing the conversation did not:
+a role or a stop condition the owner never heard of is asked about before the
+start.
+
 ### 3e. Start it
+
+**A written recipe is saved first**, into the directory 3d named, so the
+start runs the file the next run will reuse:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe save <name> --dir <the recipe directory>
+```
+
+It copies the checked draft, byte for byte, and refuses a draft that was not
+checked, failed its check or changed since, and a name already in the
+directory: a saved recipe is never replaced. A refusal means nothing is
+started; relay it, and on a name already taken draft the recipe again under a
+new name, check it again and show it again. The script also refuses the
+dispatch of a written recipe that is not checked and saved.
 
 **On orq**, run the command or commands exactly as shown.
 
@@ -328,7 +413,31 @@ straight to 3e. If what 3a to 3c produced changed the work the owner agreed to
 
   Tell the owner it was not dispatched, with the error. The run stays open; a
   retry, now or from a later session, is a new dispatch the owner asks for.
-  Never retry on your own, and do not go on to step 4.
+  Never retry on your own, and do not go on to step 4. A written recipe stays
+  saved, checked and unedited, with no fact yet: the retry starts that same
+  file (`recipe save` says it was saved already) and saves its fact then.
+
+**A written recipe that started** is saved for reuse with a `trunk-recipe`
+fact, right after the dispatch is recorded, with **Capturing a how**:
+
+> Capture as a fact, tags `<tag>` and `trunk-recipe`: recipe `<recipe>`, saved
+> at `<the saved path>`. It fits <the kind of work: its split, its roles, the
+> kind of repository>. Roles: <one line each, with its stop condition>. Started
+> with `<the start command, this run's values as placeholders>`; checked with
+> `<the check>`.
+
+Like the recipe, the fact says nothing of this topic: it is how this kind of
+work is split, for the next run to find. Check it with
+`facts --area trunk-recipe`, then link it to the record and keep it as one of
+this run's learnings, so 4c does not capture it again and 4d reports it:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe fact <name> --link <its link>
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value "<its link>: recipe <recipe>, for <when it fits>"
+```
+
+A capture that did not land is a note, and the recipe stays saved without a
+fact: say so in 4d, with the saved path, so the owner can capture it by hand.
 
 **On plain Claude Code**, there is no command to fail: record the dispatch as
 the work starting in this session, then go to step 4, where the work runs.
@@ -413,7 +522,8 @@ of a session, a secret or third-party content.
 
 Learning is autonomous. Capture each one without asking, with **Capturing a
 how**, and check it with `facts --area`. Two exceptions: a how the owner
-already captured in this run is not captured again, and one the owner declined
+already captured in this run is not captured again (a recipe written in this
+run already has its `trunk-recipe` fact from 3e), and one the owner declined
 to capture in this run stays uncaptured. Record each learning that landed:
 
 ```bash
@@ -477,8 +587,10 @@ and reported.
   owner; a step with no fact asks instead of guessing.
 - **Contextual integrity.** The study and the record may hold anything the
   memory and the repos hold. What later travels out of the record (a brief, a
-  fact) is filtered by the content and the expectation of whoever shared it;
+  fact, a recipe) is filtered by the content and the expectation of whoever shared it;
   sensitive content and things shared in confidence stay out.
 - **Nothing starts without the owner's word.** The owner's "dispatch" is the
   only authorization to start sessions. The trunk never deploys, never
   merges and never pushes the bundle.
+- **A saved recipe is never edited.** A team started from it resumes from
+  that file; a better version is a new recipe with a new name and fact.
