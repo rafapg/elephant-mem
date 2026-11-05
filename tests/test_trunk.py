@@ -1119,6 +1119,11 @@ def _past_sessions(root, home):
     missed = [text for text, value in shapes.items() if value in redact(text)]
     record("a quoted key, a compound key, a bare slashed token, senha, a password in prose "
            "and a webhook URL are left out", not missed, missed)
+    whole = {"senha=abc": "senha=[secret left out]",
+             "export GITHUB_TOKEN=ghp_" + "a1" * 18: "export GITHUB_TOKEN=[secret left out]",
+             "OPENAI_API_KEY=sk-proj-" + "b2" * 12: "OPENAI_API_KEY=[secret left out]"}
+    record("a value two passes match is marked once, the marker never cut by a later pass",
+           {t: redact(t) for t in whole} == whole, {t: redact(t) for t in whole})
     kept = ["read the open PRs before proposing, always", "/bb:spec then dispatch",
             "the password policy is strict, rotate every 90 days",
             "open /Users/someone/development/projects/elephant-mem/x.py"]

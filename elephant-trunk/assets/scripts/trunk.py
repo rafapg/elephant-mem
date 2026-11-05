@@ -1392,6 +1392,7 @@ _KEYED_SECRET = re.compile(
 # mixes letters with digits or symbols is taken for the password.
 _PROSE_SECRET = re.compile(r"(?i)\b(?:password|passwd|passphrase|senha)\b([^\n]{0,60})")
 _LONG_TOKEN = re.compile(r"[A-Za-z0-9_+/=-]{32,}")
+_CUT = "\ue000"               # where a secret was, until _redact writes the marker
 # Text Claude Code itself puts in a user turn on older transcripts, which carry
 # no `origin` to tell it from the owner's: a peer session's message, a resumed
 # session's summary, a hook's feedback.
@@ -1417,18 +1418,23 @@ def _redact(text):
     """Credential-shaped strings out, before any reader sees the text. Errs on
     the side of cutting: a hash or an id lost costs nothing to how the owner
     works, while one token let through would be read by a model and could be
-    offered back for capture."""
+    offered back for capture.
+
+    Each pass writes a one-character stand-in, swapped for the marker at the
+    end: the marker holds spaces and a bracket, so a later pass would take a
+    piece of it for a value and cut the marker itself."""
+    text = text.replace(_CUT, "")
     for rx in _SECRETS:
-        text = rx.sub("[secret left out]", text)
-    text = _KEYED_SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}[secret left out]", text)
+        text = rx.sub(_CUT, text)
+    text = _KEYED_SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}{_CUT}", text)
 
     def prose(m):
         words = re.split(r"(\s+)", m.group(1))
         for i, w in enumerate(words[:13]):
             core = w.strip(".,;:!?()[]{}<>\"'`")
             if len(core) >= 6 and re.search(r"[^\W\d_]", core) and re.search(r"[\d\W_]", core) \
-                    and "[secret left out]" not in w:
-                words[i] = w.replace(core, "[secret left out]")
+                    and _CUT not in w:
+                words[i] = w.replace(core, _CUT)
         return m.group(0)[:m.start(1) - m.start(0)] + "".join(words)
     text = _PROSE_SECRET.sub(prose, text)
 
@@ -1440,11 +1446,11 @@ def _redact(text):
             # A path: only a segment shaped like a token on its own is one.
             mixed = any(len(seg) >= 16 and re.search(r"\d", seg) and re.search(r"[A-Za-z]", seg)
                         for seg in s.split("/"))
-            return "[secret left out]" if mixed else s
+            return _CUT if mixed else s
         if "/" in s and not (re.search(r"[A-Z]", s) and re.search(r"[a-z]", s)):
             return s
-        return "[secret left out]"
-    return _LONG_TOKEN.sub(long_token, text)
+        return _CUT
+    return _LONG_TOKEN.sub(long_token, text).replace(_CUT, "[secret left out]")
 
 
 def sessions_root(override=""):
