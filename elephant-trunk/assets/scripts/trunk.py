@@ -1438,8 +1438,9 @@ def _redact(text):
         for p in re.split(r"[/?&=#@]", m.group(0))) else m.group(0), text)
 
     def keyed(m):
-        # `max_tokens = 4096` counts tokens, it holds none.
-        if re.search(r"(?i)tokens", m.group(1)):
+        # `max_tokens = 4096` counts tokens, it holds none. Only a count is
+        # kept: `access_tokens = abc123…` holds them, and is cut.
+        if re.search(r"(?i)tokens", m.group(1)) and re.fullmatch(r"[\"']?\d+[\"']?,?", m.group(3)):
             return m.group(0)
         return f"{m.group(1)}{m.group(2)}{_CUT}"
     text = _KEYED_SECRET.sub(keyed, text)

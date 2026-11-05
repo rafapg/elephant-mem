@@ -1116,10 +1116,12 @@ def _past_sessions(root, home):
         "the password for prod is hunter2pass": "hunter2pass",
         "post to https://hooks.slack.com/services/T0000AAAA/B0000BBBB/" + "X" * 24: "T0000AAAA",
         "post to https://example.com/webhook/abc123def456ghi now": "abc123def456ghi",
+        "access_tokens = abcdef1234567890xyzXYZ": "abcdef1234567890xyzXYZ",
+        '"auth_tokens": "Zx81kq92LmP0aa"': "Zx81kq92LmP0aa",
     }
     missed = [text for text, value in shapes.items() if value in redact(text)]
-    record("a quoted key, a compound key, a bare slashed token, senha, a password in prose "
-           "and a webhook URL are left out", not missed, missed)
+    record("a quoted key, a compound key, a bare slashed token, senha, a password in prose, "
+           "a webhook URL and a key holding tokens are left out", not missed, missed)
     whole = {"senha=abc": "senha=[secret left out]",
              "export GITHUB_TOKEN=ghp_" + "a1" * 18: "export GITHUB_TOKEN=[secret left out]",
              "OPENAI_API_KEY=sk-proj-" + "b2" * 12: "OPENAI_API_KEY=[secret left out]"}
@@ -1132,7 +1134,7 @@ def _past_sessions(root, home):
             "open docs/2026/Q3/RoadmapPlanningNotesFinal",
             "the password reset flow goes through /bb:spec and auth0",
             "read https://docs.github.com/en/webhooks/about-webhooks first",
-            "set max_tokens=4096"]
+            "set max_tokens=4096", '"max_tokens": 4096,']
     record("ordinary words, a skill command, a path, a mixed-case link or path, a page "
            "about webhooks and a token count survive the redaction",
            [redact(t) for t in kept] == kept, [redact(t) for t in kept])
