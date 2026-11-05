@@ -101,7 +101,19 @@ short facts.
   `build-index.py` to run or the problem to fix, and stop. An unbuilt index or
   an unusable tag does not mean the owner has no how, so never continue as if
   it did, and never go to **First use** from here.
-- **`facts` is empty**: this is the first use. The trunk does not guess. Go to
+- **`near_misses` is not empty**: these facts nearly carry the tag (another
+  case, as `Como-Trabalhar`, or one comma-joined tag string, as
+  `tags: como-trabalhar, trunk-study` written without brackets) and the trunk
+  does not read them: matching is exact. Before anything else, and before
+  **First use** above all, say "N facts nearly carry the tag `<tag>`", one
+  line per fact with its `link` and its `tags` as written, and ask the owner
+  whether to fix their tags (by hand in each file, then the bundle's
+  `build-index.py`, then `facts --json` again) or to go on without them.
+  Never fix them on your own, and never start a first use while the owner
+  has not answered: those facts may be the owner's how, read once a tag is
+  fixed.
+- **`facts` is empty** (and the owner, asked about any near misses, chose to
+  go on without them): this is the first use. The trunk does not guess. Go to
   **First use** below and come back here once facts exist. First use is
   offered once per session: when it ended with nothing captured (the owner
   answered nothing, or stopped it), go on with no facts, and every step asks

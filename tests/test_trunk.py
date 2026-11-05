@@ -424,6 +424,41 @@ def _run(root):
     record("its plain output is empty: the data stream carries facts only",
            r.returncode == 0 and r.stdout == "", r.stdout)
 
+    # Near misses: matching stays exact, but a fact one case change or one
+    # comma split away from the tag is named, so the skill does not take a
+    # tag typo for an owner with no how and start a first use over it.
+    nearb = make_bundle(root, "near", {"trunk": {"tag": "como-trabalhar"}})
+    write_manifest(nearb, [
+        fact_row("/facts/exact.md", ["como-trabalhar", "trunk-study"]),
+        fact_row("/facts/caps.md", ["Como-Trabalhar", "Trunk-Study"]),
+        fact_row("/facts/comma.md", ["como-trabalhar, trunk-dispatch"]),
+        fact_row("/facts/comma-str.md", "COMO-TRABALHAR,trunk-recipe"),
+        fact_row("/facts/under.md", ["como_trabalhar", "trunk_study"]),
+        fact_row("/facts/caps-old.md", ["Como-Trabalhar", "trunk-study"], status="deprecated"),
+        fact_row("/facts/caps-no-area.md", ["Como-Trabalhar", "slack-produto"]),
+    ])
+    r, out = facts_json("--bundle", nearb, env=env_for(home))
+    nm = {n["link"]: n for n in (out or {}).get("near_misses", [])}
+    record("matching stays exact: a near miss is never listed among the facts",
+           r.returncode == 0 and links(out) == ["/facts/exact.md"], r.stderr or r.stdout)
+    record("facts --json names the near misses: another case, a comma-joined tag string",
+           sorted(nm) == ["/facts/caps.md", "/facts/comma-str.md", "/facts/comma.md"], out)
+    record("a near miss says which areas it nearly carries, and its tags as written",
+           nm.get("/facts/caps.md", {}).get("areas") == ["trunk-study"]
+           and nm.get("/facts/comma.md", {}).get("areas") == ["trunk-dispatch"]
+           and nm.get("/facts/caps.md", {}).get("tags") == ["Como-Trabalhar", "Trunk-Study"], nm)
+    record("a near miss is said on stderr with its count",
+           "3 fact(s) nearly carry" in r.stderr and "/facts/caps.md" in r.stderr, r.stderr)
+    r, out = facts_json("--area", "trunk-dispatch", "--bundle", nearb, env=env_for(home))
+    record("--area narrows the near misses too",
+           [n["link"] for n in (out or {}).get("near_misses", [])] == ["/facts/comma.md"], out)
+    nearb2 = make_bundle(root, "near-only", {"trunk": {"tag": "como-trabalhar"}})
+    write_manifest(nearb2, [fact_row("/facts/caps.md", ["Como-Trabalhar", "trunk-study"])])
+    r, out = facts_json("--bundle", nearb2, env=env_for(home))
+    record("with only near misses, facts is empty and near_misses is not",
+           r.returncode == 0 and out is not None and out["facts"] == []
+           and [n["link"] for n in out["near_misses"]] == ["/facts/caps.md"], r.stderr or r.stdout)
+
     # elephant.json present but unusable: reading how-i-work instead would list
     # none of the owner's facts, send the skill into first use and capture its
     # answers under a tag that goes unread once the file is fixed.

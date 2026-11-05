@@ -17,7 +17,9 @@ Commands:
   facts                 list the active facts carrying the how-I-work tag plus a
                         trunk area tag, read from knowledge/manifest.jsonl only;
                         exits 1, with `problem` in --json, when elephant.json is
-                        present but its trunk.tag cannot be used
+                        present but its trunk.tag cannot be used; --json
+                        also names the near misses, facts that would match
+                        under another case or split on commas
     --area <tag>        only this area tag (repeatable; default: all three)
     --forgotten         the learnings forgotten or steered instead
     --json              one JSON object on stdout
@@ -219,7 +221,14 @@ def _tags(value):
     return [str(t).strip() for t in value if str(t).strip()]
 
 
-def how_facts(bundle, tag, areas=AREA_TAGS):
+def _loose_tags(tags):
+    """A row's tags as a near miss reads them: each tag string split on commas
+    (`tags: a, b` in a frontmatter is one string in the manifest) and
+    casefolded."""
+    return {p.strip().casefold() for t in tags for p in t.split(",") if p.strip()}
+
+
+def how_facts(bundle, tag, areas=AREA_TAGS, near=None):
     """The owner's how: every active fact in knowledge/manifest.jsonl carrying
     `tag` plus at least one of `areas`, in manifest order (most recent first).
 
@@ -228,8 +237,11 @@ def how_facts(bundle, tag, areas=AREA_TAGS):
     and lowercased, and tags match exactly. Returns (facts, skipped): each fact a dict with `path`
     (absolute), `link` (the manifest's `/facts/...`), `areas` (the area tags it
     carries, among `areas`), `desc`, `tags`, `occurred` and `confidence`;
-    `skipped` counts manifest lines that are not a usable JSON object. A
-    missing manifest raises OSError: build-index writes one on every bundle, so
+    `skipped` counts manifest lines that are not a usable JSON object. With a
+    `near` list, every active fact that misses only because of the case of a
+    tag or a comma-joined tag string (`Como-Trabalhar`, `tags: a, b`) is
+    appended to it, with the same fields: matching stays exact, and a near
+    miss is only said, never read as the owner's how. A missing manifest raises OSError: build-index writes one on every bundle, so
     its absence says the index was never built, not that the owner has no how."""
     path = os.path.join(bundle, "knowledge", "manifest.jsonl")
     wanted = [a for a in AREA_TAGS if a in areas]
@@ -253,13 +265,18 @@ def how_facts(bundle, tag, areas=AREA_TAGS):
                 continue
             tags = _tags(row.get("tags"))
             hit = [a for a in wanted if a in tags]
+            into = facts
             if tag not in tags or not hit:
-                continue
+                loose = _loose_tags(tags)
+                hit = [a for a in wanted if a in loose]
+                if near is None or tag.casefold() not in loose or not hit:
+                    continue
+                into = near
             link = str(row.get("path") or "")
             if not link:
                 skipped += 1
                 continue
-            facts.append({
+            into.append({
                 "path": os.path.join(bundle, "knowledge", *link.lstrip("/").split("/")),
                 "link": link,
                 "areas": hit,
@@ -288,14 +305,16 @@ def cmd_facts(args):
         if args.json:
             print(json.dumps({"bundle": bundle, "tag": None, "tag_source": cfg["tag_source"],
                               "problem": cfg["problem"], "areas": areas,
-                              "forgotten": args.forgotten, "facts": []}, ensure_ascii=False))
+                              "forgotten": args.forgotten, "facts": [], "near_misses": []},
+                             ensure_ascii=False))
         return 1
     announce_tag(cfg)
     try:
+        near = []
         if args.forgotten:
             facts, skipped = forgotten_facts(bundle, cfg["tag"], areas), 0
         else:
-            facts, skipped = how_facts(bundle, cfg["tag"], areas)
+            facts, skipped = how_facts(bundle, cfg["tag"], areas, near)
     except OSError:
         manifest = os.path.join(bundle, "knowledge", "manifest.jsonl")
         die(f"cannot read {manifest} — rebuild it with "
@@ -305,10 +324,14 @@ def cmd_facts(args):
     if not facts:
         which = "forgotten or steered" if args.forgotten else "active"
         note(f'no {which} fact carries "{cfg["tag"]}" plus a trunk area tag ({", ".join(areas)})')
+    if near:
+        note(f'{len(near)} fact(s) nearly carry "{cfg["tag"]}" plus a trunk area tag, under '
+             f"another case or in one comma-joined tag, and are not read: "
+             f"{', '.join(n['link'] for n in near)}")
     if args.json:
         print(json.dumps({"bundle": bundle, "tag": cfg["tag"], "tag_source": cfg["tag_source"],
                           "problem": None, "areas": areas, "forgotten": args.forgotten,
-                          "facts": facts}, ensure_ascii=False))
+                          "facts": facts, "near_misses": near}, ensure_ascii=False))
         return 0
     for f in facts:
         extra = f"\t{f['status']}" if args.forgotten else ""
