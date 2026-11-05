@@ -132,6 +132,10 @@ def resolve_bundle(override=""):
         try:
             with open(POINTER, encoding="utf-8") as fh:
                 root = json.load(fh)["bundle_path"]
+            # A pointer edited by hand can carry a number or null: the same
+            # guidance as no pointer at all, never a traceback.
+            if not isinstance(root, str) or not root.strip():
+                raise TypeError("bundle_path is not a non-empty string")
         except (OSError, ValueError, KeyError, TypeError):
             die(f"no bundle pointer at {POINTER} — pass --bundle <path>")
         root = os.path.abspath(os.path.expanduser(root))

@@ -246,6 +246,13 @@ def _run(root):
     r = run(TRUNK, "config", env=env_for(home))
     record("an unreadable pointer stops with the same guidance",
            r.returncode != 0 and "no bundle pointer" in r.stderr and "--bundle" in r.stderr, r.stderr)
+    for label, value in (("a number", 5), ("null", None), ("an empty string", ""), ("a list", ["x"])):
+        (home / ".config" / "elephant-mem" / "config.json").write_text(
+            json.dumps({"bundle_path": value}), encoding="utf-8")
+        r = run(TRUNK, "config", env=env_for(home))
+        record(f"a pointer whose bundle_path is {label} stops with the same guidance, no traceback",
+               r.returncode == 1 and "no bundle pointer" in r.stderr and "Traceback" not in r.stderr,
+               r.stderr)
 
     # ── trunk.tag ─────────────────────────────────────────────────────────────
     custom = make_bundle(root, "custom", {"owner": {"slug": "t"}, "trunk": {"tag": "como-trabalhar"}})
