@@ -1715,9 +1715,12 @@ _KEYED_SECRET = re.compile(
 _KEYED_PASSWORD = re.compile(
     rf"(?i)\b([A-Za-z_]*(?:password|passwd|passphrase|senha)s?{_WORD_END}[A-Za-z_]*[\"']?)"
     r"([ \t]*[:=][ \t]*)(?![\"'\s])([^\n]+)")
-# MySQL takes its password glued to `-p` (`mysql -u root -pHunter2`). Only
-# after mysql or mysqldump: `ssh -p2222` and `cp -pR` are no password.
-_MYSQL_PASSWORD = re.compile(r"\b(mysql(?:dump)?\b[^\n]*?\s-p)('[^']*'|\"[^\"]*\"|\S+)")
+# MySQL takes its password glued to `-p` (`mysql -u root -pHunter2`), and so
+# do its tools and MariaDB's (`mariadb-dump` is `mariadb` up to the hyphen).
+# Only after one of them, in any case: `ssh -p2222` and `cp -pR` are no password.
+_MYSQL_PASSWORD = re.compile(
+    r"(?i)\b((?:mysql(?:dump|admin|import|check|show|sh)?|mariadb)\b[^\n]*?\s-p)"
+    r"('[^']*'|\"[^\"]*\"|\S+)")
 # A secret named in prose: "the password for prod is hunter2pass", "a senha
 # do banco é Xy9kq2pz77", "the token is 9f8e7d…", "--api-key 9f8e7d…". Within
 # the few words after the keyword, a word that mixes letters with digits or

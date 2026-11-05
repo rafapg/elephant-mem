@@ -1614,7 +1614,7 @@ def _past_sessions(root, home):
            [t for t in keys if "qwertyuiop" in redact(t) or "482913" in redact(t)] == [],
            [redact(t) for t in keys])
     # A password of several words, unquoted, leaves nothing of itself; MySQL's
-    # glued -p<value> is cut only after mysql or mysqldump.
+    # glued -p<value> is cut only after MySQL's and MariaDB's tools, in any case.
     phrases = {"password: correct horse battery staple": "password: [secret left out]",
                "senha: cavalo correto bateria grampo": "senha: [secret left out]",
                "passphrase = correct horse battery staple\nnext line": "passphrase = [secret left out]\nnext line",
@@ -1622,8 +1622,17 @@ def _past_sessions(root, home):
                "passwordConfirm: correct horse battery": "passwordConfirm: [secret left out]",
                '{"password": "a b c", "user": "bob"}': '{"password": [secret left out], "user": "bob"}',
                "mysql -u root -pHunter2pass": "mysql -u root -p[secret left out]",
-               "mysqldump -u root -p'my pass word' db": "mysqldump -u root -p[secret left out] db"}
-    record("a password of several words leaves nothing of itself, and mysql -p<value> is cut",
+               "mysqldump -u root -p'my pass word' db": "mysqldump -u root -p[secret left out] db",
+               "MYSQL -u root -pHunter": "MYSQL -u root -p[secret left out]",
+               "mysqladmin -u root -pHunter status": "mysqladmin -u root -p[secret left out] status",
+               "mysqlimport -u root -pHunter db t.csv": "mysqlimport -u root -p[secret left out] db t.csv",
+               "mysqlcheck -u root -pHunter db": "mysqlcheck -u root -p[secret left out] db",
+               "mysqlshow -u root -pHunter": "mysqlshow -u root -p[secret left out]",
+               "mysqlsh --uri root@h -pHunter": "mysqlsh --uri root@h -p[secret left out]",
+               "mariadb -u root -pHunter": "mariadb -u root -p[secret left out]",
+               "mariadb-dump -u root -pHunter db": "mariadb-dump -u root -p[secret left out] db"}
+    record("a password of several words leaves nothing of itself, and -p<value> is cut after "
+           "mysql, its tools and mariadb, in any case",
            {t: redact(t) for t in phrases} == phrases, {t: redact(t) for t in phrases})
     # One input per _SECRETS pattern, in its order, that only that pattern
     # cuts: under 32 characters where the shape allows (the AIza shape is
@@ -1684,7 +1693,8 @@ def _past_sessions(root, home):
             "foreign_key: user_id", "passwordless: yes, through the magic link",
             "passos: 1, 2, 3", "passei: no review", "compasso: 4/4", "Passo: rodar os testes",
             "oauth2: google", "trespass: no", "surpass: the target",
-            "ssh -p2222 host", "cp -pR a b", "mysql -u root -p mydb"]
+            "ssh -p2222 host", "cp -pR a b", "mysql -u root -p mydb", "mariadb -u root -p mydb",
+            "uso mysql no projeto e rodo pytest -p no:cacheprovider"]
     record("ordinary words, a skill command, a path, a mixed-case link or path, a numbered "
            "component, a page about webhooks, a token count, an author line and the words "
            "that only hold a key word (passo, bypass, OAuth, primary_key) and a -p outside mysql survive the redaction",

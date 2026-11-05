@@ -222,10 +222,11 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   `BasicAuth` and `Authorization`, but never before a lowercase letter or
   inside another word, so "próximo passo:", `passwordless:`, `bypass:` and
   `OAuth:` keep their text, and a `_key` suffix other than a table's, as
-  `primary_key`) together
-  with its HTTP scheme (`Authorization: Token x`), an unquoted password to the
-  end of its line (`password: correct horse battery staple`), the value glued
-  to a `mysql` or `mysqldump` `-p`, a secret named in prose ("the token is x",
+  `primary_key`) together with its HTTP scheme (`Authorization: Token x`), an
+  unquoted password to the end of its line (`password: correct horse battery
+  staple`), the value glued to the `-p` of `mysql`, its tools (`mysqldump`,
+  `mysqladmin`, `mysqlsh` and the rest), `mariadb` or `mariadb-dump`, in any
+  case, a secret named in prose ("the token is x",
   "a chave da API é x"), URL credentials with or without a user (`redis://:pw@host`), and vendor shapes
   such as PEM and PGP private keys, AWS, GitHub, GitLab and Slack tokens, JWTs
   and Bearer values. CPF, CNPJ, e-mail and phone are left to the reader's
