@@ -1126,16 +1126,16 @@ def _past_sessions(root, home):
     whole = {"senha=abc": "senha=[secret left out]",
              "export GITHUB_TOKEN=ghp_" + "a1" * 18: "export GITHUB_TOKEN=[secret left out]",
              "OPENAI_API_KEY=sk-proj-" + "b2" * 12: "OPENAI_API_KEY=[secret left out]"}
-    commit = "https://github.com/Inspira-Legal/stillare/commit/3fa9c2d1e4b5a6978877665544332211aabbccdd"
+    commit = "https://github.com/Example-Org/example-repo/commit/3fa9c2d1e4b5a6978877665544332211aabbccdd"
     record("a commit link loses its hash and keeps its repo",
-           redact(commit) == "https://github.com/Inspira-Legal/stillare/commit/[secret left out]",
+           redact(commit) == "https://github.com/Example-Org/example-repo/commit/[secret left out]",
            redact(commit))
     record("a value two passes match is marked once, the marker never cut by a later pass",
            {t: redact(t) for t in whole} == whole, {t: redact(t) for t in whole})
     kept = ["read the open PRs before proposing, always", "/bb:spec then dispatch",
             "the password policy is strict, rotate every 90 days",
             "open /Users/someone/development/projects/elephant-mem/x.py",
-            "see https://github.com/Inspira-Legal/stillare/pull/1234 please",
+            "see https://github.com/Example-Org/example-repo/pull/1234 please",
             "open docs/2026/Q3/RoadmapPlanningNotesFinal",
             "the password reset flow goes through /bb:spec and auth0",
             "the password file is ~/.config/app/creds.json, keep it there",
