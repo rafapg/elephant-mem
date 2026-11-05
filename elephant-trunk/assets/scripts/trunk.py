@@ -1449,8 +1449,15 @@ def _redact(text):
         words = re.split(r"(\s+)", m.group(1))
         for i, w in enumerate(words[:13]):
             core = w.strip(".,;:!?()[]{}<>\"'`")
-            if core.startswith("/") or "://" in core:
-                continue  # a command, a path or a link, never a password
+            # A skill command (`/bb:spec`), a link, or a path of two or more
+            # segments none of which reads as random text: never a password.
+            # A lone `/Xy9kq2pz77` is none of these, and is cut.
+            if re.fullmatch(r"/[a-z][a-z-]*(?::[a-z][a-z-]*)?", core) or "://" in core:
+                continue
+            segs = core.lstrip("~").strip("/").split("/")
+            if "/" in core and len(segs) >= 2 and all(segs) \
+                    and not any(_NOISE.search(p) for seg in segs for p in re.split(r"[_.+=-]", seg)):
+                continue
             if len(core) >= 6 and re.search(r"[^\W\d_]", core) and re.search(r"[\d\W_]", core) \
                     and _CUT not in w:
                 words[i] = w.replace(core, _CUT)

@@ -1118,6 +1118,7 @@ def _past_sessions(root, home):
         "post to https://example.com/webhook/abc123def456ghi now": "abc123def456ghi",
         "access_tokens = abcdef1234567890xyzXYZ": "abcdef1234567890xyzXYZ",
         '"auth_tokens": "Zx81kq92LmP0aa"': "Zx81kq92LmP0aa",
+        "my password is /Xy9kq2pz77!": "Xy9kq2pz77",
     }
     missed = [text for text, value in shapes.items() if value in redact(text)]
     record("a quoted key, a compound key, a bare slashed token, senha, a password in prose, "
@@ -1133,6 +1134,7 @@ def _past_sessions(root, home):
             "see https://github.com/Inspira-Legal/stillare/pull/1234 please",
             "open docs/2026/Q3/RoadmapPlanningNotesFinal",
             "the password reset flow goes through /bb:spec and auth0",
+            "the password file is ~/.config/app/creds.json, keep it there",
             "read https://docs.github.com/en/webhooks/about-webhooks first",
             "set max_tokens=4096", '"max_tokens": 4096,']
     record("ordinary words, a skill command, a path, a mixed-case link or path, a page "
