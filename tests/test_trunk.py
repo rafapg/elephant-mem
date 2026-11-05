@@ -912,10 +912,11 @@ def _run_record(root, home):
                and not (tracked / "state" / "trunk" / "runs").exists(), r.stderr)
 
 
-def _claim_race(bundle, name, n, verb, env):
-    """`n` trunk.py processes run `run <verb>` on one run at once; returns
-    their exit codes and the command each passed, in launch order."""
-    cmds = [f"orq start racer-{i}" for i in range(n)]
+def _claim_race(bundle, name, n, verb, env, command=None):
+    """`n` trunk.py processes run `run <verb>` on one run at once, each with a
+    command of its own unless `command` is given to all; returns their exit
+    codes and the command each passed, in launch order."""
+    cmds = [command or f"orq start racer-{i}" for i in range(n)]
     procs = [subprocess.Popen([sys.executable, str(TRUNK), "run", verb, "--bundle", str(bundle), name,
                                "--via", "orq", "--command", c],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
@@ -988,11 +989,22 @@ def _claim(root, home):
     # ── the command recorded is not the one claimed ──────────────────────────
     run(TRUNK, "run", "new", "--bundle", b, "--topic", "drift", "--name", "c2", env=env)
     run(TRUNK, "run", "claim", "--bundle", b, "c2", "--via", "orq", "--command", "orq start a K-2", env=env)
+    before = show("c2")
     r = run(TRUNK, "run", "dispatch", "--bundle", b, "c2", "--via", "orq", "--command", "orq start b K-2", env=env)
-    record("a dispatch whose command is not the claimed one is recorded, warning with both on stderr",
-           r.returncode == 0 and "was claimed for" in r.stderr and "orq start a K-2" in r.stderr
-           and "orq start b K-2" in r.stderr
-           and show("c2").get("dispatch", {}).get("command") == "orq start b K-2", r.stderr)
+    record("on orq, a dispatch whose command is not the claimed one is refused, naming both, "
+           "the record unchanged",
+           r.returncode != 0 and "was claimed for" in r.stderr and "orq start a K-2" in r.stderr
+           and "orq start b K-2" in r.stderr and show("c2") == before, r.stderr)
+    run(TRUNK, "run", "new", "--bundle", b, "--topic", "drift here", "--name", "c3", env=env)
+    run(TRUNK, "run", "claim", "--bundle", b, "c3", "--via", "claude-code", "--command", "this session",
+        env=env)
+    r = run(TRUNK, "run", "dispatch", "--bundle", b, "c3", "--via", "claude-code", "--command",
+            "this session, resumed", env=env)
+    record("on claude-code, a dispatch whose command is not the claimed one is recorded, "
+           "warning with both on stderr",
+           r.returncode == 0 and "was claimed for" in r.stderr and "'this session'" in r.stderr
+           and "this session, resumed" in r.stderr
+           and show("c3").get("dispatch", {}).get("command") == "this session, resumed", r.stderr)
 
     # ── concurrent claims: exactly one wins ──────────────────────────────────
     rounds, wins, kept = 5, [], []
@@ -1013,7 +1025,8 @@ def _claim(root, home):
         n = f"race-d-{i}"
         run(TRUNK, "run", "new", "--bundle", b, "--topic", "race", "--name", n, env=env)
         run(TRUNK, "run", "claim", "--bundle", b, n, "--via", "orq", "--command", "orq start racer", env=env)
-        codes, _ = _claim_race(b, n, 6, "dispatch", env)
+        # The claimed command, as orq ran it: another one is refused outright.
+        codes, _ = _claim_race(b, n, 6, "dispatch", env, command="orq start racer")
         wins.append(codes.count(0))
         attempts.append(len(show(n).get("attempts", [])))
     record("of six concurrent dispatches on one run exactly one is recorded, and it keeps one attempt",

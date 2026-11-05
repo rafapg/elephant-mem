@@ -79,8 +79,9 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   same lock, and a lock left by a killed process stops the write after ten
   seconds, naming the file. `run dispatch` ends the claim and records only a
   run that is `starting`, so a session that skipped the claim cannot race one
-  that made it; a `--command` that is not the claimed one is recorded with a
-  warning on stderr. A start that ran makes the run `dispatched`, and one
+  that made it; a `--command` that is not the claimed one is refused via orq,
+  whose command runs exactly as claimed, and recorded with a warning on stderr
+  via claude-code. A start that ran makes the run `dispatched`, and one
   recorded with `--error` is kept with its error and reopens the run for a
   retry to claim. A run that was dispatched
   refuses a second claim or dispatch and says what ran and where. A missing or

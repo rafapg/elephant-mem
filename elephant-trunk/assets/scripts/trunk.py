@@ -48,8 +48,9 @@ Commands:
                         record how the start went, ending the claim: without
                         --error the run becomes dispatched, with it the run is
                         open again for a retry; refuses a run that is not
-                        starting (claim it first) and warns when --command is
-                        not the claimed one; a dispatched run refuses another
+                        starting (claim it first); when --command is not the
+                        claimed one, refuses it via orq and warns via
+                        claude-code; a dispatched run refuses another
   run ingested <name> [--commit <sha>]
                         after `ingest` ran over a dispatched run's record:
                         checks that nothing under state/trunk/ is tracked and
@@ -831,6 +832,13 @@ def cmd_run_dispatch(args):
             f"run the command only once the claim succeeded, then record here how it went; "
             f"nothing was recorded")
     claimed = (rec.get("claim") or {}).get("command")
+    # orq runs the command exactly as claimed, so another one is another
+    # session's start, not this claim's: recording it would close a claim
+    # whose own start never got recorded. Claude Code words it loosely.
+    if claimed and claimed != args.dispatch_command and args.via == "orq":
+        die(f"run {rec['name']} was claimed for {claimed!r}, and --command is "
+            f"{args.dispatch_command!r}: on orq the command recorded is the one claimed, "
+            f"as it ran; nothing was recorded")
     if claimed and claimed != args.dispatch_command:
         note(f"run {rec['name']} was claimed for {claimed!r}, and --command records "
              f"{args.dispatch_command!r}; recording the command given here")
