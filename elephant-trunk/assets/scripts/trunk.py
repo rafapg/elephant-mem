@@ -1697,6 +1697,15 @@ _CRED_WORDS = (r"pass(?:word|wd|phrase)s?(?![a-z])|(?<![a-z])pass(?![a-z])|pwd|s
 _KEYED_SECRET = re.compile(
     rf"(?i)\b([A-Za-z_]*(?:{_CRED_WORDS})[A-Za-z_]*[\"']?)(\s*[:=]\s*)"
     r"(\"[^\"]*\"|'[^']*'|(?:(?:bearer|basic|token|digest)\s+)?\S+)")
+# A password is often words with spaces (`password: correct horse battery
+# staple`): with a password key and an unquoted value, the rest of the line is
+# the value. A quoted one is cut by _KEYED_SECRET, up to its closing quote.
+_KEYED_PASSWORD = re.compile(
+    r"(?i)\b([A-Za-z_]*(?:password|passwd|passphrase|senha)s?(?![a-z])[A-Za-z_]*[\"']?)"
+    r"([ \t]*[:=][ \t]*)(?![\"'\s])([^\n]+)")
+# MySQL takes its password glued to `-p` (`mysql -u root -pHunter2`). Only
+# after mysql or mysqldump: `ssh -p2222` and `cp -pR` are no password.
+_MYSQL_PASSWORD = re.compile(r"\b(mysql(?:dump)?\b[^\n]*?\s-p)('[^']*'|\"[^\"]*\"|\S+)")
 # A secret named in prose: "the password for prod is hunter2pass", "a senha
 # do banco é Xy9kq2pz77", "the token is 9f8e7d…", "--api-key 9f8e7d…". Within
 # the few words after the keyword, a word that mixes letters with digits or
@@ -1753,6 +1762,8 @@ def _redact(text):
         if re.search(r"(?i)tokens", m.group(1)) and re.fullmatch(r"[\"']?\d+[\"']?,?", m.group(3)):
             return m.group(0)
         return f"{m.group(1)}{m.group(2)}{_CUT}"
+    text = _KEYED_PASSWORD.sub(lambda m: f"{m.group(1)}{m.group(2)}{_CUT}", text)
+    text = _MYSQL_PASSWORD.sub(lambda m: f"{m.group(1)}{_CUT}", text)
     text = _KEYED_SECRET.sub(keyed, text)
 
     def prose(m):

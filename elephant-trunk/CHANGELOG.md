@@ -215,9 +215,10 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   `pass` and `auth` only as words of their own, as in `DB_PASS`, `auth_token`
   and `Authorization`, so "próximo passo:", `bypass:` and `OAuth:` keep their
   text, and a `_key` suffix other than a table's, as `primary_key`) together
-  with its HTTP scheme (`Authorization: Token x`), a
-  secret named in prose ("the token is x", "a chave da API é x"), URL
-  credentials with or without a user (`redis://:pw@host`), and vendor shapes
+  with its HTTP scheme (`Authorization: Token x`), an unquoted password to the
+  end of its line (`password: correct horse battery staple`), the value glued
+  to a `mysql` or `mysqldump` `-p`, a secret named in prose ("the token is x",
+  "a chave da API é x"), URL credentials with or without a user (`redis://:pw@host`), and vendor shapes
   such as PEM and PGP private keys, AWS, GitHub, GitLab and Slack tokens, JWTs
   and Bearer values. CPF, CNPJ, e-mail and phone are left to the reader's
   instruction. Readers on the small model

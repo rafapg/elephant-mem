@@ -1588,6 +1588,17 @@ def _past_sessions(root, home):
             "Authorization: qwertyuiop", "STRIPE_KEY=qwertyuiop"]
     record("pass, auth and _key as words of a key are still cut",
            [t for t in keys if "qwertyuiop" in redact(t)] == [], [redact(t) for t in keys])
+    # A password of several words, unquoted, leaves nothing of itself; MySQL's
+    # glued -p<value> is cut only after mysql or mysqldump.
+    phrases = {"password: correct horse battery staple": "password: [secret left out]",
+               "senha: cavalo correto bateria grampo": "senha: [secret left out]",
+               "passphrase = correct horse battery staple\nnext line": "passphrase = [secret left out]\nnext line",
+               "DB_PASSWORD: correct horse battery": "DB_PASSWORD: [secret left out]",
+               '{"password": "a b c", "user": "bob"}': '{"password": [secret left out], "user": "bob"}',
+               "mysql -u root -pHunter2pass": "mysql -u root -p[secret left out]",
+               "mysqldump -u root -p'my pass word' db": "mysqldump -u root -p[secret left out] db"}
+    record("a password of several words leaves nothing of itself, and mysql -p<value> is cut",
+           {t: redact(t) for t in phrases} == phrases, {t: redact(t) for t in phrases})
     # One input per _SECRETS pattern, in its order, that only that pattern
     # cuts: under 32 characters where the shape allows (the AIza shape is
     # longer and so carries no digit) and with no key word, so neither
@@ -1644,10 +1655,11 @@ def _past_sessions(root, home):
             "the token budget is 60000 per reader", "use the api key from the vault",
             "próximo passo: abrir o PR", "passou: 12 de 12", "bypass: use the flag",
             "compass: north", "OAuth: use the SSO", "authentication: SSO", "primary_key: id",
-            "foreign_key: user_id", "passwordless: yes, through the magic link"]
+            "foreign_key: user_id", "passwordless: yes, through the magic link",
+            "ssh -p2222 host", "cp -pR a b", "mysql -u root -p mydb"]
     record("ordinary words, a skill command, a path, a mixed-case link or path, a numbered "
            "component, a page about webhooks, a token count, an author line and the words "
-           "that only hold a key word (passo, bypass, OAuth, primary_key) survive the redaction",
+           "that only hold a key word (passo, bypass, OAuth, primary_key) and a -p outside mysql survive the redaction",
            [redact(t) for t in kept] == kept, [redact(t) for t in kept])
     r = run(TRUNK, "sessions", "extract", rich, "--max-tokens", "50", env=env)
     record("--max-tokens cuts a session and says how much was left",
