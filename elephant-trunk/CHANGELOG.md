@@ -39,3 +39,11 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   to set another; a value that is not a non-empty string falls back to the same
   default and says why. `trunk.py config` prints what it resolved, and
   `--json` prints it as one object for the skill.
+- **`trunk.py facts` reads the owner's how**: the active facts carrying the
+  how-I-work tag plus one of `trunk-study`, `trunk-dispatch` or `trunk-recipe`,
+  straight from `knowledge/manifest.jsonl` and never through `query`, with the
+  same matching rules as the `como-trabalhar` reader `post-produto-slack`
+  already uses, so the two cannot disagree about one fact. `--area` narrows it to
+  one step. A bundle with no such fact gets an empty list and a note, and one
+  whose manifest was never built stops and says to rebuild it rather than
+  report that the owner has no how.

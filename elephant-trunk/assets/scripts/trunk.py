@@ -4,7 +4,8 @@
 elephant-trunk takes a loose topic to dispatched work. The skill is a skeleton;
 every *how* comes from the owner's elephant-mem facts carrying the bundle's
 how-I-work tag plus a trunk area tag. This script is the deterministic part the
-skill calls into: it finds the bundle and reads the trunk's config from it.
+skill calls into: it finds the bundle, reads the trunk's config from it, and
+lists the owner's how from the manifest.
 
 It runs from the plugin (`${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py`) and is
 never copied into the bundle: `elephant-update` re-syncs only the plugins it
@@ -13,6 +14,10 @@ knows by name, so an in-bundle copy would go stale with no one to refresh it.
 Commands:
   config                print the bundle and the how-I-work tag the trunk reads
     --json              the same, as one JSON object on stdout
+  facts                 list the active facts carrying the how-I-work tag plus a
+                        trunk area tag, read from knowledge/manifest.jsonl only
+    --area <tag>        only this area tag (repeatable; default: all three)
+    --json              one JSON object on stdout
   --bundle <path>       override bundle location (default: ELEPHANT_BUNDLE, then
                         the machine pointer ~/.config/elephant-mem/config.json)
 
@@ -112,18 +117,112 @@ def config(bundle):
             "area_tags": list(AREA_TAGS), "problem": problem}
 
 
-def cmd_config(args):
-    cfg = config(resolve_bundle(args.bundle))
+def announce_tag(cfg):
+    """Say on stderr why the default tag is read, when it is."""
     if cfg["problem"]:
         note(f"{cfg['problem']}; reading the default tag")
     if cfg["tag_source"] == "default":
         note(f'no trunk.tag in elephant.json, reading "{DEFAULT_TAG}"; {SET_TAG_HINT}')
+
+
+def cmd_config(args):
+    cfg = config(resolve_bundle(args.bundle))
+    announce_tag(cfg)
     if args.json:
         print(json.dumps(cfg, ensure_ascii=False))
         return 0
     print(f"trunk: bundle {cfg['bundle']}")
     print(f"trunk: how-I-work tag {cfg['tag']} (from {cfg['tag_source']})")
     print(f"trunk: area tags {', '.join(cfg['area_tags'])}")
+    return 0
+
+
+# ── the owner's how ──────────────────────────────────────────────────────────
+
+def _tags(value):
+    """A manifest row's tags as a list of stripped strings. build-index always
+    writes a list; a hand-edited row may carry one string or nothing."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        value = [value]
+    return [str(t).strip() for t in value if str(t).strip()]
+
+
+def how_facts(bundle, tag, areas=AREA_TAGS):
+    """The owner's how: every active fact in knowledge/manifest.jsonl carrying
+    `tag` plus at least one of `areas`, in manifest order (most recent first).
+
+    Reads the manifest and nothing else, the way post-produto-slack's
+    regras.py reads its `como-trabalhar` rules, and with its rules, so the two
+    readers cannot disagree about one fact: `type` is `fact`, the status
+    (missing counts as `active`) is `active` once stripped and lowercased, and
+    tags match exactly. Returns (facts, skipped): each fact a dict with `path`
+    (absolute), `link` (the manifest's `/facts/...`), `areas` (the area tags it
+    carries, among `areas`), `desc`, `tags`, `occurred` and `confidence`;
+    `skipped` counts manifest lines that are not a usable JSON object. A
+    missing manifest raises OSError: build-index writes one on every bundle, so
+    its absence says the index was never built, not that the owner has no how."""
+    path = os.path.join(bundle, "knowledge", "manifest.jsonl")
+    wanted = [a for a in AREA_TAGS if a in areas]
+    facts, skipped = [], 0
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                skipped += 1
+                continue
+            if not isinstance(row, dict):
+                skipped += 1
+                continue
+            if row.get("type") != "fact":
+                continue
+            if str(row.get("status", "active")).strip().lower() != "active":
+                continue
+            tags = _tags(row.get("tags"))
+            hit = [a for a in wanted if a in tags]
+            if tag not in tags or not hit:
+                continue
+            link = str(row.get("path") or "")
+            if not link:
+                skipped += 1
+                continue
+            facts.append({
+                "path": os.path.join(bundle, "knowledge", *link.lstrip("/").split("/")),
+                "link": link,
+                "areas": hit,
+                "desc": str(row.get("desc", "")),
+                "tags": tags,
+                "occurred": str(row.get("occurred", "")),
+                "confidence": str(row.get("confidence", "")),
+            })
+    return facts, skipped
+
+
+def cmd_facts(args):
+    bundle = resolve_bundle(args.bundle)
+    cfg = config(bundle)
+    announce_tag(cfg)
+    areas = [a for a in AREA_TAGS if not args.area or a in args.area]
+    try:
+        facts, skipped = how_facts(bundle, cfg["tag"], areas)
+    except OSError:
+        manifest = os.path.join(bundle, "knowledge", "manifest.jsonl")
+        die(f"cannot read {manifest} — rebuild it with "
+            f"python3 {os.path.join(bundle, 'scripts', 'build-index.py')}")
+    if skipped:
+        note(f"skipped {skipped} unreadable line(s) in knowledge/manifest.jsonl")
+    if not facts:
+        note(f'no active fact carries "{cfg["tag"]}" plus a trunk area tag ({", ".join(areas)})')
+    if args.json:
+        print(json.dumps({"bundle": bundle, "tag": cfg["tag"], "tag_source": cfg["tag_source"],
+                          "areas": areas, "facts": facts}, ensure_ascii=False))
+        return 0
+    for f in facts:
+        print(f"{','.join(f['areas'])}\t{f['path']}\t{f['desc']}")
     return 0
 
 
@@ -137,6 +236,12 @@ def main(argv):
     p = sub.add_parser("config", parents=[common], help="print the bundle and the how-I-work tag")
     p.add_argument("--json", action="store_true", help="print one JSON object")
     p.set_defaults(func=cmd_config)
+    p = sub.add_parser("facts", parents=[common],
+                       help="list the owner's how: facts with the how-I-work tag plus a trunk area tag")
+    p.add_argument("--area", action="append", choices=AREA_TAGS,
+                   help="only this area tag (repeatable; default: all three)")
+    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.set_defaults(func=cmd_facts)
     args = ap.parse_args(argv)
     return args.func(args)
 
