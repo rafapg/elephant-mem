@@ -42,7 +42,10 @@ not survive from one Bash call to the next. `--help` on any command lists its
 options. Free text on a command line (a topic, a decision, a command, an error,
 a JSON value) goes inside single quotes, as the templates show, so a backtick,
 a `$(`, a `$` or a `"` in it is passed as written and never run; write each
-apostrophe in the text as `'\''`. Text over several lines goes through
+apostrophe in the text as `'\''`. An option with no file input (`--roles`,
+`--error`) takes its several lines inside those single quotes, which hold a
+line break as written; never route that text into another option's `--file`.
+Elsewhere, text over several lines goes through
 `--file -` and a quoted heredoc instead (see 1c), whose delimiter,
 `TRUNK_END_OF_TEXT`, must be no line of the text: a line that is exactly the
 delimiter ends the heredoc there and the lines after it run as shell. Should
