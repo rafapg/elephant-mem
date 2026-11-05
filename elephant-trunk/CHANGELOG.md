@@ -60,3 +60,15 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   dispatch is kept with its error and the run stays open; a run that was
   dispatched refuses a second dispatch and says what ran and where. A missing or
   unreadable record says so and offers to start over from the topic.
+- **The `trunk` skill, study and converse** (`/elephant-trunk:trunk <topic>`).
+  It loads the owner's how with `trunk.py facts`, reads each fact whole and
+  says which ones apply to the topic, studies it through elephant-mem's own
+  skills and the repositories involved, presents approaches in the form the
+  `trunk-study` facts give, and converges with the owner until they say to
+  dispatch, writing the study, the approaches and each decision to the run
+  record as they happen, so an owner who leaves mid-conversation leaves a
+  record to continue from. The skill holds no owner's way of working: a step
+  with no fact asks the owner instead of falling back on a habit, two facts
+  that contradict each other are both shown and the owner picks, and a how the
+  owner states is captured with its tags spelled out and then looked up with
+  `trunk.py facts`, because `capture` checks no tag.

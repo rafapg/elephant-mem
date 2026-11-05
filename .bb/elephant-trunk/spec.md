@@ -222,7 +222,7 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 
 ### Study and converse
 
-- [ ] **4. Study and converse**: the skill loads the owner's how, studies the topic,
+- [x] **4. Study and converse**: the skill loads the owner's how, studies the topic,
       presents approaches and converges (happy path 1–4). · verify: reading
 
 ### Dispatch
