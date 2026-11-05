@@ -1372,16 +1372,20 @@ _COMMAND = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.S)
 _COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 _INTERRUPTED = re.compile(r"^\[Request interrupted by user[^\]]*\]\s*$", re.M)
 _SECRETS = [
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.S),
+    # PEM and PGP armor: `… PRIVATE KEY-----`, `… PRIVATE KEY BLOCK-----`.
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----.*?"
+               r"(-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|\Z)", re.S),
     re.compile(r"\b(sk|pk|rk)-[A-Za-z0-9_-]{16,}"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}"),
     re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),
     re.compile(r"\bA[KS]IA[0-9A-Z]{16}\b"),
     re.compile(r"\bAIza[0-9A-Za-z_-]{30,}"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
     re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{16,}"),
-    re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@"),
+    # `user:pass@`, and `:pass@` with no user (`redis://:pw@cache`).
+    re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:@]*:[^\s/@]+@"),
     # Webhook URLs: the URL itself is the credential.
     re.compile(r"(?i)\bhttps?://hooks\.slack\.com/\S+"),
     re.compile(r"(?i)\bhttps?://(?:[\w-]+\.)*discord(?:app)?\.com/api/webhooks/\S+"),
@@ -1390,16 +1394,24 @@ _SECRETS = [
 # webhooks is a link the owner shared, not a credential.
 _WEBHOOK = re.compile(r"(?i)\bhttps?://\S*webhook\S*")
 # A credential named by its key, in code, config or JSON: `password = x`,
-# `"password": "x"`, `aws_secret_access_key=x`, `senha: x`. The key and the
-# separator are kept, the value is left out.
-_CRED_WORDS = (r"password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|"
-               r"private[_-]?key|credential|senha")
+# `"password": "x"`, `aws_secret_access_key=x`, `senha: x`, `DB_PASS=x`,
+# `MYSQL_PWD=x`, `STRIPE_KEY=x`. The key and the separator are kept, the value
+# is left out. `pass` passes over the words that only start with it (passing,
+# passport) and `auth` over author and authority; a bare `key` is not one,
+# only a `_key` suffix is.
+_CRED_WORDS = (r"pass(?!ing|e[sd]\b|age|port|enger|ive)|pwd|secret|token|api[_-]?key|"
+               r"access[_-]?key|private[_-]?key|_key(?![A-Za-z])|credential|senha|chave|"
+               r"auth(?!or(?:s|ed|ing|ship|ity|ities)?\b)")
+# An HTTP scheme before the value (`Authorization: Token x`) is part of it.
 _KEYED_SECRET = re.compile(
-    rf"(?i)\b([A-Za-z_]*(?:{_CRED_WORDS})[A-Za-z_]*[\"']?)(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|\S+)")
-# A password named in prose: "the password for prod is hunter2pass", "a senha
-# do banco é Xy9kq2pz77". Within the few words after the keyword, a word that
-# mixes letters with digits or symbols is taken for the password.
-_PROSE_SECRET = re.compile(r"(?i)\b(?:password|passwd|passphrase|senha)\b([^\n]{0,60})")
+    rf"(?i)\b([A-Za-z_]*(?:{_CRED_WORDS})[A-Za-z_]*[\"']?)(\s*[:=]\s*)"
+    r"(\"[^\"]*\"|'[^']*'|(?:(?:bearer|basic|token|digest)\s+)?\S+)")
+# A secret named in prose: "the password for prod is hunter2pass", "a senha
+# do banco é Xy9kq2pz77", "the token is 9f8e7d…", "--api-key 9f8e7d…". Within
+# the few words after the keyword, a word that mixes letters with digits or
+# symbols is taken for the secret.
+_PROSE_SECRET = re.compile(
+    r"(?i)\b(?:password|passwd|passphrase|senha|token|api[ _-]?key|chave)\b([^\n]{0,60})")
 _LONG_TOKEN = re.compile(r"[A-Za-z0-9_+/=-]{32,}")
 # Inside one word of a slashed string, the marks of random text no name
 # carries: a digit between letters (K7M), letters between digits (3fa9), one

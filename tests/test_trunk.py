@@ -1140,6 +1140,29 @@ def _past_sessions(root, home):
     missed = [text for text, value in shapes.items() if value in redact(text)]
     record("a quoted key, a compound key, a bare slashed token, senha, a password in prose, "
            "a webhook URL and a key holding tokens are left out", not missed, missed)
+    more = {
+        "DB_PASS=hunter2x": "hunter2x",
+        "SMTP_PASS=Mail2024!": "Mail2024",
+        "MYSQL_PWD=hunter2x": "hunter2x",
+        "STRIPE_KEY=rk9x8y7z6w5v": "rk9x8y7z6w5v",
+        "JWT_SIGNING_KEY=s3cr3tk3y": "s3cr3tk3y",
+        "APP_KEY=base64:Zm9vYmFy": "Zm9vYmFy",
+        "AUTH=Zm9vOmJhcg": "Zm9vOmJhcg",
+        "chave: 9f8e7d6c5b4a": "9f8e7d6c5b4a",
+        "Authorization: Token 9f8e7d6c5b4a3f2e1d0c": "9f8e7d6c5b4a3f2e1d0c",
+        "run it with --token 9f8e7d6c5b4a3f2e1d0c": "9f8e7d6c5b4a3f2e1d0c",
+        "the token is 9f8e7d6c5b4a3f2e1d0c": "9f8e7d6c5b4a3f2e1d0c",
+        "my api key is 9f8e7d6c5b4a3f2e1d0c": "9f8e7d6c5b4a3f2e1d0c",
+        "a chave da API é 9f8e7d6c5b4a3f2e1d0c": "9f8e7d6c5b4a3f2e1d0c",
+        "redis://:S3cretPw9x@cache.internal:6379/0": "S3cretPw9x",
+        "glpat" + "-aB3dE6gH9jK2mN5pQ8sT": "aB3dE6gH9jK2",
+        "-----BEGIN PGP PRIVATE " + "KEY BLOCK-----\n\nlQOYBF0abcdEFghIJ\n=abcd\n"
+        "-----END PGP PRIVATE " + "KEY BLOCK-----": "lQOYBF0abcdEFghIJ",
+    }
+    missed = [text for text, value in more.items() if value in redact(text)]
+    record("a _pass, _pwd, _key, auth or chave key, a token or an API key in prose or after "
+           "a scheme, a URL with no user, a GitLab token and a PGP key are left out",
+           not missed, missed)
     whole = {"senha=abc": "senha=[secret left out]",
              "export GITHUB_TOKEN=ghp_" + "a1" * 18: "export GITHUB_TOKEN=[secret left out]",
              "OPENAI_API_KEY=sk-proj-" + "b2" * 12: "OPENAI_API_KEY=[secret left out]"}
@@ -1158,9 +1181,12 @@ def _past_sessions(root, home):
             "the password file is ~/.config/app/creds.json, keep it there",
             "path src/components/UserProfileCard2/index.tsx",
             "read https://docs.github.com/en/webhooks/about-webhooks first",
-            "set max_tokens=4096", '"max_tokens": 4096,']
+            "set max_tokens=4096", '"max_tokens": 4096,',
+            "author: Example Person", "the tests are passing: 176 of 176",
+            "the token budget is 60000 per reader", "use the api key from the vault"]
     record("ordinary words, a skill command, a path, a mixed-case link or path, a numbered "
-           "component, a page about webhooks and a token count survive the redaction",
+           "component, a page about webhooks, a token count, an author line and the words "
+           "that only start with a key word survive the redaction",
            [redact(t) for t in kept] == kept, [redact(t) for t in kept])
     r = run(TRUNK, "sessions", "extract", rich, "--max-tokens", "50", env=env)
     record("--max-tokens cuts a session and says how much was left",
