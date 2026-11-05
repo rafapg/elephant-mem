@@ -1478,9 +1478,12 @@ def _owner_text(rec):
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if not text:
         return None
+    # Redacted before the cut: a token the cut split would fall under its
+    # pattern's minimum length and its prefix would reach the reader.
+    text = _redact(text)
     if len(text) > TURN_CHARS:
         text = text[:TURN_CHARS].rstrip() + " [… cut]"
-    return _redact(text)
+    return text
 
 
 def _bash_words(command):

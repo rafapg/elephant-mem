@@ -998,6 +998,7 @@ def _past_sessions(root, home):
         owner(f"use this key {secret} and password: hunter2hunter2 please"),
         owner("\n\n<pasted_content id=\"ab\">\nmy long dictated rule\n</pasted_content id=\"ab\">\n"),
         owner("x" * 5000),
+        owner("y" * 1980 + " " + secret + " and more"),
     ], 3000)
     transcript(projects / "-work-repo" / "older.jsonl", [owner("older session")], 1000)
     transcript(projects / "-work-other" / "auto.jsonl",
@@ -1066,6 +1067,8 @@ def _past_sessions(root, home):
            secret not in out and "hunter2hunter2" not in out
            and out.count("[secret left out]") >= 2, out[:2000])
     record("a long message is cut", "x" * 2001 not in out and "[… cut]" in out, "")
+    record("a token the cut would split is left out whole, not cut to a prefix",
+           secret[:8] not in out, [ln[-60:] for ln in out.splitlines() if "yyy" in ln])
     redact = load_trunk()._redact
     shapes = {
         '{"password": "hunter2pass"}': "hunter2pass",
