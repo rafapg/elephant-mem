@@ -1582,6 +1582,12 @@ def _past_sessions(root, home):
     record("a _pass, _pwd, _key, auth or chave key, a token or an API key in prose or after "
            "a scheme, a URL with no user, a GitLab token and a PGP key are left out",
            not missed, missed)
+    # Letters only, so no prose pass covers: each is cut as a key or not at all.
+    keys = ["pass: qwertyuiop", "DB_PASS: qwertyuiop", "PGPASSWORD=qwertyuiop",
+            "passwords = qwertyuiop", "AUTH: qwertyuiop", "x_auth=qwertyuiop",
+            "Authorization: qwertyuiop", "STRIPE_KEY=qwertyuiop"]
+    record("pass, auth and _key as words of a key are still cut",
+           [t for t in keys if "qwertyuiop" in redact(t)] == [], [redact(t) for t in keys])
     # One input per _SECRETS pattern, in its order, that only that pattern
     # cuts: under 32 characters where the shape allows (the AIza shape is
     # longer and so carries no digit) and with no key word, so neither
@@ -1635,10 +1641,13 @@ def _past_sessions(root, home):
             "read https://docs.github.com/en/webhooks/about-webhooks first",
             "set max_tokens=4096", '"max_tokens": 4096,',
             "author: Example Person", "the tests are passing: 176 of 176",
-            "the token budget is 60000 per reader", "use the api key from the vault"]
+            "the token budget is 60000 per reader", "use the api key from the vault",
+            "próximo passo: abrir o PR", "passou: 12 de 12", "bypass: use the flag",
+            "compass: north", "OAuth: use the SSO", "authentication: SSO", "primary_key: id",
+            "foreign_key: user_id", "passwordless: yes, through the magic link"]
     record("ordinary words, a skill command, a path, a mixed-case link or path, a numbered "
            "component, a page about webhooks, a token count, an author line and the words "
-           "that only start with a key word survive the redaction",
+           "that only hold a key word (passo, bypass, OAuth, primary_key) survive the redaction",
            [redact(t) for t in kept] == kept, [redact(t) for t in kept])
     r = run(TRUNK, "sessions", "extract", rich, "--max-tokens", "50", env=env)
     record("--max-tokens cuts a session and says how much was left",

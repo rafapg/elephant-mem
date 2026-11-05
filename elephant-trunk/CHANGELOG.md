@@ -211,9 +211,11 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   only plumbing, and its output is dropped, so a `!cat .env` hands the reader
   none of the file; a program name carries much less than its arguments,
   though not nothing (`acme-bank-migrate.sh`). The redaction cuts a value keyed
-  by a credential word (`token`, `secret`, `pass`, `pwd`, `auth`, `senha`,
-  `chave`, a `_key` suffix, passing over `passing`, `passport`, `author` and
-  `authority`) together with its HTTP scheme (`Authorization: Token x`), a
+  by a credential word (`token`, `secret`, `password`, `pwd`, `senha`, `chave`,
+  `pass` and `auth` only as words of their own, as in `DB_PASS`, `auth_token`
+  and `Authorization`, so "próximo passo:", `bypass:` and `OAuth:` keep their
+  text, and a `_key` suffix other than a table's, as `primary_key`) together
+  with its HTTP scheme (`Authorization: Token x`), a
   secret named in prose ("the token is x", "a chave da API é x"), URL
   credentials with or without a user (`redis://:pw@host`), and vendor shapes
   such as PEM and PGP private keys, AWS, GitHub, GitLab and Slack tokens, JWTs

@@ -1683,12 +1683,16 @@ _WEBHOOK = re.compile(r"(?i)\bhttps?://\S*webhook\S*")
 # A credential named by its key, in code, config or JSON: `password = x`,
 # `"password": "x"`, `aws_secret_access_key=x`, `senha: x`, `DB_PASS=x`,
 # `MYSQL_PWD=x`, `STRIPE_KEY=x`. The key and the separator are kept, the value
-# is left out. `pass` passes over the words that only start with it (passing,
-# passport) and `auth` over author and authority; a bare `key` is not one,
-# only a `_key` suffix is.
-_CRED_WORDS = (r"pass(?!ing|e[sd]\b|age|port|enger|ive)|pwd|secret|token|api[_-]?key|"
-               r"access[_-]?key|private[_-]?key|_key(?![A-Za-z])|credential|senha|chave|"
-               r"auth(?!or(?:s|ed|ing|ship|ity|ities)?\b)")
+# is left out. `pass` and `auth` are keys only as words of their own, at the
+# start of the key or after an underscore (`DB_PASS`, `pass`, `auth_token`,
+# `Authorization`): the words that hold them (passo, passou, bypass, compass,
+# OAuth, author, authentication) are not keys. A bare `key` is not one, only a
+# `_key` suffix is, and not the key of a table or a map (`primary_key`).
+_CRED_WORDS = (r"pass(?:word|wd|phrase)s?(?![a-z])|(?<![a-z])pass(?![a-z])|pwd|secret|token|"
+               r"api[_-]?key|access[_-]?key|private[_-]?key|"
+               r"(?<!primary)(?<!foreign)(?<!unique)(?<!sort)(?<!partition)(?<!range)"
+               r"(?<!hash)(?<!shard)(?<!cache)(?<!lookup)(?<!join)(?<!group)(?<!row)_key(?![a-z])|"
+               r"credential|senha|chave|(?<![a-z])auth(?:orization)?(?![a-z])")
 # An HTTP scheme before the value (`Authorization: Token x`) is part of it.
 _KEYED_SECRET = re.compile(
     rf"(?i)\b([A-Za-z_]*(?:{_CRED_WORDS})[A-Za-z_]*[\"']?)(\s*[:=]\s*)"
