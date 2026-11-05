@@ -326,8 +326,8 @@ own key.
   `elephant.json` at all, reads `how-i-work` and the trunk says how to set
   another. A value that cannot be used (not a non-empty string, or a `trunk`
   that is not an object), or an `elephant.json` that does not parse or is not
-  a JSON object, stops `trunk.py facts` with exit 1, and the skill with it,
-  until the file is fixed: reading the default instead would list none of your
+  a JSON object, stops `trunk.py facts` and `trunk.py learning forget|steer`
+  with exit 1, and the skill with them, until the file is fixed: reading the default instead would list none of your
   facts and capture new ones under a tag that goes unread once it is fixed.
   `trunk.py config` names the problem and prints what it resolved.
 - Like every key here, `update` never re-syncs it. The plugin's script runs from

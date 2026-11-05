@@ -183,8 +183,9 @@ def read_tag(bundle):
     be used (it does not parse, is not an object, or carries a `trunk.tag`
     that is not a non-empty string) returns the default with a problem, and
     the caller decides: `config` names the problem and prints the default,
-    while `facts` stops with exit 1, and the skill with it, until the file is
-    fixed, since the default would read none of the owner's facts."""
+    while `facts` and `learning forget|steer` stop with exit 1, and the skill
+    with them, until the file is fixed, since the default would read none of
+    the owner's facts."""
     path = os.path.join(bundle, "elephant.json")
     try:
         with open(path, encoding="utf-8") as fh:
@@ -1538,9 +1539,20 @@ def _verify_read(bundle, tag, changed, gone, kept=None):
         die(f"{kept} is not read by the trunk after the rebuild; check its tags with `facts --json`")
 
 
+def _learning_tag(bundle, verb):
+    """The tag `learning forget` and `steer` read, or a stop naming the
+    problem, as `facts` does: under the default tag an owner's learning is
+    refused as not one, and the refusal would hide the broken elephant.json."""
+    cfg = config(bundle)
+    if cfg["problem"]:
+        die(f"{cfg['problem']}; fix elephant.json first: the trunk {verb} no learning until "
+            f"its tag is usable ({SET_TAG_HINT})")
+    return cfg["tag"]
+
+
 def cmd_learning_forget(args):
     bundle = resolve_bundle(args.bundle)
-    tag = config(bundle)["tag"]
+    tag = _learning_tag(bundle, "forgets")
     run_name = check_name(args.run) if args.run else None
     if run_name:
         load_or_die(bundle, run_name)
@@ -1571,7 +1583,7 @@ def cmd_learning_forget(args):
 
 def cmd_learning_steer(args):
     bundle = resolve_bundle(args.bundle)
-    tag = config(bundle)["tag"]
+    tag = _learning_tag(bundle, "steers")
     run_name = check_name(args.run) if args.run else None
     if run_name:
         load_or_die(bundle, run_name)

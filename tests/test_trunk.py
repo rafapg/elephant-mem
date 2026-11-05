@@ -1235,6 +1235,25 @@ def _steer_and_forget(root, home):
     record("before anything is forgotten the trunk reads its three learnings",
            set(links(out) or []) == {study, dispatch, block}, out)
 
+    # A broken elephant.json stops forget and steer the way it stops facts,
+    # naming the problem, rather than refusing the owner's learning as "not a
+    # learning" under the default tag.
+    cfg_file = b / "elephant.json"
+    good_cfg = cfg_file.read_text(encoding="utf-8")
+    before = {p.name: p.read_text(encoding="utf-8") for p in (b / "knowledge" / "facts").iterdir()}
+    for label, text in (("a malformed", '{"trunk": {"tag": "como-trabalhar"},}'),
+                        ("a non-string trunk.tag", '{"trunk": {"tag": 5}}')):
+        cfg_file.write_text(text, encoding="utf-8")
+        refused = [run(TRUNK, "learning", "forget", "--bundle", b, study, env=env),
+                   run(TRUNK, "learning", "steer", "--bundle", b, dispatch, "--to", study, env=env)]
+        record(f"{label} elephant.json stops learning forget and steer, naming the problem",
+               all(x.returncode == 1 and "elephant.json" in x.stderr and "fix elephant.json" in x.stderr
+                   and "not a learning" not in x.stderr for x in refused)
+               and {p.name: p.read_text(encoding="utf-8")
+                    for p in (b / "knowledge" / "facts").iterdir()} == before,
+               "\n".join(x.stderr for x in refused))
+    cfg_file.write_text(good_cfg, encoding="utf-8")
+
     _, o = run_json("new", "--bundle", b, "--topic", "learnings", env=env)
     name = o["name"] if o else "x"
     run(TRUNK, "run", "set", "--bundle", b, name, "learning", "--value", f"{study}: read the open PRs first",

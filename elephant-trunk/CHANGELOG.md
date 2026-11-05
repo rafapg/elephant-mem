@@ -42,8 +42,9 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   string) stops `trunk.py facts`, `--forgotten` included, with exit 1 and the
   problem on stderr and in `--json`, and nothing is read: the default tag would
   list none of the owner's facts, send the skill into first use and capture the
-  answers under a tag that goes unread once the file is fixed. The skill stops
-  there and never goes to first use from it. `trunk.py config` stays lenient,
+  answers under a tag that goes unread once the file is fixed. `learning
+  forget` and `learning steer` stop the same way, naming the problem, and
+  change nothing. The skill stops there and never goes to first use from it. `trunk.py config` stays lenient,
   printing the default it falls back to and why, and `--json` prints what it
   resolved as one object for the skill.
 - **`trunk.py facts` reads the owner's how**: the active facts carrying the
