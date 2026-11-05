@@ -1066,6 +1066,24 @@ def _past_sessions(root, home):
            secret not in out and "hunter2hunter2" not in out
            and out.count("[secret left out]") >= 2, out[:2000])
     record("a long message is cut", "x" * 2001 not in out and "[… cut]" in out, "")
+    redact = load_trunk()._redact
+    shapes = {
+        '{"password": "hunter2pass"}': "hunter2pass",
+        "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY": "wJalrXUtnFEMI",
+        "the key is wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY": "wJalrXUtnFEMI",
+        "senha: Xy9!kq2pz": "Xy9!kq2pz",
+        "a senha do banco é Xy9kq2pz77": "Xy9kq2pz77",
+        "the password for prod is hunter2pass": "hunter2pass",
+        "post to https://hooks.slack.com/services/T0000AAAA/B0000BBBB/" + "X" * 24: "T0000AAAA",
+    }
+    missed = [text for text, value in shapes.items() if value in redact(text)]
+    record("a quoted key, a compound key, a bare slashed token, senha, a password in prose "
+           "and a webhook URL are left out", not missed, missed)
+    kept = ["read the open PRs before proposing, always", "/bb:spec then dispatch",
+            "the password policy is strict, rotate every 90 days",
+            "open /Users/someone/development/projects/elephant-mem/x.py"]
+    record("ordinary words, a skill command and a path survive the redaction",
+           [redact(t) for t in kept] == kept, [redact(t) for t in kept])
     r = run(TRUNK, "sessions", "extract", rich, "--max-tokens", "50", env=env)
     record("--max-tokens cuts a session and says how much was left",
            r.returncode == 0 and "[cut: about" in r.stdout and len(r.stdout) < 400, r.stdout)

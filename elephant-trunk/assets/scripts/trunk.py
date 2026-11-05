@@ -1323,11 +1323,24 @@ _SECRETS = [
     re.compile(r"\bAIza[0-9A-Za-z_-]{30,}"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
     re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{16,}"),
-    re.compile(r"(?i)\b([A-Za-z_]*(password|passwd|secret|token|api[_-]?key|credential)s?)"
-               r"(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|\S+)"),
     re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@"),
+    # Webhook URLs: the URL itself is the credential.
+    re.compile(r"(?i)\bhttps?://hooks\.slack\.com/\S+"),
+    re.compile(r"(?i)\bhttps?://(?:[\w-]+\.)*discord(?:app)?\.com/api/webhooks/\S+"),
+    re.compile(r"(?i)\bhttps?://\S*webhook\S*"),
 ]
-_LONG_TOKEN = re.compile(r"[A-Za-z0-9_+=-]{32,}")
+# A credential named by its key, in code, config or JSON: `password = x`,
+# `"password": "x"`, `aws_secret_access_key=x`, `senha: x`. The key and the
+# separator are kept, the value is left out.
+_CRED_WORDS = (r"password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|"
+               r"private[_-]?key|credential|senha")
+_KEYED_SECRET = re.compile(
+    rf"(?i)\b([A-Za-z_]*(?:{_CRED_WORDS})[A-Za-z_]*[\"']?)(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|\S+)")
+# A password named in prose: "the password for prod is hunter2pass", "a senha
+# do banco é Xy9kq2pz77". Within the few words after the keyword, a word that
+# mixes letters with digits or symbols is taken for the password.
+_PROSE_SECRET = re.compile(r"(?i)\b(?:password|passwd|passphrase|senha)\b([^\n]{0,60})")
+_LONG_TOKEN = re.compile(r"[A-Za-z0-9_+/=-]{32,}")
 # Text Claude Code itself puts in a user turn on older transcripts, which carry
 # no `origin` to tell it from the owner's: a peer session's message, a resumed
 # session's summary, a hook's feedback.
@@ -1355,14 +1368,31 @@ def _redact(text):
     works, while one token let through would be read by a model and could be
     offered back for capture."""
     for rx in _SECRETS:
-        if rx.groups >= 4:
-            text = rx.sub(lambda m: f"{m.group(1)}{m.group(3)}[secret left out]", text)
-        else:
-            text = rx.sub("[secret left out]", text)
+        text = rx.sub("[secret left out]", text)
+    text = _KEYED_SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}[secret left out]", text)
+
+    def prose(m):
+        words = re.split(r"(\s+)", m.group(1))
+        for i, w in enumerate(words[:13]):
+            core = w.strip(".,;:!?()[]{}<>\"'`")
+            if len(core) >= 6 and re.search(r"[^\W\d_]", core) and re.search(r"[\d\W_]", core) \
+                    and "[secret left out]" not in w:
+                words[i] = w.replace(core, "[secret left out]")
+        return m.group(0)[:m.start(1) - m.start(0)] + "".join(words)
+    text = _PROSE_SECRET.sub(prose, text)
 
     def long_token(m):
         s = m.group(0)
-        return "[secret left out]" if re.search(r"\d", s) and re.search(r"[A-Za-z]", s) else s
+        if not (re.search(r"\d", s) and re.search(r"[A-Za-z]", s)):
+            return s
+        if "/" in s and s[0] == "/":
+            # A path: only a segment shaped like a token on its own is one.
+            mixed = any(len(seg) >= 16 and re.search(r"\d", seg) and re.search(r"[A-Za-z]", seg)
+                        for seg in s.split("/"))
+            return "[secret left out]" if mixed else s
+        if "/" in s and not (re.search(r"[A-Z]", s) and re.search(r"[a-z]", s)):
+            return s
+        return "[secret left out]"
     return _LONG_TOKEN.sub(long_token, text)
 
 
