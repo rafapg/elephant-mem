@@ -802,6 +802,29 @@ def _run_record(root, home):
         r = run(TRUNK, "run", "ingested", "--bundle", fb, "fp", env=env)
         record("a fact that names the run, with no created timestamp, is not taken for a copy",
                r.returncode == 0, r.stderr)
+        # `ingest` commits with `git add -A`, so a CSV in Latin-1 (cp1252 is
+        # common in Brazil) rides along with the source: its bytes are not
+        # UTF-8, and the diff the fingerprint reads carries them.
+        latin1 = "cliente;ação\nJosé;revisão\n".encode("latin-1")
+        fb, src = fresh(len(checks))
+        (fb / "knowledge" / "sources").mkdir()
+        (fb / "knowledge" / "sources" / "planilha.csv").write_bytes(latin1)
+        (fb / "knowledge" / "sources" / "s.md").write_text("---\ntype: source\n---\nsummary\n", encoding="utf-8")
+        git(fb, "add", "-A")
+        git(fb, *G, "commit", "-q", "-m", "ingest")
+        r = run(TRUNK, "run", "ingested", "--bundle", fb, "fp", env=env)
+        record("an ingest commit that adds a Latin-1 text file is recorded, not taken for a leak",
+               r.returncode == 0 and "Traceback" not in r.stderr, r.stderr)
+        fb, src = fresh(len(checks))
+        (fb / "raw" / "planilha.csv").write_bytes(latin1)
+        (fb / "raw" / "fp.json").write_bytes(
+            json.dumps(json.loads(src.read_text(encoding="utf-8"))).encode("utf-8") + b"\n" + latin1)
+        git(fb, "add", "-A")
+        git(fb, *G, "commit", "-q", "-m", "ingest")
+        r = run(TRUNK, "run", "ingested", "--bundle", fb, "fp", env=env)
+        record("a copy of the record beside Latin-1 bytes is still refused, naming it",
+               r.returncode != 0 and "raw/fp.json" in r.stderr and "raw/planilha.csv" not in r.stderr,
+               r.stderr)
 
     r, out = run_json("list", "--bundle", b, "--open", env=env)
     record("run list --open leaves out the dispatched run",

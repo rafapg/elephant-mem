@@ -838,12 +838,17 @@ def cmd_run_dispatch(args):
 
 def _git(bundle, *args):
     """A git command in the bundle: (returncode, stdout), or None when git is
-    missing or cannot run."""
+    missing or cannot run. The output is read as UTF-8 with undecodable bytes
+    replaced: `diff-tree -p` carries the content of whatever the commit
+    added, and a CSV in Latin-1 or cp1252 (common in a bundle) must not stop
+    the check. What it looks for (paths, the record's created and name) is
+    ASCII, so a replaced byte never hides it."""
     git = shutil.which("git")
     if not git:
         return None
     try:
-        r = subprocess.run([git, "-C", bundle, *args], capture_output=True, text=True)
+        r = subprocess.run([git, "-C", bundle, *args], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
     except OSError:
         return None
     return r.returncode, r.stdout.strip()
