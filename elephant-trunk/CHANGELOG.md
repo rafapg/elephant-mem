@@ -87,6 +87,11 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   each learning with its link. `trunk.py run ingested` records the ingest and
   refuses it when the commit carried the raw record, since `ingest` commits with
   `git add -A`; `run set <name> learning` keeps what was learned in the record.
+  A learning is kept as `pending` in the record the moment it surfaces, and
+  `run set ... learning --pending <n>` (or a `note`, when it is set aside)
+  settles it, so a run that stops before its last step, on a failed start or
+  an owner who leaves, loses nothing it learned: the next session that
+  continues the run captures what is still pending.
 - **The `trunk` skill, a recipe when none fits.** When no saved recipe fits
   work bound for orq, the trunk writes one from the closest saved recipe and
   the tooling's own documentation, carrying the roles and stop conditions of

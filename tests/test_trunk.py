@@ -660,6 +660,43 @@ def _run_record(root, home):
            r.returncode == 0 and rec and [x["text"] for x in rec["learnings"]]
            == ["/facts/2026-11/orq-for-two-areas.md: orq when the work splits by area"], r.stderr or rec)
 
+    # ── a learning surfaced mid-run waits as pending until captured ───────────
+    P = ("run", "set", "--bundle", b, f"{name}-2")
+    steps = [run(TRUNK, *P, "pending", "--value", "trunk-dispatch: orq, started with `orq start <recipe>`", env=env),
+             run(TRUNK, *P, "pending", "--value", "trunk-study: read the open PRs first", env=env)]
+    _, rec = run_json("show", "--bundle", b, f"{name}-2", env=env)
+    record("a learning surfaced mid-run is recorded at once as pending, before any capture",
+           all(s.returncode == 0 for s in steps) and rec
+           and [x["text"] for x in rec["pending"]] == ["trunk-dispatch: orq, started with `orq start <recipe>`",
+                                                       "trunk-study: read the open PRs first"]
+           and not any(x.get("settled") for x in rec["pending"]) and rec["learnings"] == [],
+           "\n".join(s.stderr for s in steps) or rec)
+    r = run(TRUNK, "run", "show", "--bundle", b, f"{name}-2", env=env)
+    record("the plain show lists the pending learnings, numbered",
+           "## pending learnings" in r.stdout and "1. trunk-dispatch: orq" in r.stdout
+           and "2. trunk-study: read the open PRs" in r.stdout, r.stdout)
+    r1 = run(TRUNK, *P, "learning", "--value", "/facts/2026-11/orq-start.md: orq, started with orq start",
+             "--pending", "1", env=env)
+    r2 = run(TRUNK, *P, "note", "--value", "learning set aside: the owner forgot it", "--pending", "2", env=env)
+    _, rec = run_json("show", "--bundle", b, f"{name}-2", env=env)
+    record("a learning or a note settles a pending one, linked both ways",
+           r1.returncode == 0 and r2.returncode == 0 and rec
+           and [x.get("settled", {}).get("by") for x in rec["pending"]] == ["learning", "note"]
+           and rec["learnings"][-1].get("settles") == 1 and rec["log"][-1].get("settles") == 2,
+           (r1.stderr + r2.stderr) or rec)
+    r = run(TRUNK, "run", "show", "--bundle", b, f"{name}-2", env=env)
+    record("settled pending learnings leave the plain show's pending list",
+           "## pending learnings" not in r.stdout, r.stdout)
+    refused = [run(TRUNK, *P, "learning", "--value", "/facts/x.md: again", "--pending", "1", env=env),
+               run(TRUNK, *P, "note", "--value", "nothing", "--pending", "3", env=env),
+               run(TRUNK, *P, "note", "--value", "nothing", "--pending", "0", env=env),
+               run(TRUNK, *P, "decision", "--value", "x", "--pending", "1", env=env)]
+    _, after = run_json("show", "--bundle", b, f"{name}-2", env=env)
+    record("--pending refuses one already settled, one not recorded, and a field that is not learning or note",
+           all(x.returncode != 0 for x in refused) and "already settled" in refused[0].stderr
+           and "no pending learning 3" in refused[1].stderr and after == rec,
+           "\n".join(x.stderr for x in refused))
+
     # ── the ingest of a dispatched run ────────────────────────────────────────
     r = run(TRUNK, "run", "ingested", "--bundle", b, f"{name}-2", env=env)
     record("a run not dispatched yet is not marked ingested",

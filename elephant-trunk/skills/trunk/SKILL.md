@@ -127,8 +127,9 @@ short facts.
 **Two facts that contradict each other.** When two facts give opposite
 instructions for the same step (one says read the repo's open PRs first, the
 other says never), do not pick one. Show both, with their `link` and
-`occurred`, and ask the owner which holds. Then offer once to capture the
-winner (see **Capturing a how** below), and use the winner for this run
+`occurred`, and ask the owner which holds. The winner is a learning: keep it
+as pending (**A learning surfaces mid-run**, below), then offer once to
+capture it (see **Capturing a how** below), and use the winner for this run
 either way.
 
 **An area with no fact.** No fact for the step at hand (no `trunk-study` fact
@@ -136,7 +137,8 @@ when the study starts, or none at all after a first use that captured
 nothing): do not fall back on a habit of your
 own. Ask the owner the one question that step needs (for the study: which
 sources, how deep, how the approaches should come), use the answer for this
-run, and offer to capture it.
+run, keep it as pending (**A learning surfaces mid-run**, below) and offer to
+capture it.
 
 ### 1b. Open the run record
 
@@ -153,7 +155,9 @@ on without a record only if the owner says so.
 
 When **First use** captured facts in this session, record each one in the new
 run now, as **The interview** says at its end, so 4c does not capture it again
-and 4d reports it with the run's learnings.
+and 4d reports it with the run's learnings. A learning 1a surfaced before the
+run existed (the winner of two facts that contradicted each other) is recorded
+as pending in it now, the same way.
 
 ### 1c. Study the topic
 
@@ -253,7 +257,10 @@ whose condition matches this work.
 
 - **No `trunk-dispatch` fact**: ask the owner the one question this step
   needs (orq or this session, and for orq the command that starts the work),
-  and use the answer for this run. It is captured as a learning in 4c.
+  and use the answer for this run. Keep the answer as pending at once
+  (**A learning surfaces mid-run**), before anything of 3b runs: a start that
+  fails or an owner who stops here would otherwise lose it. 4c, or the next
+  session that continues the run, captures it.
 - **orq is the way and orq is not available here**: the orq tooling is
   machine-specific, so check before writing anything for it. The command the
   facts name to start the work must resolve on this machine
@@ -593,12 +600,19 @@ source to add, approaches shown another way, another dispatch way), a recipe
 that fit or did not. Only that: never something about the topic, never content
 of a session, a secret or third-party content.
 
+Each one was kept as pending in the record when it surfaced (**A learning
+surfaces mid-run**); one this session learned and did not keep yet is kept
+now, the same way. Read them back with `run show <name> --json`: the entries of
+`pending` with no `settled`, numbered from 1 in the order of the whole
+`pending` array, are what 4c captures.
+
 Learning is autonomous. Capture each one without asking, with **Capturing a
 how**, and check it with `facts --area`. Three exceptions: a how the owner
-already captured in this run is not captured again (a recipe written in this
-run already has its `trunk-recipe` fact from 3e), one the owner declined
-to capture in this run stays uncaptured, and one the owner forgot or steered
-away from is never learned again. Before capturing, list those:
+already captured in this run is not captured again (it is settled already, and
+a recipe written in this run already has its `trunk-recipe` fact from 3e), one
+the owner declined to capture in this run stays uncaptured (settled by its
+note), and one the owner forgot or steered away from is never learned again.
+Before capturing, list those:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" facts --forgotten --json
@@ -607,22 +621,31 @@ python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" facts --forgotten --json
 and read the ones in the same area. A learning that says what one of them
 said is set aside, and 4d names it as set aside because the owner forgot it.
 Only the owner brings a forgotten how back, by stating it again; what they
-state is captured as any how they state. Record each learning that landed:
+state is captured as any how they state. Record each learning that landed,
+settling its pending entry `<n>`:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value '<its link>: <the how, in one line>'
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value '<its link>: <the how, in one line>' --pending <n>
 ```
 
-A capture that did not land is recorded as a note, and reported as not
-recorded.
+and each one set aside, with why:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> note --value 'learning set aside, the owner forgot it: <the how, in one line>' --pending <n>
+```
+
+A capture that did not land is recorded as a note with no `--pending`, and
+reported as not recorded: it stays pending, for the next session that
+continues the run to try once more.
 
 ### 4d. Report and stop
 
 Close with one short message: the run's name, what is running and where (or
 the pull request, on plain Claude Code), the ingest's commit, and the
 learnings, one line each with its area and its `link`, saying the owner can
-steer one or ask to forget it (**Steer or forget a learning**). With nothing
-learned, say so in one line. The
+steer one or ask to forget it (**Steer or forget a learning**). A learning
+still pending (its capture did not land) is named as such, one line each, for
+the next session to capture. With nothing learned, say so in one line. The
 trunk stops here; a later session continues the run from its record
 (`/elephant-trunk:trunk continue <name>`).
 
@@ -687,6 +710,8 @@ top down:
 "After" is by `at`: decisions and notes both carry one. Before any step runs
 again, load the owner's how with 1a, as for a new run: the record keeps what
 was decided, not how the owner works, and the facts may have changed since.
+Then capture what the record holds as pending, whatever row the table gave
+(**Pending learnings**, below).
 Reopening the conversation (step 2) starts from the record: recall the
 approaches and every decision so far, and answer from the study, going back to
 a source when a question needs it, as step 2 says.
@@ -703,6 +728,17 @@ saved recipe is shown again, and a written recipe that was saved before the
 failed start is started from that same file (`recipe save` says it was saved
 already). 3a runs again in full: this session may be on another machine, and
 orq's availability is checked here.
+
+### Pending learnings
+
+An earlier session may have stopped before its 4c: what it learned about how
+the owner works is in the record's `pending`, the entries with no `settled`.
+Right after 1a, capture each one as 4c says, without asking: the same
+exceptions, the same `facts --forgotten` check, the same `run set ...
+learning --pending <n>` or `note --pending <n>`. A fact that 1a now reads and
+says the same is already captured: settle the entry with a note naming its
+link. Tell the owner in one line per entry what was captured, with its area
+and `link`, or set aside and why. With none pending, say nothing of it.
 
 ### A start never recorded
 
@@ -753,7 +789,8 @@ What is left of step 4 is said and offered, never run silently:
   `steers`, what was forgotten or steered since (`run show` marks each
   learning that was). The owner can steer or forget any of them here, with
   **Steer or forget a learning**, passing this run as `--run`. What this
-  session learns about how the owner works goes through 4c, as in any run.
+  session learns about how the owner works is kept as pending when it
+  surfaces (**A learning surfaces mid-run**) and captured as 4c says.
 
 Then the conversation continues from there: answer from the record, and
 record each new decision or note with `run set` as in step 2. The study, the
@@ -1034,9 +1071,29 @@ python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" facts --area <the area t
 A capture that does not show up there carries the wrong tags; say so to the
 owner rather than assume it took.
 
-During the conversation a capture is offered once. What the owner neither
-captured nor declined by the end of the run is captured in 4c without asking,
-and reported.
+### A learning surfaces mid-run
+
+The moment the trunk learns something about how the owner works (what 4c
+lists: an answer to a question an area with no fact made it ask, the winner
+between two facts, a correction to how a step was done), keep it in the run as
+pending, before offering anything:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> pending --value '<its area tag>: <the how, in one line>'
+```
+
+A run can end before step 4 (a start that failed, an owner who declines plain
+Claude Code, leaves or stops, a brief that failed its form check), and 4c runs
+only in step 4: what is pending in the record is what the next session finds,
+so nothing learned is lost on the way out.
+
+During the conversation a capture is offered once. When the owner captures it,
+record the learning with `--pending <n>`, `<n>` being its place in the
+record's `pending`, from 1 (as 4c does); when they decline, settle it with a
+note (`run set <name> note --value 'learning declined: <the how>' --pending
+<n>`). What the owner neither captured nor declined stays pending, and is
+captured without asking, and reported, in 4c or by the next session that
+continues the run (**Pending learnings**).
 
 ## Steer or forget a learning
 

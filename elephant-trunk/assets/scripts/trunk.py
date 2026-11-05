@@ -32,7 +32,12 @@ Commands:
   run set <name> <field> (--value <v> | --file <path|->)
                         continue a run: study, brief (text, replaced);
                         approaches (JSON array), recipe (JSON object), replaced;
-                        decision, note, learning (text, appended)
+                        decision, note, learning, pending (text, appended);
+                        pending is a learning surfaced mid-run and not
+                        captured yet, kept so an exit before step 4 loses none
+    [--pending <n>]     with learning or note: settles pending learning n
+                        (1-based, in the record's `pending`), as captured
+                        (learning) or set aside (note); refuses one settled
   run claim <name> --via <orq|claude-code> --command <c> [--where <w>]
                         before the dispatch command runs: flips an open run to
                         starting under the record's lock, so of two sessions
@@ -378,7 +383,11 @@ DISPATCH_VIAS = ("orq", "claude-code")
 # What `run set` may change: text replaced, JSON replaced, text appended.
 TEXT_FIELDS = ("study", "brief")
 JSON_FIELDS = {"approaches": list, "recipe": dict}
-APPEND_FIELDS = {"decision": "decisions", "note": "log", "learning": "learnings"}
+APPEND_FIELDS = {"decision": "decisions", "note": "log", "learning": "learnings",
+                 "pending": "pending"}
+# What may settle a pending learning: the learning its capture recorded, or a
+# note saying why it was set aside.
+SETTLES_PENDING = ("learning", "note")
 # After the dispatch the conversation can go on, but what was dispatched stays
 # as it was dispatched.
 FROZEN_AFTER_DISPATCH = ("study", "approaches", "brief", "recipe")
@@ -564,7 +573,7 @@ def new_record(name, topic):
             "status": STATUS_OPEN, "created": t, "updated": t,
             "study": None, "approaches": [], "decisions": [], "brief": None,
             "recipe": None, "claim": None, "dispatch": None, "attempts": [], "log": [],
-            "ingests": [], "learnings": [], "steers": []}
+            "ingests": [], "learnings": [], "pending": [], "steers": []}
 
 
 def list_records(bundle):
@@ -665,6 +674,12 @@ def cmd_run_show(args):
         print("\n## steered and forgotten")
         for s in rec["steers"]:
             print(f"- {s.get('link')}: {_steer_line(s)}, at {s.get('at')}")
+    waiting = [(i, item) for i, item in enumerate(rec.get("pending") or [], 1)
+               if isinstance(item, dict) and not item.get("settled")]
+    if waiting:
+        print("\n## pending learnings (not captured yet)")
+        for i, item in waiting:
+            print(f"{i}. {item.get('text')}")
     if rec.get("log"):
         print("\n## notes")
         for item in rec["log"]:
@@ -714,7 +729,21 @@ def cmd_run_set(args):
     if rec["status"] == STATUS_STARTING and field in FROZEN_AFTER_DISPATCH:
         die(f"run {rec['name']} is being started; its {field} stays as claimed until "
             f"`run dispatch` records how the start went (add a decision or a note instead)")
+    settles = getattr(args, "pending", None)
+    if settles is not None and field not in SETTLES_PENDING:
+        die(f"--pending settles a pending learning with a learning or a note, not a {field}")
     t = now()
+    if settles is not None:
+        pending = rec.get("pending") if isinstance(rec.get("pending"), list) else []
+        if not 1 <= settles <= len(pending) or not isinstance(pending[settles - 1], dict):
+            die(f"run {rec['name']} has no pending learning {settles} "
+                f"({len(pending)} recorded; `run show --json` lists them in `pending`)")
+        item = pending[settles - 1]
+        if item.get("settled"):
+            s = item["settled"]
+            die(f"pending learning {settles} of run {rec['name']} was already settled "
+                f"by a {s.get('by')} at {s.get('at')}")
+        item["settled"] = {"at": t, "by": field}
     if field in TEXT_FIELDS:
         rec[field] = raw
     elif field in JSON_FIELDS:
@@ -732,7 +761,10 @@ def cmd_run_set(args):
     else:
         if not raw.strip():
             die(f"an empty {field} adds nothing")
-        rec.setdefault(APPEND_FIELDS[field], []).append({"at": t, "text": raw.strip()})
+        entry = {"at": t, "text": raw.strip()}
+        if settles is not None:
+            entry["settles"] = settles
+        rec.setdefault(APPEND_FIELDS[field], []).append(entry)
     rec["updated"] = t
     write_record(bundle, rec)
     return 0
@@ -2033,6 +2065,8 @@ def main(argv):
     p.add_argument("field", choices=[*TEXT_FIELDS, *JSON_FIELDS, *APPEND_FIELDS])
     p.add_argument("--value", default=None, help="the value")
     p.add_argument("--file", default=None, help="read the value from this file (- for stdin)")
+    p.add_argument("--pending", type=int, default=None, metavar="N",
+                   help="with learning or note: this settles pending learning N (1-based)")
     p.set_defaults(func=cmd_run_set)
     p = rsub.add_parser("claim", parents=[common],
                         help="claim an open run before its dispatch command runs: it becomes starting")
