@@ -374,6 +374,15 @@ touches it. Managed by `scripts/state.py`.
   debug aid for unattended runs; safe to delete.
 - `state/phone/` — the audio inbox and diarized transcripts kept by
   `ingest-audio` (git-ignored in the bundle by default).
+- `state/trunk/` — written by the `elephant-trunk` plugin's `trunk.py`, not by
+  `state.py`: one raw record per run under `runs/<name>.json` (the topic, the
+  study, the decisions, the brief, each dispatch attempt), and under
+  `recipes/<run>/` the draft of a recipe written for that run. A record holds
+  whatever the conversation touched, so `trunk.py` adds `state/trunk/` to the
+  bundle's `.gitignore` before its first write and refuses to write when a rule
+  re-includes it or git already tracks a file there. It never enters the
+  bundle's history; an `ingest` over a record commits only the facts drawn from
+  it. Owner-readable only.
 
 ---
 
