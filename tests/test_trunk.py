@@ -691,6 +691,15 @@ def _run_record(root, home):
                r.stderr)
         git(leak, "rm", "-r", "-q", "--cached", "state/trunk")
         git(leak, *G, "commit", "-q", "-m", "untrack")
+        # The untrack commit only deletes the record from the index: no copy
+        # is added, nothing stays tracked, so the refusal that a commit
+        # touched state/trunk/ is the one check that stands between it and a
+        # recorded ingest.
+        r = run(TRUNK, "run", "ingested", "--bundle", leak, lname, env=env)
+        _, lrec = run_json("show", "--bundle", leak, lname, env=env)
+        record("an ingest commit that touched state/trunk/, even only to untrack it, is refused",
+               r.returncode != 0 and "carries files under state/trunk/" in r.stderr
+               and lrec and lrec["ingests"] == [], r.stderr)
         r = run(TRUNK, "run", "ingested", "--bundle", leak, lname, "--commit", leaked_sha, env=env)
         _, lrec = run_json("show", "--bundle", leak, lname, env=env)
         record("an ingest commit that carried the raw record is refused even once untracked",
