@@ -32,10 +32,13 @@ It is the whole path in one run, in this order:
 2. Refreshes your local clone of the marketplace
    (`claude plugin marketplace update elephant-mem`).
 3. Reads the installed and published versions **off that refreshed clone** and
-   prints the version delta and the file-level plan.
+   prints the version delta and the file-level plan. The delta names
+   `elephant-mem` and `elephant-wiki` only: an installed `elephant-trunk` has
+   no line in it, though step 5 updates it too and the `Installed … (was …)`
+   lines printed after the update name its move.
 4. Asks once. Declining installs and copies nothing.
 5. Runs `claude plugin update <plugin>@elephant-mem -y` for each installed plugin
-   of the family.
+   of the family, `elephant-trunk` included.
 6. Re-reads Claude Code's registry for the directories the install just wrote.
 7. Copies the published files into the bundle.
 8. Runs `build-index.py`, then `validate-okf.py`.

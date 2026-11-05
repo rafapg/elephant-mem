@@ -247,7 +247,10 @@ and keep each run's raw record under `<bundle>/state/trunk/`, git-ignored.
 `trunk.py sessions` needs no bundle. The trunk never deploys and never merges.
 
 `elephant-update` updates **every installed plugin of the family**, the wiki
-and the trunk included, so neither of them needs a command of its own. What is `elephant-mem`-only
+and the trunk included, so neither of them needs a command of its own. The plan
+it shows before asking lists `elephant-mem` and the wiki only: the trunk is
+updated with them but has no line of its own there, so you approve its move
+without seeing it; the `Installed … (was …)` lines after the update do name it. What is `elephant-mem`-only
 is the weekly nudge, which compares that one version, and the preflight's stop: a
 stale wiki file is named and the mode carries on, because the wiki renders your
 memory rather than running it.
