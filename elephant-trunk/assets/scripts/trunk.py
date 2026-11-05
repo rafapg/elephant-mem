@@ -215,11 +215,9 @@ def how_facts(bundle, tag, areas=AREA_TAGS):
     """The owner's how: every active fact in knowledge/manifest.jsonl carrying
     `tag` plus at least one of `areas`, in manifest order (most recent first).
 
-    Reads the manifest and nothing else, the way post-produto-slack's
-    regras.py reads its `como-trabalhar` rules, and with its rules, so the two
-    readers cannot disagree about one fact: `type` is `fact`, the status
-    (missing counts as `active`) is `active` once stripped and lowercased, and
-    tags match exactly. Returns (facts, skipped): each fact a dict with `path`
+    Reads the manifest and nothing else, on its own fields alone: `type` is
+    `fact`, the status (missing counts as `active`) is `active` once stripped
+    and lowercased, and tags match exactly. Returns (facts, skipped): each fact a dict with `path`
     (absolute), `link` (the manifest's `/facts/...`), `areas` (the area tags it
     carries, among `areas`), `desc`, `tags`, `occurred` and `confidence`;
     `skipped` counts manifest lines that are not a usable JSON object. A
