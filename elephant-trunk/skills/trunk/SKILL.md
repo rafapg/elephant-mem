@@ -621,6 +621,17 @@ now, the same way. Read them back with `run show <name> --json`: the entries of
 `pending` with no `settled`, numbered from 1 in the order of the whole
 `pending` array, are what 4c captures.
 
+Each entry is held to that filter again before it is captured: it may come
+from a session this one never saw, and its own words are all there is to
+judge. An entry that carries anything of the topic or of a client (a name, a
+ticket, a repository, a value of this run), content of a session, a secret or
+third-party content is never captured. Settle it with a note that names only
+its area, and 4d names it as set aside:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> note --value 'learning set aside, it carries content of the topic: <its area tag>' --pending <n>
+```
+
 Learning is autonomous. Capture each one without asking, with **Capturing a
 how**, and check it with `facts --area`. Three exceptions: a how the owner
 already captured in this run is not captured again (it is settled already, and
@@ -754,7 +765,12 @@ An earlier session may have stopped before its 4c: what it learned about how
 the owner works is in the record's `pending`, the entries with no `settled`.
 Right after 1a, capture each one as 4c says, without asking: the same
 exceptions, the same `facts --forgotten` check, the same `run set ...
-learning --pending <n>` or `note --pending <n>`. A fact that 1a now reads and
+learning --pending <n>` or `note --pending <n>`. The same filter first: this
+session never saw the conversation an entry came from, so an entry that
+carries anything of the topic or of a client (a name, a ticket, a repository,
+a value of that run), content of a session, a secret or third-party content
+is settled with `note --pending <n>` as 4c says, never captured, however
+plainly it reads as a how. A fact that 1a now reads and
 says the same is already captured: settle the entry with a note naming its
 link. Tell the owner in one line per entry what was captured, with its area
 and `link`, or set aside and why. With none pending, say nothing of it.
@@ -1097,10 +1113,16 @@ owner rather than assume it took.
 The moment the trunk learns something about how the owner works (what 4c
 lists: an answer to a question an area with no fact made it ask, the winner
 between two facts, a correction to how a step was done), keep it in the run as
-pending, before offering anything:
+pending, before offering anything. Only the how goes in, under 4c's filter:
+never something about the topic, never content of a session, a secret or
+third-party content. A how stated with this run's values (the owner answers
+with the very command they would run, naming the client, its ticket and its
+repository) is kept with those values as placeholders, as the recipe fact in
+3e does (`<recipe>`, `<ticket>`, `<owner/repo>`); a learning that is nothing
+once its values are out is not one, and is not kept.
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> pending --value '<its area tag>: <the how, in one line>'
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> pending --value '<its area tag>: <the how, in one line, its values as placeholders>'
 ```
 
 A run can end before step 4 (a start that failed, an owner who declines plain

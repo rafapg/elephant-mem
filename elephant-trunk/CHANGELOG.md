@@ -127,7 +127,11 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   settles it, refusing an entry already settled or never recorded, while
   `run show` lists what is still pending; so a run that stops before its last step, on a failed start or
   an owner who leaves, loses nothing it learned: the next session that
-  continues the run captures what is still pending.
+  continues the run captures what is still pending. What is kept is only the
+  how, with the run's own values (a client, a ticket, a repository) as
+  placeholders, and an entry that still carries anything of the topic, of a
+  client or of a session is settled with a note and never captured, since the
+  session that captures it may never have seen the conversation it came from.
 - **The `trunk` skill, a recipe when none fits.** When no saved recipe fits
   work bound for orq, the trunk writes one from the closest saved recipe and
   the tooling's own documentation, carrying the roles and stop conditions of
