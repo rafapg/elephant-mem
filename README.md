@@ -215,8 +215,9 @@ This marketplace ships **three** plugins: `elephant-mem` (the memory),
 `elephant-wiki` (an optional [static wiki](elephant-wiki/) over your bundle) and
 `elephant-trunk` (an optional [skill](elephant-trunk/) that takes a loose topic to
 dispatched work, reading every *how* from your own tagged facts). They are
-installed separately and **versioned independently**: the wiki and the trunk
-change far less often, so the numbers in the badges above drift apart on purpose.
+installed separately and **versioned independently**: the wiki changes far less
+often than the memory, and the trunk started its own count at 0.1.0-beta.1, so
+the numbers in the badges above drift apart on purpose.
 A lower `elephant-wiki` or `elephant-trunk` version does not mean it is out of
 date.
 
@@ -246,7 +247,7 @@ and keep each run's raw record under `<bundle>/state/trunk/`, git-ignored.
 `trunk.py sessions` needs no bundle. The trunk never deploys and never merges.
 
 `elephant-update` updates **every installed plugin of the family**, the wiki
-included, so neither one needs a command of its own. What is `elephant-mem`-only
+and the trunk included, so neither of them needs a command of its own. What is `elephant-mem`-only
 is the weekly nudge, which compares that one version, and the preflight's stop: a
 stale wiki file is named and the mode carries on, because the wiki renders your
 memory rather than running it.
