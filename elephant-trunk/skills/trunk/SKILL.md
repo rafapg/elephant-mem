@@ -395,7 +395,7 @@ like it. Write the two files to a temporary path, pass them in, then delete
 the temporary copies:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe draft <name> --name <recipe> --roles '<one line per role>' --file <recipe.py> --test <test_recipe.py> --command '<the start command, filled in for this run>' --json
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe draft <name> --name <recipe> --roles '<one line per role>' --file '<recipe.py>' --test '<test_recipe.py>' --command '<the start command, filled in for this run>' --json
 ```
 
 It prints the draft's paths. **Check the draft there**, running the check from
@@ -512,7 +512,7 @@ work is split, for the next run to find. Check it with
 this run's learnings, so 4c does not capture it again and 4d reports it:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe fact <name> --link <its link>
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" recipe fact <name> --link '<its link>'
 python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value '<its link>: recipe <recipe>, for <when it fits>'
 ```
 
@@ -891,9 +891,10 @@ carry `CLAUDE_PLUGIN_ROOT`, so spell the script's absolute path in its prompt.
 Its prompt is this, filled in, in English whatever the owner speaks:
 
 > Read how one person works from their past Claude Code sessions. Run
-> `python3 "<the script's absolute path>" sessions extract <the batch's paths>
-> --max-tokens <batch_tokens>` and read its output: each session's messages
-> from the owner, and between them `[then: ...]`, what the session ran next.
+> `python3 "<the script's absolute path>" sessions extract <the batch's paths,
+> each in single quotes> --max-tokens <batch_tokens>` and read its output: each
+> session's messages from the owner, and between them `[then: ...]`, what the
+> session ran next.
 > Return only statements of how the owner works, in three areas:
 > `trunk-study` (what they have a topic studied with, in what order, how deep,
 > how they want approaches shown and how many), `trunk-dispatch` (where work
@@ -1126,7 +1127,7 @@ elephant-mem's `maintain`.
 line, its link and what it says, and run:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" learning forget <link> --run <name> --json
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" learning forget '<link>' --run <name> --json
 ```
 
 `--run` is the run this conversation is on, when there is one: the forget is
@@ -1143,7 +1144,7 @@ undoes nothing already dispatched; from here on this run does not use it.
 2. Steer the old learning to it:
 
    ```bash
-   python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" learning steer <link> --to <the new link> --run <name> --json
+   python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" learning steer '<link>' --to '<the new link>' --run <name> --json
    ```
 
    The old fact becomes `superseded`, with the new one in its
