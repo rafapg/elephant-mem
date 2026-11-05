@@ -14,7 +14,7 @@ day its tag is cut, which is the day it lands on `main`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0-beta.1] - Unreleased
+## [0.1.0-beta.1] - 2026-11-05
 
 The owner already took topics to dispatched work by hand, and the middle of it
 worked: studying a topic with their memory and converging on an approach in a
@@ -110,7 +110,7 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   one that left a run, so it continues from the record alone
   (`/elephant-trunk:trunk continue <name>`). A run named, even in part or by
   its topic, is read back; with none named, the open runs are listed most
-  recent first and the owner picks, and `run list --json` now names the
+  recent first and the owner picks, and `run list --json` names the
   records it could not read so the list can say which were left out. The trunk
   says where the run stopped and picks up there: the study, the approaches, the
   conversation, or the start that failed. A `dispatch` recorded by an earlier
