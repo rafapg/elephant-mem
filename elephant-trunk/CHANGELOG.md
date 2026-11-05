@@ -32,19 +32,33 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   into the bundle, so `elephant-update` has no stale copy to miss.
 - **The bundle is found the way `elephant-wiki` finds it**: `--bundle`, then
   `ELEPHANT_BUNDLE`, then the machine pointer. A bundle that cannot be found
-  stops with the wiki's own guidance, word for word.
+  stops with the wiki's own guidance, word for word, and so does a machine
+  pointer whose `bundle_path` is not a non-empty string.
 - **`trunk.tag` in `elephant.json`** names the how-I-work tag the trunk reads,
   so a bundle whose facts already carry another tag (`como-trabalhar`, say) is
   read as it is. With no `trunk.tag` the trunk reads `how-i-work` and says how
-  to set another; a value that is not a non-empty string falls back to the same
-  default and says why. `trunk.py config` prints what it resolved, and
-  `--json` prints it as one object for the skill.
+  to set another. An `elephant.json` that is present but unusable (it does not
+  parse, is not an object, or carries a `trunk.tag` that is not a non-empty
+  string) stops `trunk.py facts`, `--forgotten` included, with exit 1 and the
+  problem on stderr and in `--json`, and nothing is read: the default tag would
+  list none of the owner's facts, send the skill into first use and capture the
+  answers under a tag that goes unread once the file is fixed. The skill stops
+  there and never goes to first use from it. `trunk.py config` stays lenient,
+  printing the default it falls back to and why, and `--json` prints what it
+  resolved as one object for the skill.
 - **`trunk.py facts` reads the owner's how**: the active facts carrying the
   how-I-work tag plus one of `trunk-study`, `trunk-dispatch` or `trunk-recipe`,
   straight from `knowledge/manifest.jsonl` and never through `query`, matching a
   fact on the manifest's own fields alone: its `type` is `fact`, its status is
   `active` (a missing one counts as active), and its tags match exactly. `--area`
-  narrows it to one step. A bundle with no such fact gets an empty list and a note, and one
+  narrows it to one step. Matching stays exact, but `--json` also carries
+  `near_misses`: the active facts that would match under another case
+  (`Como-Trabalhar`) or once a comma-joined tag string (`tags: a, b` written
+  without brackets, one string in the manifest) is split, narrowed by `--area`
+  like the facts and counted on stderr. A near miss is never read as the
+  owner's how; the skill says how many facts nearly carry the tag and asks
+  whether to fix their tags before it starts a first use, so a mistyped tag
+  does not send the owner through the interview again. A bundle with no such fact gets an empty list and a note, and one
   whose manifest was never built stops and says to rebuild it rather than
   report that the owner has no how.
 - **`trunk.py run` keeps the run record** in `<bundle>/state/trunk/runs/<name>.json`,
@@ -56,9 +70,16 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   `ingest` commits with `git add -A`, so before every write the script makes
   sure `state/trunk/` is git-ignored in the bundle, and in a git bundle asks git
   itself: a rule that re-includes the path, or a record already tracked, refuses
-  the write instead of leaving raw content for the next commit. A failed
-  dispatch is kept with its error and the run stays open; a run that was
-  dispatched refuses a second dispatch and says what ran and where. A missing or
+  the write instead of leaving raw content for the next commit. `run claim`
+  takes a run from `open` to `starting` before its dispatch command runs,
+  under the record's lock (an empty file beside it, created exclusively), and
+  refuses a run that is `starting` or `dispatched`: of six concurrent claims on
+  one run, exactly one won in every round. Every write of a record takes the
+  same lock, and a lock left by a killed process stops the write after ten
+  seconds, naming the file. `run dispatch` ends the claim: a start that ran
+  makes the run `dispatched`, and one recorded with `--error` is kept with its
+  error and reopens the run for a retry to claim. A run that was dispatched
+  refuses a second claim or dispatch and says what ran and where. A missing or
   unreadable record says so and offers to start over from the topic.
 - **The `trunk` skill, study and converse** (`/elephant-trunk:trunk <topic>`).
   It loads the owner's how with `trunk.py facts`, reads each fact whole and
@@ -78,18 +99,26 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   way), filters it for content not meant to travel before the owner sees it,
   and dispatches nothing when the brief lacks that form, saying what is
   missing. It picks a saved recipe from the `trunk-recipe` facts, shows the
-  brief, the recipe and the exact command, and starts the work on orq or, on
-  plain Claude Code, in the same session as a maestro with subagents; when orq
-  is the way but its tooling is not on the machine, it says so and offers plain
-  Claude Code. A failed start is recorded with its error and the run stays open.
-  It then confirms the work is running, runs `ingest` over the record, and
-  captures what it learned about how the owner works without asking, reporting
-  each learning with its link. `trunk.py run ingested` records the ingest and
-  refuses it when the commit carried the raw record, since `ingest` commits with
-  `git add -A`; `run set <name> learning` keeps what was learned in the record.
-  A learning is kept as `pending` in the record the moment it surfaces, and
-  `run set ... learning --pending <n>` (or a `note`, when it is set aside)
-  settles it, so a run that stops before its last step, on a failed start or
+  brief, the recipe and the exact command, claims the run, and only once the
+  claim succeeded starts the work, never more than once: on orq or, on plain
+  Claude Code, in the same session as a maestro with subagents. When orq is
+  the way but its tooling is not on the machine, it says so and offers plain
+  Claude Code. A failed start is recorded with its error and the run is open
+  again. It then confirms the work is running, runs `ingest` over the record,
+  and captures what it learned about how the owner works without asking,
+  reporting each learning with its link. Right after ingest's commit,
+  `trunk.py run ingested` records the ingest, and refuses it when that commit
+  touched `state/trunk/`, added a byte-for-byte copy of a file from there, or
+  added lines carrying the record's `created` timestamp together with its name
+  to any other file, which finds a copy with its final newline dropped,
+  reserialized as compact JSON or changed since by `run set`; a fact that only
+  names the run is not taken for a copy. Only that one commit is read, and a
+  partial copy (the study pasted into a source) is not found. `run set <name>
+  learning` keeps what was learned in the record. A learning is kept as
+  `pending` in the record the moment it surfaces (`run set <name> pending`),
+  and `run set ... learning --pending <n>` (or a `note`, when it is set aside)
+  settles it, refusing an entry already settled or never recorded, while
+  `run show` lists what is still pending; so a run that stops before its last step, on a failed start or
   an owner who leaves, loses nothing it learned: the next session that
   continues the run captures what is still pending.
 - **The `trunk` skill, a recipe when none fits.** When no saved recipe fits
@@ -112,9 +141,15 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   its topic, is read back; with none named, the open runs are listed most
   recent first and the owner picks, and `run list --json` names the
   records it could not read so the list can say which were left out. The trunk
-  says where the run stopped and picks up there: the study, the approaches, the
-  conversation, or the start that failed. A `dispatch` recorded by an earlier
-  session starts nothing; a retry waits for the owner's word in this one. A run
+  says where the run stopped, reading one timeline across decisions, notes,
+  attempts and the recipe's check, and picks up there: the study, the
+  approaches, the conversation, or the start that failed. A `dispatch`
+  recorded by an earlier session starts nothing; a retry waits for the owner's
+  word in this one. A run left `starting`, claimed and never recorded, never
+  has its command run again to find out whether it ran: the trunk checks with
+  what the `trunk-dispatch` facts name for it, or asks the owner, records the
+  dispatch or the failed start accordingly, and leaves the run `starting`,
+  starting nothing, when it cannot tell. A run
   already dispatched is shown, with what was dispatched, where and what
   followed, and is never dispatched again; an ingest that never ran is offered.
   A missing or unreadable record is said so, and the trunk offers to start over
@@ -128,8 +163,13 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   deleted. The script then rebuilds the bundle's index and checks that the
   trunk no longer reads it, since the manifest is all the trunk reads and a
   stale one would keep it read; with no `build-index.py` it changes nothing.
-  It touches only the trunk's own how, refusing any fact without the
-  how-I-work tag plus an area tag. `facts --forgotten` lists what was forgotten
+  It touches only the trunk's own how: an active fact is a learning exactly
+  when `facts` lists it, read from the same manifest by the same code, and a
+  fact already forgotten or steered, which the manifest no longer carries, is
+  judged by the tags in its frontmatter, read in the shapes `build-index`
+  accepts (a flow list wrapped over lines, a block list with a comment between
+  its items), so `facts --forgotten` and a second `forget` agree. Any other
+  fact is refused. `facts --forgotten` lists what was forgotten
   or steered, read from the fact files because the manifest keeps active facts
   only, so the next run does not learn it again, and `--run` records each
   steer in the run, where `run show` marks the learning.
@@ -159,7 +199,19 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   owner's own messages and the names of what each session ran (a skill, a
   subagent, a program, never its arguments), with tool output, the assistant's
   text, system-injected turns and credential-shaped strings left out, so the
-  raw transcripts never enter the conversation. Readers on the small model
+  raw transcripts never enter the conversation. A `!cmd` the owner ran in a
+  session's bash mode is reduced to `ran <program>`, or to nothing when it ran
+  only plumbing, and its output is dropped, so a `!cat .env` hands the reader
+  none of the file; a program name carries much less than its arguments,
+  though not nothing (`acme-bank-migrate.sh`). The redaction cuts a value keyed
+  by a credential word (`token`, `secret`, `pass`, `pwd`, `auth`, `senha`,
+  `chave`, a `_key` suffix, passing over `passing`, `passport`, `author` and
+  `authority`) together with its HTTP scheme (`Authorization: Token x`), a
+  secret named in prose ("the token is x", "a chave da API é x"), URL
+  credentials with or without a user (`redis://:pw@host`), and vendor shapes
+  such as PEM and PGP private keys, AWS, GitHub, GitLab and Slack tokens, JWTs
+  and Bearer values. CPF, CNPJ, e-mail and phone are left to the reader's
+  instruction. Readers on the small model
   return statements of how the owner works only, per area; the trunk filters
   them again, sets aside what the owner forgot, shows a panorama with how many
   sessions each how showed in, offers the interview's questions for an area
