@@ -38,8 +38,14 @@ Commands:
                         becomes dispatched, and a dispatched run refuses another
   run ingested <name> [--commit <sha>]
                         after `ingest` ran over a dispatched run's record:
-                        checks no run record entered the bundle's history and
-                        records the ingest commit (default: the bundle's HEAD)
+                        checks that nothing under state/trunk/ is tracked and
+                        that the ingest commit (default: the bundle's HEAD)
+                        touched nothing there, added no byte-for-byte copy of
+                        a file from there, and added no lines carrying this
+                        record's `created` timestamp together with its name;
+                        then records the commit. Only that commit is read: an
+                        earlier or later one, or a partial copy (the study
+                        pasted into a source), is not checked
   recipe draft <run> --name <n> --roles <r> --file <path|->
                         [--test <path>] [--command <c>]
                         a new recipe written for this run: kept as a draft under
@@ -744,11 +750,47 @@ def _copied_records(bundle, commit):
     return found
 
 
+def _fingerprinted(bundle, commit, rec):
+    """The paths outside state/trunk/ whose lines added by `commit` carry the
+    record's fingerprint: its `created` timestamp (to the microsecond) and its
+    name, both in the same file. A copy that is not byte for byte (a newline
+    dropped, the JSON reserialized, the record changed since by `run set`)
+    still carries both."""
+    created, name = rec.get("created"), rec.get("name")
+    if not isinstance(created, str) or not created or not isinstance(name, str) or not name:
+        return []
+    diff = _git(bundle, "diff-tree", "-p", "-r", "--root", "--no-commit-id", "--no-renames",
+                "--no-ext-diff", "--no-textconv", "--no-color", commit)
+    if not diff or diff[0] != 0:
+        return []
+    added, path = {}, None
+    for line in diff[1].splitlines():
+        if line.startswith("diff --git "):
+            path = None
+        elif line.startswith("+++ "):
+            target = line[4:]
+            if target.startswith('"'):
+                try:
+                    target = json.loads(target)
+                except ValueError:
+                    target = target.strip('"')
+            path = target[2:] if target.startswith("b/") else None
+        elif path and line.startswith("+"):
+            added.setdefault(path, []).append(line[1:])
+    return [p for p, lines in added.items()
+            if not (p + "/").startswith(IGNORE_ENTRY)
+            and created in "\n".join(lines) and name in "\n".join(lines)]
+
+
 def cmd_run_ingested(args):
     """Record that `ingest` ran over a dispatched run's record, after checking
     the raw record stayed out of the bundle's history: nothing under
-    state/trunk/ is tracked, the ingest commit touched nothing there, and it
-    added no copy of a file from there anywhere else."""
+    state/trunk/ is tracked, the ingest commit touched nothing there, it
+    added no byte-for-byte copy of a file from there anywhere else, and no
+    file it added lines to carries the record's fingerprint (`created` and
+    the name). Only that one commit is read: a copy in an earlier or a later
+    commit, or a part of the record (the study pasted into a source), is not
+    found."""
     bundle = resolve_bundle(args.bundle)
     rec = load_or_die(bundle, check_name(args.name))
     if rec["status"] != STATUS_DISPATCHED:
@@ -770,6 +812,7 @@ def cmd_run_ingested(args):
             die(f"commit {commit[:12]} carries files under {IGNORE_ENTRY}: the raw record entered "
                 f"the bundle's history; it must be rewritten before anything is pushed or shared")
         copied = _copied_records(bundle, commit)
+        copied += [p for p in _fingerprinted(bundle, commit, rec) if p not in copied]
         if copied:
             die(f"commit {commit[:12]} carries a copy of a run record or recipe draft at "
                 f"{', '.join(copied)}: the raw record entered the bundle's history; it must be "
@@ -1892,7 +1935,9 @@ def main(argv):
     p.add_argument("--json", action="store_true", help="print the run's summary as JSON")
     p.set_defaults(func=cmd_run_dispatch)
     p = rsub.add_parser("ingested", parents=[common],
-                        help="record that ingest ran over a dispatched run's record")
+                        help="record that ingest ran over a dispatched run's record, after "
+                             "checking that one commit carries nothing of state/trunk/, no byte "
+                             "copy of it, and no lines with the record's created time and name")
     p.add_argument("name")
     p.add_argument("--commit", default="", help="the ingest commit (default: the bundle's HEAD)")
     p.add_argument("--json", action="store_true", help="print the run's summary and its ingests as JSON")

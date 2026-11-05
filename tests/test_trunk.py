@@ -712,6 +712,51 @@ def _run_record(root, home):
         record("an ingest that copied the raw record elsewhere is refused, naming the copy",
                r.returncode != 0 and "raw/run.json" in r.stderr and "entered" in r.stderr, r.stderr)
 
+        # Copies that are not byte for byte still carry the record's
+        # fingerprint, its created timestamp and its name, in the lines the
+        # ingest commit added.
+        def fresh(tag):
+            fb = git_bundle(root, f"finger-{tag}")
+            git(fb, "add", "-A")
+            git(fb, *G, "commit", "-q", "-m", "init")
+            _, fo = run_json("new", "--bundle", fb, "--topic", "fingerprint", "--name", "fp", env=env)
+            run(TRUNK, "run", "set", "--bundle", fb, "fp", "study", "--value", "the study", env=env)
+            run(TRUNK, "run", "dispatch", "--bundle", fb, "fp", "--via", "claude-code",
+                "--command", "this session", env=env)
+            (fb / "raw").mkdir()
+            return fb, fb / "state" / "trunk" / "runs" / "fp.json"
+        for label, copy in (
+                ("a copy without its final newline",
+                 lambda src, dst: dst.write_text(src.read_text(encoding="utf-8").rstrip(), encoding="utf-8")),
+                ("the record reserialized as compact JSON",
+                 lambda src, dst: dst.write_text(json.dumps(json.loads(src.read_text(encoding="utf-8"))),
+                                                 encoding="utf-8"))):
+            fb, src = fresh(len(checks))
+            copy(src, fb / "raw" / "fp.json")
+            git(fb, "add", "-A")
+            git(fb, *G, "commit", "-q", "-m", "ingest")
+            r = run(TRUNK, "run", "ingested", "--bundle", fb, "fp", env=env)
+            record(f"an ingest that committed {label} is refused, naming it",
+                   r.returncode != 0 and "raw/fp.json" in r.stderr and "entered" in r.stderr, r.stderr)
+        fb, src = fresh(len(checks))
+        shutil.copy2(src, fb / "raw" / "fp.json")
+        git(fb, "add", "-A")
+        git(fb, *G, "commit", "-q", "-m", "ingest")
+        run(TRUNK, "run", "set", "--bundle", fb, "fp", "note", "--value", "pr opened", env=env)
+        r = run(TRUNK, "run", "ingested", "--bundle", fb, "fp", env=env)
+        record("a byte copy is still found once the record changed after the commit",
+               r.returncode != 0 and "raw/fp.json" in r.stderr, r.stderr)
+        fb, src = fresh(len(checks))
+        rec_fp = json.loads(src.read_text(encoding="utf-8"))
+        (fb / "knowledge" / "facts").mkdir()
+        (fb / "knowledge" / "facts" / "fp.md").write_text(
+            f"---\ntype: fact\n---\nDispatched in run fp, on {rec_fp['created'][:10]}.\n", encoding="utf-8")
+        git(fb, "add", "-A")
+        git(fb, *G, "commit", "-q", "-m", "ingest")
+        r = run(TRUNK, "run", "ingested", "--bundle", fb, "fp", env=env)
+        record("a fact that names the run, with no created timestamp, is not taken for a copy",
+               r.returncode == 0, r.stderr)
+
     r, out = run_json("list", "--bundle", b, "--open", env=env)
     record("run list --open leaves out the dispatched run",
            r.returncode == 0 and out is not None and [x["name"] for x in out["runs"]] == [f"{name}-2"], out)

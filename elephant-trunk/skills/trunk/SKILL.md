@@ -549,7 +549,11 @@ terms with the source:
   sensitive content and secrets stay out of the facts.
 
 `ingest` commits with `git add -A`; the script keeps `state/trunk/` ignored, so
-the record cannot go in. Check that it did not, and record the ingest:
+the record cannot go in. Check that it did not, and record the ingest, right
+after ingest's commit and before anything else commits in the bundle: the
+check reads that one commit (the bundle's HEAD), for anything under
+`state/trunk/`, a byte copy of the record, or lines carrying its `created`
+time together with its name:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run ingested <name> --json
