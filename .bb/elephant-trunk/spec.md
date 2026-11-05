@@ -1,5 +1,5 @@
 ---
-status: pending
+status: in-progress
 created: 2026-11-05
 slug: elephant-trunk
 ---
