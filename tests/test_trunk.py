@@ -1031,6 +1031,14 @@ def _past_sessions(root, home):
                   tool_use("Bash", command="python3 - <<'EOF'\nimport os; customer()\nEOF"),
                   tool_use("Agent", subagent_type="general-purpose", prompt="PROMPT TEXT")),
         owner(f"use this key {secret} and password: hunter2hunter2 please"),
+        # The owner's bash mode, in the shape Claude Code writes it: a user
+        # turn per command, another for its output.
+        owner("<bash-input>kubectl get secret prod-db -o yaml</bash-input>"),
+        owner("<bash-stdout>CUSTOMER=Globex Corp\nDB_PASS=swordfish9\n</bash-stdout>"
+              "<bash-stderr></bash-stderr>"),
+        owner("<bash-input>cat .env.production</bash-input>"),
+        owner("<bash-stdout></bash-stdout><bash-stderr>BASH STDERR permission denied"
+              "</bash-stderr>"),
         owner("\n\n<pasted_content id=\"ab\">\nmy long dictated rule\n</pasted_content id=\"ab\">\n"),
         owner("x" * 5000),
         owner("y" * 1980 + " " + secret + " and more"),
@@ -1100,6 +1108,15 @@ def _past_sessions(root, home):
            not leaked, leaked)
     record("what ran is named by program, skill and subagent, plumbing passed over",
            "[then: skill orq, ran orq, ran python3, subagent general-purpose]" in out, out[:2000])
+    bash_leaked = [w for w in ("bash-", "Globex", "DB_PASS", "swordfish9", "BASH STDERR",
+                               "prod-db", "get secret", "yaml", ".env.production")
+                   if w in out]
+    record("the owner's bash-mode output is left out, a stdout turn and a stderr turn",
+           not bash_leaked, bash_leaked)
+    record("the owner's bash-mode command is named by its program, its arguments left out, "
+           "and a command that ran only plumbing leaves no turn",
+           "owner: ran kubectl\n" in out and "owner: ran cat" not in out
+           and "owner: \n" not in out, out[:2000])
     record("credential-shaped strings never reach a reader",
            secret not in out and "hunter2hunter2" not in out
            and out.count("[secret left out]") >= 2, out[:2000])

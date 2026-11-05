@@ -1359,7 +1359,14 @@ USED_MAX = 12                # names of what ran between two owner messages
 
 _DROP_BLOCKS = re.compile(
     r"<(system-reminder|local-command-caveat|local-command-stdout|local-command-stderr|"
-    r"task-notification|scheduled-task|command-message)\b[^>]*>.*?</\1>", re.S)
+    r"bash-stdout|bash-stderr|task-notification|scheduled-task|command-message)\b[^>]*>.*?</\1>",
+    re.S)
+# The owner's bash mode (`!cmd`) lands as user turns: the command in a
+# `<bash-input>` turn, its output in a `<bash-stdout>`/`<bash-stderr>` turn.
+# The output is tool output, never the owner's words; the command is reduced
+# to the programs it ran, as the assistant's Bash is.
+_BASH_INPUT = re.compile(r"<bash-input>(.*?)(?:</bash-input>|\Z)", re.S)
+_BASH_OUTPUT = ("<bash-stdout", "<bash-stderr")
 _PASTED = re.compile(r"<pasted_content\b[^>]*>(.*?)</pasted_content\b[^>]*>", re.S)
 _COMMAND = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.S)
 _COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
@@ -1549,8 +1556,10 @@ def _owner_text(rec):
     else:
         return None
     text = "\n".join(parts)
-    if text.lstrip().startswith(_INJECTED):
+    if text.lstrip().startswith(_INJECTED + _BASH_OUTPUT):
         return None
+    text = _BASH_INPUT.sub(
+        lambda m: ", ".join(f"ran {w}" for w in _bash_words(m.group(1))), text)
     cmd = _COMMAND.search(text)
     if cmd:
         args = _COMMAND_ARGS.search(text)
