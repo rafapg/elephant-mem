@@ -83,7 +83,10 @@ short facts.
   `build-index.py` to run, and stop. An unbuilt index does not mean the owner
   has no how, so never continue as if it did.
 - **`facts` is empty**: this is the first use. The trunk does not guess. Go to
-  **First use** below and come back here once facts exist.
+  **First use** below and come back here once facts exist. First use is
+  offered once per session: when it ended with nothing captured (the owner
+  answered nothing, or stopped it), go on with no facts, and every step asks
+  its one question as **An area with no fact** says.
 - **Otherwise**, open and read every listed fact file whole (`path` is
   absolute; they are few and short). Then tell the owner, one line per fact,
   which ones apply to this topic and to which step, citing each by its `link`.
@@ -97,8 +100,9 @@ other says never), do not pick one. Show both, with their `link` and
 winner (see **Capturing a how** below), and use the winner for this run
 either way.
 
-**An area with no fact.** Facts exist, but none for the step at hand (no
-`trunk-study` fact when the study starts): do not fall back on a habit of your
+**An area with no fact.** No fact for the step at hand (no `trunk-study` fact
+when the study starts, or none at all after a first use that captured
+nothing): do not fall back on a habit of your
 own. Ask the owner the one question that step needs (for the study: which
 sources, how deep, how the approaches should come), use the answer for this
 run, and offer to capture it.
@@ -115,6 +119,10 @@ later session continues this run. The record lives in
 write; it never enters the bundle's history. A write the script refuses (exit
 1, "not git-ignored" or "already tracks") is relayed as it is, and the run goes
 on without a record only if the owner says so.
+
+When **First use** captured facts in this session, record each one in the new
+run now, as **The interview** says at its end, so 4c does not capture it again
+and 4d reports it with the run's learnings.
 
 ### 1c. Study the topic
 
@@ -686,10 +694,123 @@ each with what it costs:
   extracts how the owner works, never what was in the session. The owner
   confirms a panorama before anything is saved.
 - **Interview only**: a few questions on how the owner studies a topic,
-  dispatches work and splits it into sessions.
+  dispatches work and splits it into sessions. It costs a few minutes of the
+  owner's answers and no reading of anything else.
 
-Either way, what the owner confirms is saved with **Capturing a how**, and the
-run continues at 1a.
+When the owner picks the interview, or declines the reading, go to **The
+interview**. Either way, what the owner confirms is saved with **Capturing a
+how**, and the run continues at 1a.
+
+## The interview
+
+The owner tells the trunk how they work, in their own words, and what they
+confirm becomes the facts every later run reads. The questions below are the
+same for every owner: they name what each step needs to know, never an answer.
+Ask them in the language the owner uses, one area at a time, in this order,
+and wait for the answers to each area before the next. Do not suggest an
+answer, and do not offer a habit of your own as the default: an example in a
+question shows the kind of answer, always with more than one option.
+
+**Before the first question**, list what the owner forgot or steered away
+from:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" facts --forgotten --json
+```
+
+When it lists any, say in one line how many there are and that the trunk does
+not read them. Never read them back as suggestions or pre-fill an answer from
+one: a forgotten how comes back only when the owner states it again, and then
+it is captured as any answer is.
+
+### The questions
+
+**How a topic is studied** (area `trunk-study`):
+
+1. When you hand over a topic, what should be read, and in what order? For
+   example: the memory, the repository's code and docs, its open pull
+   requests, its recent history, issues, outside sources.
+2. How deep before coming back to you: a first pass that names the open
+   questions, or a study that settles them?
+3. How should the approaches come: how many, what each one carries
+   (trade-offs, cost, risk, what it leaves out), and whether one comes
+   recommended?
+
+**How work is dispatched** (area `trunk-dispatch`):
+
+4. Once you say to dispatch, where does the work run: on orq, several
+   sessions coordinating over agent-bus, or in this same session, with
+   subagents? If both, when each one?
+5. What form does the brief take for that way, so the work runs without
+   asking you anything (an approved bb spec, a ticket, a plain brief), where
+   does it go when it is a file or a ticket, and what checks it is ready?
+6. On orq: the command that starts the work, and the one that shows it is
+   running. Skip this one when the work only runs in this session.
+
+**How work is split into sessions** (area `trunk-recipe`):
+
+7. How do you split a piece of work into sessions: the roles, and when each
+   one stops? If you keep saved orq recipes, which ones, where they live, when
+   each one fits, how each is started and how it is checked.
+
+### The answers
+
+- **Nothing invented.** An answer of "I don't know", "skip" or "ask me each
+  time" captures nothing for that question: the step asks it when it comes
+  (**An area with no fact**). An area whose answers were all skipped has no
+  fact, and that is said in the read-back.
+- **How the owner works, never the topic.** The topic handed over in step 0
+  stays out of the questions. An answer that holds only for this topic ("for
+  this one, read the billing repo") is used for this run and not captured,
+  unless the owner says it holds in general.
+- **Unclear or conflicting.** An answer that does not say enough for its step
+  to act on (a source with no name, "the usual command") gets one follow-up
+  question. Two answers that contradict each other (read the open pull
+  requests first, never read them) are shown side by side and the owner says
+  which holds, as **Two facts that contradict each other** does for facts.
+- **No secret, no third-party content.** A token, a password, a key or any
+  other credential in an answer never goes into a fact: the fact says where it
+  lives (an environment variable, a secret manager, a connection the owner
+  manages), and the owner is told in one line that the value was left out and
+  where to keep it instead. A person's or a customer's words quoted in an
+  answer are generalized, as for the brief.
+- **A tool named is not checked here.** A command or a recipe the owner names
+  is taken as they give it; 3a checks it resolves on the machine when a
+  dispatch needs it.
+
+### The read-back
+
+When the three areas are answered, show the owner what would be captured, one
+line per fact, each with its area tag. **One fact per how**: a source order, a
+depth, a presentation, a dispatch way, a brief form, a start command, a recipe
+each stand alone, so the owner can later steer or forget one without the
+others. Answers that belong together (a dispatch way and the condition that
+picks it) stay one fact. Ask the owner to confirm, change or drop any line,
+and wait. Nothing is captured before the owner confirms; what they drop is not
+captured.
+
+### The capture
+
+Capture each confirmed line with **Capturing a how**, the bundle's how-I-work
+tag (from `config`) and its one area tag, the owner's own words, and the why
+when they gave one. Check each with `facts --area <its area>` before the next;
+a line that does not show up is said so, with its area, and the rest go on.
+
+Then list them with `facts --json`. When anything landed, tell the owner in
+one short message what was captured, one line each with its area and its
+`link`, saying they can steer or forget any one later (**Steer or forget a
+learning**), and go back to 1a, which reads them as for any run. When nothing
+landed, say so in one line and go on as 1a says for a first use that captured
+nothing.
+
+Each fact that landed is kept in the run, where 4c finds it already captured
+and 4d reports it: in the run this conversation is on, at once, when the
+interview came from **Continue a run**; otherwise in the run 1b opens, right
+after it opens:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning --value "<its link>: <the how, in one line>"
+```
 
 ## Capturing a how
 

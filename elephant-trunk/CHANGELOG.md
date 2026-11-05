@@ -128,3 +128,16 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   or steered, read from the fact files because the manifest keeps active facts
   only, so the next run does not learn it again, and `--run` records each
   steer in the run, where `run show` marks the learning.
+- **The `trunk` skill, the interview.** A bundle with no how-I-work fact for
+  the trunk left it nothing to follow, and guessing would have put a habit of
+  the skill's own in the owner's place. The trunk now offers an interview:
+  seven questions, the same for every owner, on how a topic is studied, how
+  work is dispatched and how it is split into sessions, asked one area at a
+  time and never with a suggested answer. A skipped question captures nothing,
+  so its step asks when it comes; an answer that holds only for this topic is
+  used and not kept; a credential in an answer is left out and the fact says
+  where it lives. Nothing is captured until the owner confirms a read-back of
+  one fact per how, each with its area tag, so any one can be steered or
+  forgotten alone later; each is checked with `facts --area`, kept in the run
+  as a learning and reported with its link. What the owner forgot earlier is
+  never offered back as an answer.

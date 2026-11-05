@@ -248,7 +248,7 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 
 ### Interview
 
-- [ ] **9. The interview**: with no how-I-work facts for the trunk, the questions and
+- [x] **9. The interview**: with no how-I-work facts for the trunk, the questions and
       the captured answers. · verify: reading
 
 ### Reading past sessions
