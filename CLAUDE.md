@@ -8,39 +8,48 @@ The **mechanics** of elephant-mem — the plugin, the bundle scripts, the docs. 
 holds no knowledge. A user's knowledge lives in their own bundle directory
 outside this repo (default `~/elephant`), git-versioned locally and never pushed.
 
-Two plugins ship from one marketplace (`.claude-plugin/marketplace.json`):
+Three plugins ship from one marketplace (`.claude-plugin/marketplace.json`):
 
 | directory | plugin | what it is |
 |---|---|---|
 | `plugin/` | `elephant-mem` | the memory itself — the mode-skills, scripts, templates |
 | `elephant-wiki/` | `elephant-wiki` | optional static wiki over a bundle, a `post_ingest` subscriber |
+| `elephant-trunk/` | `elephant-trunk` | optional skill taking a loose topic to dispatched work, reading every *how* from the owner's tagged facts; its `trunk.py` runs from the plugin and is never copied into the bundle |
 
-## Versioning: two independent cycles
+## Versioning: three independent cycles
 
-`elephant-mem` and `elephant-wiki` version **separately**. They are distinct
-plugins, installed separately, and the wiki changes far less often — as of
-`elephant-mem` 0.1.0-beta.7 the wiki is on 0.1.0-beta.4. A gap between the two
-numbers is expected and is **not** a sign the wiki is behind.
+`elephant-mem`, `elephant-wiki` and `elephant-trunk` version **separately**. They
+are distinct plugins, installed separately, and the wiki changes far less often
+— as of `elephant-mem` 0.1.0-beta.7 the wiki is on 0.1.0-beta.4. The trunk
+started its own count at 0.1.0-beta.1. A gap between the numbers is expected and
+is **not** a sign the wiki or the trunk is behind.
 
 What follows from that:
 
 - **Bump only the plugin whose files changed.** A change under `plugin/` bumps
   `plugin/.claude-plugin/plugin.json`; a change under `elephant-wiki/` bumps
-  `elephant-wiki/.claude-plugin/plugin.json`. A change touching both bumps both.
+  `elephant-wiki/.claude-plugin/plugin.json`; a change under `elephant-trunk/`
+  bumps `elephant-trunk/.claude-plugin/plugin.json`. A change touching several
+  bumps each of them.
 - **Each plugin has its own tag namespace.** `v0.1.0-beta.N` is `elephant-mem`;
-  `wiki-v0.1.0-beta.N` is `elephant-wiki`. The prefix keeps the two disjoint, so
-  `git tag -l 'v*'` still lists `elephant-mem` releases and nothing else.
+  `wiki-v0.1.0-beta.N` is `elephant-wiki`; `trunk-v0.1.0-beta.N` is
+  `elephant-trunk`. The prefix keeps the three disjoint, so `git tag -l 'v*'`
+  still lists `elephant-mem` releases and nothing else.
   - Wiki tags start at `wiki-v0.1.0-beta.4`. Before that the wiki carried no
     tags; those older sections stay as they are — don't retro-tag them.
-  - **A wiki tag is documentation, not delivery.** Nothing machine-reads it (see
-    below): the marketplace and `update` both serve `main`. So a forgotten wiki
-    tag costs you archaeology, while a forgotten `elephant-mem` bump withholds
-    the update prompt from every installed user. Not the same kind of mistake.
+  - Trunk tags start at `trunk-v0.1.0-beta.1`, its first release.
+  - **A wiki or trunk tag is documentation, not delivery.** Nothing machine-reads
+    it (see below): the marketplace and `update` both serve `main`. So a forgotten
+    wiki or trunk tag costs you archaeology, while a forgotten `elephant-mem` bump
+    withholds the update prompt from every installed user. Not the same kind of
+    mistake.
 - **Each plugin owns its CHANGELOG.** `CHANGELOG.md` at the root is
-  `elephant-mem`'s; `elephant-wiki/CHANGELOG.md` is the wiki's. A change under
-  `elephant-wiki/` is written up there, in the same house style, and **not** in
-  the root file. Date its section by the day the `wiki-v*` tag is cut, which is
-  the day it lands on `main` — that is what the marketplace serves.
+  `elephant-mem`'s; `elephant-wiki/CHANGELOG.md` is the wiki's;
+  `elephant-trunk/CHANGELOG.md` is the trunk's. A change under `elephant-wiki/`
+  or `elephant-trunk/` is written up in that plugin's file, in the same house
+  style, and **not** in the root file. Date its section by the day the `wiki-v*`
+  or `trunk-v*` tag is cut, which is the day it lands on `main` — that is what
+  the marketplace serves.
   - Up to wiki 0.1.0-beta.2 the convention was the opposite: those bumps were
     recorded inline in the `elephant-mem` section that shipped them ("Also in
     this release: …", see 0.1.0-beta.5). That history was left where it is and
@@ -48,10 +57,12 @@ What follows from that:
     notes.
 - **Only `elephant-mem`'s version is machine-read.** The `update` mode fetches
   `plugin/.claude-plugin/plugin.json` from `main` and compares it to the
-  installed one. Nothing reads the wiki's `version`; it is there for the
-  marketplace and for humans. So a forgotten wiki bump is cosmetic, while a
-  forgotten `elephant-mem` bump silently withholds the update prompt from every
-  installed user.
+  installed one. Nothing reads the wiki's or the trunk's `version`; it is there
+  for the marketplace and for humans. So a forgotten wiki or trunk bump is
+  cosmetic, while a forgotten `elephant-mem` bump silently withholds the update
+  prompt from every installed user. The trunk is not in `update`'s preflight
+  either: its script runs from the plugin and is never copied into the bundle,
+  so there is no stale copy to compare.
 - **A release is not reachable the moment it lands on `main`.** `marketplace.json`
   carries no `version` — it points at `./plugin`, so the version the CLI sees comes
   from `plugin.json` **at the commit the user's local marketplace clone sits on**
@@ -72,7 +83,8 @@ Do this on a branch, land it through a PR, then tag the **merge commit** — the
    changed (see above).
 2. **CHANGELOG** — open or finish the `## [<version>] - <date>` section in the
    CHANGELOG of each plugin that was bumped (root for `elephant-mem`,
-   `elephant-wiki/CHANGELOG.md` for the wiki). For `elephant-mem` the date is
+   `elephant-wiki/CHANGELOG.md` for the wiki, `elephant-trunk/CHANGELOG.md` for
+   the trunk). For `elephant-mem` the date is
    the day the release is **tagged**, not the day the section was started; fix
    it at tag time if the work spanned days. Keep the house style: a short lead
    paragraph saying what was actually wrong, then
@@ -85,6 +97,9 @@ Do this on a branch, land it through a PR, then tag the **merge commit** — the
    git push origin v0.1.0-beta.N
    gh release create v0.1.0-beta.N --title "v0.1.0-beta.N — <short title>" --notes "<the CHANGELOG section>"
    ```
+
+   A wiki or trunk release is tagged the same way under its own prefix
+   (`wiki-v0.1.0-beta.N`, `trunk-v0.1.0-beta.N`).
 
 5. **Verify** the tag is reachable from `main` and that CI on `main` is green —
    `update` serves `main`, so an untagged bump still reaches users while a tag
