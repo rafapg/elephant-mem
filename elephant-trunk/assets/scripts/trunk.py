@@ -1696,7 +1696,8 @@ _WEBHOOK = re.compile(r"(?i)\bhttps?://\S*webhook\S*")
 # a lowercase letter: the words that go on past one (passo, passou, passwordless,
 # author, authentication) are not keys. Glued after a prefix (`PGPASS`, `dbpass`,
 # `authkey`) a key word still counts, except where the prefix makes another word
-# of it (bypass, compass, surpass, trespass, OAuth). A bare `key` is not one,
+# of it (bypass, compass, surpass, trespass, OAuth: an `o` that opens the key or
+# follows `_`, so `ProtoAuth` and `DOAUTH` still count). A bare `key` is not one,
 # only a `_key` suffix is, and not the key of a table or a map (`primary_key`).
 _WORD_END = r"(?-i:(?![a-z]))"
 _CRED_WORDS = (rf"pass(?:word|wd|phrase|code|key)s?{_WORD_END}|"
@@ -1704,7 +1705,7 @@ _CRED_WORDS = (rf"pass(?:word|wd|phrase|code|key)s?{_WORD_END}|"
                r"api[_-]?key|access[_-]?key|private[_-]?key|"
                r"(?<!primary)(?<!foreign)(?<!unique)(?<!sort)(?<!partition)(?<!range)"
                rf"(?<!shard)(?<!cache)(?<!lookup)(?<!join)(?<!group)(?<!row)_key{_WORD_END}|"
-               rf"credential|senha|chave|(?<!o)auth(?:orization|key)?{_WORD_END}")
+               rf"credential|senha|chave|(?<!\bo)(?<!_o)auth(?:orization|key)?{_WORD_END}")
 # An HTTP scheme before the value (`Authorization: Token x`) is part of it.
 _KEYED_SECRET = re.compile(
     rf"(?i)\b([A-Za-z_]*(?:{_CRED_WORDS})[A-Za-z_]*[\"']?)(\s*[:=]\s*)"

@@ -1612,7 +1612,10 @@ def _past_sessions(root, home):
             '{"passwordConfirm": "qwertyuiop"}', "const adminPasswordProd = 'qwertyuiop'",
             "export PGPASS=qwertyuiop", "dbpass: qwertyuiop", "rootpass=qwertyuiop",
             "DBPASS=qwertyuiop", "passcode: 482913", "passkey=qwertyuiop",
-            "authkey: qwertyuiop", "BasicAuth: qwertyuiop", "hash_key=qwertyuiop"]
+            "authkey: qwertyuiop", "BasicAuth: qwertyuiop", "hash_key=qwertyuiop",
+            # An o glued inside a prefix is not OAuth's.
+            "ProtoAuth: qwertyuiop", "videoAuth: qwertyuiop", "cryptoAuth=qwertyuiop",
+            "DOAUTH=qwertyuiop"]
     record("pass, auth and _key as words of a key are still cut, camel-cased or glued "
            "after a prefix",
            [t for t in keys if "qwertyuiop" in redact(t) or "482913" in redact(t)] == [],
@@ -1697,6 +1700,7 @@ def _past_sessions(root, home):
             "foreign_key: user_id", "passwordless: yes, through the magic link",
             "passos: 1, 2, 3", "passei: no review", "compasso: 4/4", "Passo: rodar os testes",
             "oauth2: google", "trespass: no", "surpass: the target",
+            "OAuth: SSO", "oauth: google", "go_oauth: enabled", "My OAuth: the SSO",
             "ssh -p2222 host", "cp -pR a b", "mysql -u root -p mydb", "mariadb -u root -p mydb",
             "uso mysql no projeto e rodo pytest -p no:cacheprovider"]
     record("ordinary words, a skill command, a path, a mixed-case link or path, a numbered "

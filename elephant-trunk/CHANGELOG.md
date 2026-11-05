@@ -221,7 +221,7 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   or glued after a prefix, as in `DB_PASS`, `PGPASS`, `passwordConfirm`,
   `BasicAuth` and `Authorization`, but never before a lowercase letter or
   inside another word, so "próximo passo:", `passwordless:`, `bypass:` and
-  `OAuth:` keep their text, and a `_key` suffix other than a table's, as
+  `OAuth:` keep their text while `ProtoAuth:` does not, and a `_key` suffix other than a table's, as
   `primary_key`) together with its HTTP scheme (`Authorization: Token x`), an
   unquoted password to the end of its line (`password: correct horse battery
   staple`), the value glued to the `-p` of `mysql`, its tools (`mysqldump`,
