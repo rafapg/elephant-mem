@@ -699,7 +699,7 @@ top down:
 | ------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------- |
 | `status` is `dispatched`                                                                    | the work was dispatched                              | **A dispatched run**, below                             |
 | `status` is `starting`                                                                      | a start was claimed (`claim`) and never recorded     | **A start never recorded**, below                       |
-| the last of `attempts` failed                                                               | the start failed, with its `error`                   | the retry, below                                        |
+| a failed attempt, with no `dispatch:` decision after it                                     | the start failed, with its `error`                   | the retry, below                                        |
 | `recipe.written` with a `check` whose `ok` is false                                         | a written recipe failed its check                    | the three ways on of **Writing a recipe**, in 3c        |
 | a `dispatch:` decision, then a `not dispatched: the brief lacks` note                       | the brief lacked the form the dispatch needs         | step 2, with what was missing                           |
 | a `dispatch:` decision and nothing after it                                                 | between the owner's word and the start               | the retry, below                                        |
@@ -707,7 +707,11 @@ top down:
 | a `study` and no `approaches`                                                               | after the study                                      | 1d                                                      |
 | the topic only                                                                              | before the study                                     | 1c                                                      |
 
-"After" is by `at`: decisions and notes both carry one. Before any step runs
+"After" is by `at`, read as one timeline across everything that carries one:
+the decisions, the notes (`log`), the `attempts` and the written recipe's
+`check`. A failed attempt followed by a newer `dispatch:` decision and a
+`not dispatched: the brief lacks` note stopped at the form check, not at the
+failed start: the newer word moved the run on. Before any step runs
 again, load the owner's how with 1a, as for a new run: the record keeps what
 was decided, not how the owner works, and the facts may have changed since.
 Then capture what the record holds as pending, whatever row the table gave
