@@ -444,7 +444,25 @@ started; relay it, and on a name already taken draft the recipe again under a
 new name, check it again and show it again. The script also refuses the
 dispatch of a written recipe that is not checked and saved.
 
-**On orq**, run the command or commands exactly as shown.
+**Claim the run first, on either way.** Before any dispatch command runs,
+claim the run with the command about to start it:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run claim <name> --via <orq|claude-code> --command '<the command, as it will run>' --where '<team, workspace or session>'
+```
+
+The claim flips the run from `open` to `starting` under the record's lock:
+of two sessions claiming the same run (two sessions resumed it, or the owner
+said "dispatch" twice), exactly one gets exit 0. **Exit 0** is the only thing
+that lets the dispatch command run. **Exit 1** means nothing is started:
+relay the stderr as it is. The run was already dispatched (show it, as
+**A dispatched run** says), another session is starting it right now (say
+so, with the claim it names, and start nothing), or a written recipe is not
+checked and saved. Every claim ends with one `run dispatch` below, which
+records how the start went and releases the claim.
+
+**On orq**, once the claim succeeded, run the command or commands exactly as
+shown, never more than once.
 
 - **It ran** (exit 0): record the dispatch, with where it runs (the orq
   team, the workspace):
@@ -454,7 +472,8 @@ dispatch of a written recipe that is not checked and saved.
   ```
 
 - **It failed**: record the attempt with its error (its first lines, with any
-  token or secret it printed cut out), so the record says not dispatched:
+  token or secret it printed cut out), so the record says not dispatched and
+  the run is `open` again, for a retry to claim:
 
   ```bash
   python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run dispatch <name> --via orq --command '<the command, as run>' --error '<the error>'
@@ -488,8 +507,9 @@ python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run set <name> learning 
 A capture that did not land is a note, and the recipe stays saved without a
 fact: say so in 4d, with the saved path, so the owner can capture it by hand.
 
-**On plain Claude Code**, there is no command to fail: record the dispatch as
-the work starting in this session, then go to step 4, where the work runs.
+**On plain Claude Code**, there is no command to fail: once the claim
+succeeded, record the dispatch as the work starting in this session, then go
+to step 4, where the work runs.
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/assets/scripts/trunk.py" run dispatch <name> --via claude-code --command '<one line: the plan this session runs>' --where 'this session (<working directory>)'
@@ -655,6 +675,7 @@ top down:
 | the record                                                                                  | where it stopped                                     | the run continues at                                    |
 | ------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------- |
 | `status` is `dispatched`                                                                    | the work was dispatched                              | **A dispatched run**, below                             |
+| `status` is `starting`                                                                      | a start was claimed (`claim`) and never recorded     | **A start never recorded**, below                       |
 | the last of `attempts` failed                                                               | the start failed, with its `error`                   | the retry, below                                        |
 | `recipe.written` with a `check` whose `ok` is false                                         | a written recipe failed its check                    | the three ways on of **Writing a recipe**, in 3c        |
 | a `dispatch:` decision, then a `not dispatched: the brief lacks` note                       | the brief lacked the form the dispatch needs         | step 2, with what was missing                           |
@@ -683,11 +704,33 @@ failed start is started from that same file (`recipe save` says it was saved
 already). 3a runs again in full: this session may be on another machine, and
 orq's availability is checked here.
 
+### A start never recorded
+
+A run whose `status` is `starting` was claimed for a start (`claim.command`,
+`claim.at`) and no `run dispatch` followed: the session that claimed it
+stopped between the claim and the record, or is still starting it now.
+Whether the command ran is not known, so it is **never run again to find
+out**, and the run cannot be claimed while it is `starting`. Show the claim
+and find out how the start went:
+
+- **On orq**, with what the `trunk-dispatch` facts name for it (a status or
+  board command; it reads and starts nothing), else by asking the owner.
+- **On plain Claude Code**, the work would have run in the session that
+  claimed it: ask the owner whether it ran.
+
+When it did start, record the dispatch with the claim's command and where
+(`run dispatch <name> --via <claim.via> --command '<claim.command>' --where
+'<where it runs>'`) and go on as **A dispatched run**. When it did not, record
+the failed start (`run dispatch ... --error 'claimed, never started: <what the
+check showed>'`): the run is `open` again, and a retry is a new dispatch the
+owner asks for, as **The retry** above says. When it cannot be told, say so
+and leave the run `starting`; nothing is started.
+
 ### A dispatched run
 
 A run already dispatched is **never dispatched again**, whatever the owner
-asks: `run dispatch` refuses it, and the trunk never starts its command or its
-work a second time. Show what was dispatched and where, from the record: the
+asks: `run claim` and `run dispatch` refuse it, and the trunk never starts its
+command or its work a second time. Show what was dispatched and where, from the record: the
 way (`dispatch.via`), where it runs (`dispatch.where`), when (`dispatch.at`),
 the command as run, the recipe, and a short summary of the brief. Then what
 followed: the ingests and their commits, the learnings with their links, and

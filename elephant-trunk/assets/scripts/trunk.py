@@ -26,16 +26,23 @@ Commands:
   run new --topic <t>   start a run record; prints its name
     [--name <n>]        the run's name (default: <date>-<slug of the topic>)
   run show <name>       read a run record back (--json: the record itself)
-  run list              the runs, most recent first (--open: not dispatched yet);
+  run list              the runs, most recent first (--open: not dispatched yet,
+                        open or starting);
                         --json also names the records that could not be read
   run set <name> <field> (--value <v> | --file <path|->)
                         continue a run: study, brief (text, replaced);
                         approaches (JSON array), recipe (JSON object), replaced;
                         decision, note, learning (text, appended)
+  run claim <name> --via <orq|claude-code> --command <c> [--where <w>]
+                        before the dispatch command runs: flips an open run to
+                        starting under the record's lock, so of two sessions
+                        claiming it exactly one wins; refuses a run that is
+                        not open (starting or dispatched)
   run dispatch <name> --via <orq|claude-code> --command <c> [--where <w>]
                         [--error <e>]
-                        record a dispatch attempt; without --error the run
-                        becomes dispatched, and a dispatched run refuses another
+                        record how the start went, ending the claim: without
+                        --error the run becomes dispatched, with it the run is
+                        open again for a retry; a dispatched run refuses another
   run ingested <name> [--commit <sha>]
                         after `ingest` ran over a dispatched run's record:
                         checks that nothing under state/trunk/ is tracked and
@@ -87,6 +94,7 @@ cannot be found stops with the same guidance.
 Pure stdlib, Python 3.10+. Cross-platform (explicit UTF-8 I/O).
 """
 import argparse
+import atexit
 import datetime
 import hashlib
 import json
@@ -96,6 +104,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -359,6 +368,12 @@ IGNORE_COVERS = {"state/trunk/", "state/trunk", "/state/trunk/", "/state/trunk",
                  "state/", "state", "/state/", "/state"}
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,79}")
 STATUS_OPEN, STATUS_DISPATCHED = "open", "dispatched"
+# Between `run claim` and the `run dispatch` that records how the start went:
+# the dispatch command may be running, so nothing else may start it.
+STATUS_STARTING = "starting"
+STATUSES = (STATUS_OPEN, STATUS_STARTING, STATUS_DISPATCHED)
+# How long a write waits for another trunk.py holding the same record.
+LOCK_WAIT = 10.0
 DISPATCH_VIAS = ("orq", "claude-code")
 # What `run set` may change: text replaced, JSON replaced, text appended.
 TEXT_FIELDS = ("study", "brief")
@@ -487,7 +502,7 @@ def read_record(bundle, name):
     except (OSError, ValueError) as exc:
         raise RecordError(f"the run record {path} is unreadable ({exc})")
     if not isinstance(rec, dict) or not isinstance(rec.get("topic"), str) \
-            or rec.get("status") not in (STATUS_OPEN, STATUS_DISPATCHED):
+            or rec.get("status") not in STATUSES:
         raise RecordError(f"the run record {path} is not a run record")
     return rec
 
@@ -499,12 +514,56 @@ def load_or_die(bundle, name):
         die(f"{exc} — start over from the topic with `trunk.py run new --topic ...`")
 
 
+def lock_path(bundle, name):
+    return os.path.join(runs_dir(bundle), f".{name}.lock")
+
+
+def lock_record(bundle, name, wait=LOCK_WAIT):
+    """Hold the record's lock until this process exits.
+
+    Every read-modify-write of a record goes through it, so two sessions
+    writing the same run never lose each other's write, and of two `run
+    claim` racing on one open run exactly one sees it open. The lock is an
+    empty file created with O_EXCL beside the record: atomic on every
+    platform, and nothing for a `git add -A` to take (state/trunk/ is
+    ignored, and an empty file matches no copy check). A trunk.py killed
+    while holding it leaves it behind; after `wait` seconds the write stops
+    and names the file to remove."""
+    path = lock_path(bundle, name)
+    if not os.path.isdir(runs_dir(bundle)):
+        return  # no record to change: the load that follows says so
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                die(f"run {name} is being changed by another trunk.py (lock {path}); "
+                    f"try again, and remove that file only if no trunk.py is running")
+            time.sleep(0.02)
+
+    def release():
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    atexit.register(release)
+
+
+def load_for_update(bundle, name):
+    """The record, read under its lock: what the caller writes back is
+    computed from what no other trunk.py is changing."""
+    lock_record(bundle, name)
+    return load_or_die(bundle, name)
+
+
 def new_record(name, topic):
     t = now()
     return {"version": RECORD_VERSION, "name": name, "topic": topic,
             "status": STATUS_OPEN, "created": t, "updated": t,
             "study": None, "approaches": [], "decisions": [], "brief": None,
-            "recipe": None, "dispatch": None, "attempts": [], "log": [],
+            "recipe": None, "claim": None, "dispatch": None, "attempts": [], "log": [],
             "ingests": [], "learnings": [], "steers": []}
 
 
@@ -581,6 +640,11 @@ def cmd_run_show(args):
         d = rec["dispatch"]
         print(f"\n## dispatched\nvia {d.get('via')} at {d.get('at')}"
               f"{', ' + d['where'] if d.get('where') else ''}\n{d.get('command')}")
+    if rec["status"] == STATUS_STARTING:
+        c = rec.get("claim") or {}
+        print(f"\n## starting\nclaimed via {c.get('via')} at {c.get('at')}"
+              f"{', ' + c['where'] if c.get('where') else ''}\n{c.get('command')}\n"
+              f"how the start went is not recorded yet (`run dispatch`, with --error if it failed)")
     failed = [a for a in rec.get("attempts", []) if not a.get("ok")]
     if failed and rec["status"] == STATUS_OPEN:
         last = failed[-1]
@@ -614,7 +678,7 @@ def cmd_run_list(args):
     for n in bad:
         note(f"skipped the unreadable run record {record_path(bundle, n)}")
     if args.open:
-        recs = [r for r in recs if r["status"] == STATUS_OPEN]
+        recs = [r for r in recs if r["status"] != STATUS_DISPATCHED]
     if args.json:
         # The unreadable ones are listed too, by path, so a resume that picks
         # from this list can say which records it could not offer.
@@ -642,11 +706,14 @@ def _value(args):
 
 def cmd_run_set(args):
     bundle = resolve_bundle(args.bundle)
-    rec = load_or_die(bundle, check_name(args.name))
     field, raw = args.field, _value(args)
+    rec = load_for_update(bundle, check_name(args.name))
     if rec["status"] == STATUS_DISPATCHED and field in FROZEN_AFTER_DISPATCH:
         die(f"run {rec['name']} was already dispatched; its {field} stays as dispatched "
             f"(add a decision or a note instead)")
+    if rec["status"] == STATUS_STARTING and field in FROZEN_AFTER_DISPATCH:
+        die(f"run {rec['name']} is being started; its {field} stays as claimed until "
+            f"`run dispatch` records how the start went (add a decision or a note instead)")
     t = now()
     if field in TEXT_FIELDS:
         rec[field] = raw
@@ -671,13 +738,47 @@ def cmd_run_set(args):
     return 0
 
 
-def cmd_run_dispatch(args):
-    bundle = resolve_bundle(args.bundle)
-    rec = load_or_die(bundle, check_name(args.name))
+def _refuse_dispatched(rec):
     if rec["status"] == STATUS_DISPATCHED:
         d = rec.get("dispatch") or {}
         die(f"run {rec['name']} was already dispatched via {d.get('via')} at {d.get('at')}"
             f"{' (' + d['where'] + ')' if d.get('where') else ''}; it is never dispatched again")
+
+
+def cmd_run_claim(args):
+    """Flip an open run to `starting`, under the record's lock, before the
+    dispatch command runs: of two sessions claiming the same run, exactly one
+    sees it open, so the command is started once. The claim is released by
+    `run dispatch`, which records how the start went."""
+    bundle = resolve_bundle(args.bundle)
+    rec = load_for_update(bundle, check_name(args.name))
+    _refuse_dispatched(rec)
+    if rec["status"] == STATUS_STARTING:
+        c = rec.get("claim") or {}
+        die(f"run {rec['name']} is already being started: claimed via {c.get('via')} at "
+            f"{c.get('at')} ({c.get('command')}); nothing is started again until `run dispatch` "
+            f"records how that start went (with --error when it did not start)")
+    if args.via == "orq":
+        problem = written_recipe_problem(rec.get("recipe"))
+        if problem:
+            die(f"nothing is dispatched: {problem}")
+    t = now()
+    rec["status"] = STATUS_STARTING
+    rec["claim"] = {"at": t, "via": args.via, "command": args.dispatch_command,
+                    "where": args.where or None}
+    rec["updated"] = t
+    write_record(bundle, rec)
+    if args.json:
+        print(json.dumps({**summary(rec), "claim": rec["claim"]}, ensure_ascii=False))
+    else:
+        print(f"run {rec['name']}: claimed, start it now")
+    return 0
+
+
+def cmd_run_dispatch(args):
+    bundle = resolve_bundle(args.bundle)
+    rec = load_for_update(bundle, check_name(args.name))
+    _refuse_dispatched(rec)
     if args.via == "orq":
         problem = written_recipe_problem(rec.get("recipe"))
         if problem:
@@ -686,9 +787,14 @@ def cmd_run_dispatch(args):
     attempt = {"at": t, "via": args.via, "command": args.dispatch_command, "where": args.where or None,
                "ok": args.error is None, "error": args.error}
     rec.setdefault("attempts", []).append(attempt)
+    # Whatever the outcome, the claim is over: a run that started is
+    # dispatched, one that did not is open again, for a retry to claim.
+    rec["claim"] = None
     if attempt["ok"]:
         rec["status"] = STATUS_DISPATCHED
         rec["dispatch"] = {k: attempt[k] for k in ("at", "via", "command", "where")}
+    else:
+        rec["status"] = STATUS_OPEN
     rec["updated"] = t
     write_record(bundle, rec)
     if args.json:
@@ -792,7 +898,7 @@ def cmd_run_ingested(args):
     commit, or a part of the record (the study pasted into a source), is not
     found."""
     bundle = resolve_bundle(args.bundle)
-    rec = load_or_die(bundle, check_name(args.name))
+    rec = load_for_update(bundle, check_name(args.name))
     if rec["status"] != STATUS_DISPATCHED:
         die(f"run {rec['name']} was not dispatched; its record is ingested after the dispatch")
     commit = args.commit or None
@@ -908,9 +1014,12 @@ def _read_bytes(spec, what):
 
 def _open_for_recipe(args, after_dispatch=False):
     bundle = resolve_bundle(args.bundle)
-    rec = load_or_die(bundle, check_name(args.run))
+    rec = load_for_update(bundle, check_name(args.run))
     if rec["status"] == STATUS_DISPATCHED and not after_dispatch:
         die(f"run {rec['name']} was already dispatched; its recipe stays as dispatched")
+    if rec["status"] == STATUS_STARTING and not after_dispatch:
+        die(f"run {rec['name']} is being started; its recipe stays as claimed until "
+            f"`run dispatch` records how the start went")
     return bundle, rec
 
 
@@ -1351,7 +1460,7 @@ def _steer_line(s):
 
 
 def _log_steer(bundle, run_name, entry):
-    rec = load_or_die(bundle, run_name)
+    rec = load_for_update(bundle, run_name)
     entry = {"at": now(), **entry}
     rec.setdefault("steers", []).append(entry)
     rec["updated"] = entry["at"]
@@ -1904,7 +2013,7 @@ def main(argv):
     p.add_argument("--json", action="store_true", help="print one JSON object")
     p.set_defaults(func=cmd_facts)
 
-    run = sub.add_parser("run", help="the run record: new, show, list, set, dispatch, ingested")
+    run = sub.add_parser("run", help="the run record: new, show, list, set, claim, dispatch, ingested")
     rsub = run.add_subparsers(dest="run_command", required=True)
     p = rsub.add_parser("new", parents=[common], help="start a run record")
     p.add_argument("--topic", required=True, help="the topic, in one line")
@@ -1916,7 +2025,7 @@ def main(argv):
     p.add_argument("--json", action="store_true", help="print the record itself")
     p.set_defaults(func=cmd_run_show)
     p = rsub.add_parser("list", parents=[common], help="the runs, most recent first")
-    p.add_argument("--open", action="store_true", help="only runs not dispatched yet")
+    p.add_argument("--open", action="store_true", help="only runs not dispatched yet (open or starting)")
     p.add_argument("--json", action="store_true", help="print one JSON object")
     p.set_defaults(func=cmd_run_list)
     p = rsub.add_parser("set", parents=[common], help="continue a run: set or add one field")
@@ -1925,7 +2034,17 @@ def main(argv):
     p.add_argument("--value", default=None, help="the value")
     p.add_argument("--file", default=None, help="read the value from this file (- for stdin)")
     p.set_defaults(func=cmd_run_set)
-    p = rsub.add_parser("dispatch", parents=[common], help="record a dispatch attempt")
+    p = rsub.add_parser("claim", parents=[common],
+                        help="claim an open run before its dispatch command runs: it becomes starting")
+    p.add_argument("name")
+    p.add_argument("--via", required=True, choices=DISPATCH_VIAS)
+    p.add_argument("--command", dest="dispatch_command", required=True,
+                   help="the command about to start the work")
+    p.add_argument("--where", default="", help="where the work will run (orq team, workspace, session)")
+    p.add_argument("--json", action="store_true", help="print the run's summary and claim as JSON")
+    p.set_defaults(func=cmd_run_claim)
+    p = rsub.add_parser("dispatch", parents=[common],
+                        help="record how a start went: dispatched, or open again with --error")
     p.add_argument("name")
     p.add_argument("--via", required=True, choices=DISPATCH_VIAS)
     p.add_argument("--command", dest="dispatch_command", required=True,

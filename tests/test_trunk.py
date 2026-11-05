@@ -25,7 +25,9 @@ per check, exit 0 only if every check passes. The machine pointer is faked by
 pointing HOME (and USERPROFILE, for Windows) at the tempdir, so the real
 ~/.config/elephant-mem/config.json is never read.
 """
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -492,6 +494,7 @@ def _run(root):
            r.returncode != 0 and "no bundle pointer" in r.stderr, r.stderr)
 
     _run_record(root, home)
+    _claim(root, home)
     _recipe_written(root, home)
     _steer_and_forget(root, home)
     _past_sessions(root, home)
@@ -808,6 +811,120 @@ def _run_record(root, home):
                and not (tracked / "state" / "trunk" / "runs").exists(), r.stderr)
 
 
+def _claim_race(bundle, name, n, verb, env):
+    """`n` trunk.py processes run `run <verb>` on one run at once; returns
+    their exit codes and the command each passed, in launch order."""
+    cmds = [f"orq start racer-{i}" for i in range(n)]
+    procs = [subprocess.Popen([sys.executable, str(TRUNK), "run", verb, "--bundle", str(bundle), name,
+                               "--via", "orq", "--command", c],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+             for c in cmds]
+    return [p.wait() for p in procs], cmds
+
+
+def _claim(root, home):
+    env = env_for(home)
+    b = make_bundle(root, "claims")
+    show = lambda n: (run_json("show", "--bundle", b, n, env=env)[1] or {})
+    _, o = run_json("new", "--bundle", b, "--topic", "claim it", "--name", "c1", env=env)
+    run(TRUNK, "run", "set", "--bundle", b, "c1", "brief", "--value", "the brief", env=env)
+
+    # ── claim: open to starting, before the command runs ─────────────────────
+    C = ("run", "claim", "--bundle", b, "c1", "--via", "orq", "--command", "orq start impl_review K-1")
+    r, out = run_json("claim", "--bundle", b, "c1", "--via", "orq", "--command", "orq start impl_review K-1",
+                      "--where", "team k-1", env=env)
+    rec = show("c1")
+    record("run claim flips an open run to starting and records what is about to start",
+           r.returncode == 0 and out and out["status"] == "starting" and rec.get("status") == "starting"
+           and rec.get("claim", {}).get("command") == "orq start impl_review K-1"
+           and rec["claim"].get("where") == "team k-1" and rec.get("attempts") == [], r.stderr or rec)
+    r = run(TRUNK, *C, env=env)
+    record("a second claim on a starting run is refused: its command is never started twice",
+           r.returncode != 0 and "already being started" in r.stderr and "orq start impl_review K-1" in r.stderr,
+           r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "c1", "brief", "--value", "another", env=env)
+    record("what is being started stays as claimed: the brief is not changed while starting",
+           r.returncode != 0 and "being started" in r.stderr and show("c1").get("brief") == "the brief",
+           r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "c1", "note", "--value", "orq is slow today", env=env)
+    record("a note is still added while starting", r.returncode == 0, r.stderr)
+    r, out = run_json("list", "--bundle", b, "--open", env=env)
+    record("run list --open keeps a starting run, to be resumed",
+           out is not None and [(x["name"], x["status"]) for x in out["runs"]] == [("c1", "starting")], out)
+    r = run(TRUNK, "run", "show", "--bundle", b, "c1", env=env)
+    record("the plain show says a start was claimed and how it went is not recorded yet",
+           "## starting" in r.stdout and "orq start impl_review K-1" in r.stdout and "not recorded" in r.stdout,
+           r.stdout)
+
+    # ── a failed start reopens the run; the retry claims it again ────────────
+    r = run(TRUNK, "run", "dispatch", "--bundle", b, "c1", "--via", "orq", "--command",
+            "orq start impl_review K-1", "--error", "orq: no such recipe", env=env)
+    rec = show("c1")
+    record("a failed start is recorded and the run is open again, its claim over",
+           r.returncode == 0 and rec.get("status") == "open" and rec.get("claim") is None
+           and rec.get("dispatch") is None and [a["ok"] for a in rec.get("attempts", [])] == [False], r.stderr)
+    r = run(TRUNK, *C, env=env)
+    record("a resume retries a failed start by claiming the run again", r.returncode == 0
+           and show("c1").get("status") == "starting", r.stderr)
+    r = run(TRUNK, "run", "dispatch", "--bundle", b, "c1", "--via", "orq", "--command",
+            "orq start impl_review K-1", "--where", "team k-1", env=env)
+    rec = show("c1")
+    record("a start that ran makes the claimed run dispatched, its claim over",
+           r.returncode == 0 and rec.get("status") == "dispatched" and rec.get("claim") is None
+           and rec.get("dispatch", {}).get("where") == "team k-1" and len(rec.get("attempts", [])) == 2,
+           r.stderr)
+    r = run(TRUNK, *C, env=env)
+    record("a dispatched run is never claimed again",
+           r.returncode != 0 and "never dispatched again" in r.stderr and show("c1").get("status") == "dispatched",
+           r.stderr)
+    r = run(TRUNK, "run", "dispatch", "--bundle", b, "c1", "--via", "orq", "--command", "x",
+            "--error", "late", env=env)
+    record("a failed start recorded after the dispatch never reopens a dispatched run",
+           r.returncode != 0 and show("c1").get("status") == "dispatched"
+           and len(show("c1").get("attempts", [])) == 2, r.stderr)
+
+    # ── concurrent claims: exactly one wins ──────────────────────────────────
+    rounds, wins, kept = 5, [], []
+    for i in range(rounds):
+        n = f"race-{i}"
+        run(TRUNK, "run", "new", "--bundle", b, "--topic", "race", "--name", n, env=env)
+        codes, cmds = _claim_race(b, n, 6, "claim", env)
+        wins.append(codes.count(0))
+        rec = show(n)
+        winner = [c for c, code in zip(cmds, codes) if code == 0]
+        kept.append(rec.get("status") == "starting" and winner
+                    and rec.get("claim", {}).get("command") == winner[0])
+    record("of six concurrent claims on one open run exactly one wins, every round",
+           wins == [1] * rounds, wins)
+    record("the record keeps the winner's claim", all(kept), kept)
+    rounds, wins, attempts = 5, [], []
+    for i in range(rounds):
+        n = f"race-d-{i}"
+        run(TRUNK, "run", "new", "--bundle", b, "--topic", "race", "--name", n, env=env)
+        codes, _ = _claim_race(b, n, 6, "dispatch", env)
+        wins.append(codes.count(0))
+        attempts.append(len(show(n).get("attempts", [])))
+    record("of six concurrent dispatches on one run exactly one is recorded, and it keeps one attempt",
+           wins == [1] * rounds and attempts == [1] * rounds, (wins, attempts))
+    leftover = sorted(p.name for p in (b / "state" / "trunk" / "runs").iterdir() if p.name.endswith(".lock"))
+    record("no lock is left behind once the writes are done", leftover == [], leftover)
+
+    # ── a lock left by a killed trunk.py ──────────────────────────────────────
+    trunk = load_trunk()
+    stale = Path(trunk.lock_path(str(b), "c1"))
+    stale.write_text("", encoding="utf-8")
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            trunk.lock_record(str(b), "c1", wait=0.1)
+        stopped = False
+    except SystemExit:
+        stopped = True
+    record("a lock left behind stops the write after the wait, naming the file to remove",
+           stopped and str(stale) in err.getvalue() and "another trunk.py" in err.getvalue(), err.getvalue())
+    stale.unlink()
+
+
 def _recipe_written(root, home):
     env = env_for(home)
     b = git_bundle(root, "recipes")
@@ -864,6 +981,9 @@ def _recipe_written(root, home):
            and show().get("attempts") == [], r.stderr)
     r = run(TRUNK, *R, "save", "--bundle", b, name, "--dir", rdir, env=env)
     record("an unchecked recipe is not saved", r.returncode != 0 and not any(rdir.iterdir()), r.stderr)
+    r = run(TRUNK, "run", "claim", *D[2:], env=env)
+    record("an unchecked written recipe is never claimed: its command is not to run",
+           r.returncode != 0 and "never checked" in r.stderr and show().get("status") == "open", r.stderr)
     r = run(TRUNK, *R, "checked", "--bundle", b, name, "--command", "pytest test_split_by_area.py",
             "--error", "AssertionError: review never asked\nline 2", env=env)
     rec = show()
