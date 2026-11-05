@@ -1059,7 +1059,9 @@ def _past_sessions(root, home):
     record("the owner's own messages are kept, a skill command with its arguments",
            "owner: read the open PRs before proposing, always" in out
            and "owner: /bb:spec then dispatch" in out
-           and "owner: [pasted] my long dictated rule" in out, out[:2000])
+           and "owner: [pasted]" in out, out[:2000])
+    record("a pasted block is marked, its body and the session's directory never handed over",
+           "my long dictated rule" not in out and "/work/repo" not in out, out[:2000])
     leaked = [w for w in ("injected rules", "a skill body", "a subagent prompt", "a peer message",
                           "Another Claude session", "FILE CONTENT", "Acme", "ASSISTANT PROSE",
                           "PROMPT TEXT", "/compact", "customer", "second line", "TOKEN=", "abc")

@@ -1476,7 +1476,9 @@ def _owner_text(rec):
     elif text.strip() in _BUILTIN_COMMANDS:
         return None
     text = _DROP_BLOCKS.sub("", text)
-    text = _PASTED.sub(lambda m: "[pasted] " + m.group(1).strip(), text)
+    # What the owner pasted is someone's text, not their words: the reader is
+    # told never to use it, so only the mark that something was pasted stays.
+    text = _PASTED.sub("[pasted]", text)
     text = _INTERRUPTED.sub("", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if not text:
@@ -1653,9 +1655,11 @@ def cmd_sessions_extract(args):
             note(f"could not read {path}: {s['error']}")
             status = 1
             continue
+        # The date only: the session's directory is a path, which the reader
+        # is told never to use and which names a project or a customer.
         head = f"## session {os.path.basename(path)}"
-        meta = ", ".join(x for x in (s["cwd"], (s["first"] or "")[:10]) if x)
-        print(f"{head} ({meta})" if meta else head)
+        day = (s["first"] or "")[:10]
+        print(f"{head} ({day})" if day else head)
         text = s["text"] or "(no message of the owner's)"
         cap = budget * CHARS_PER_TOKEN
         if len(text) > cap:
