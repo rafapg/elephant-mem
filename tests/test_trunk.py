@@ -785,9 +785,13 @@ def _run_record(root, home):
         for label, copy in (
                 ("a copy without its final newline",
                  lambda src, dst: dst.write_text(src.read_text(encoding="utf-8").rstrip(), encoding="utf-8")),
-                ("the record reserialized as compact JSON",
+                ("the record reserialized on one line",
                  lambda src, dst: dst.write_text(json.dumps(json.loads(src.read_text(encoding="utf-8"))),
-                                                 encoding="utf-8"))):
+                                                 encoding="utf-8")),
+                # No space after the colon: `"created":"<timestamp>"`.
+                ("the record reserialized as compact JSON",
+                 lambda src, dst: dst.write_text(json.dumps(json.loads(src.read_text(encoding="utf-8")),
+                                                            separators=(",", ":")), encoding="utf-8"))):
             fb, src = fresh(len(checks))
             copy(src, fb / "raw" / "fp.json")
             git(fb, "add", "-A")
