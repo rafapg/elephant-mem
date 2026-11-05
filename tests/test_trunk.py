@@ -1155,6 +1155,14 @@ def _recipe_written(root, home):
 
     # ── started, then its fact ───────────────────────────────────────────────
     run(TRUNK, "run", "claim", *D[2:], env=env)
+    claimed = show()
+    refused = [run(TRUNK, *R, "draft", "--bundle", b, name, "--name", "other", "--roles", "x",
+                   "--file", src, env=env),
+               run(TRUNK, *R, "checked", "--bundle", b, name, "--command", "pytest", env=env),
+               run(TRUNK, *R, "save", "--bundle", b, name, "--dir", rdir, env=env)]
+    record("a starting run's recipe is not drafted, checked or saved: it stays as claimed",
+           all(x.returncode != 0 and "being started" in x.stderr for x in refused)
+           and show() == claimed, "\n".join(x.stderr for x in refused))
     r = run(TRUNK, *D, "--where", "orq team k1", env=env)
     record("a saved recipe that passed its check is started", r.returncode == 0
            and show().get("status") == "dispatched", r.stderr)
