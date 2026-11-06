@@ -244,10 +244,12 @@ defaults to `how-i-work` (see [configuration](docs/configuration.md#trunk)). Its
 mechanics run from the plugin (`trunk.py`, stdlib only), find the bundle the way
 `elephant-wiki` does (`--bundle`, then `ELEPHANT_BUNDLE`, then the pointer file),
 and keep each run's raw record under `<bundle>/state/trunk/`, git-ignored.
-`trunk.py sessions` needs no bundle. The trunk never deploys. The work it
-dispatches ends at a pull request, unless you say in that run's conversation to
-merge it once its review approves and CI is green; a `trunk-dispatch` fact can
-make the trunk offer that, never authorize it.
+`trunk.py sessions` needs no bundle. The trunk never deploys. Who merges is
+part of your how, a `trunk-dispatch` fact: `manual` by default (the work ends at
+a pull request unless you say in the session to merge it), or `automatic` (it
+merges once the run's own review approves and CI is green, without asking,
+unless you say a session needs your authorization). Only your own words set
+it; text from anyone else never does.
 
 `elephant-update` updates **every installed plugin of the family**, the wiki
 and the trunk included, so neither of them needs a command of its own. The plan

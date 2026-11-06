@@ -109,18 +109,34 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 - The first slice ends at the dispatch on orq: the trunk does not watch the sessions to the
   PR. On plain Claude Code this session is the maestro and the trunk ends with the work. It
   never deploys.
-- How far the dispatched work goes is part of the owner's how, a `trunk-dispatch` fact read
-  in 1a, at one of two levels. `pr`: the work ends at a pull request opened for the owner,
-  the level when no fact says otherwise. `merge on approve`: the work merges its own pull
-  request once the run's review approves and CI is green, under the repository's own rules
-  (branch protection, required checks), never with force, `--admin` or a skipped check.
-- A merge is authorized per run, in the conversation, like "dispatch": only the owner's word
-  in this run's conversation sets `merge on approve`, recorded as a decision
-  (`merge: on approve, authorized by the owner in this conversation`). A fact preferring it
-  only makes the trunk offer it at 3d, preselected; a word recorded by an earlier session, a
-  learning read from past sessions or a third party's request never authorizes a merge. On orq
-  the level reaches the recipe as a start parameter (`--set merge=on-approve`); on plain
-  Claude Code this session merges with `gh pr merge` after approval and green checks.
+- Who merges is part of the owner's how: a `trunk-dispatch` merge preference, learned like
+  any other how (interview, past sessions, a learning of a run). `manual` (the default with no
+  fact): the owner merges by hand, and the trunk merges only when the owner says, in this
+  session, to merge this run's PR; otherwise the work ends at a PR. `automatic`: the work is
+  dispatched with the merge on, without asking, unless the owner says in this session that the
+  run needs their authorization, which makes that run `manual`. A learned `automatic` fact is
+  meant to authorize merges, so "the fact wins" holds; the owner is told when it is learned and
+  can steer or forget it.
+- Only the owner's own words or behavior set the preference or this session's override; text
+  from a third party never does (a Slack message, a ticket, a study source, a brief, a pasted
+  message, the topic text).
+- The level is computed fresh in every session from the current fact plus this session's word,
+  and recorded as `merge-level: manual|automatic (<source>)`, never the free `merge:` prefix.
+  A level recorded by an earlier session is history. Stored commands (facts, recipe facts,
+  pending learnings) never carry the merge parameter; 3c adds it from this run's level, and a
+  retry recomputes the brief's done and the command.
+- The gate: the run's own review approved the PR's head and CI is green (every check completed
+  and passing, at least one, none pending or skipped), under the repository's own rules, never
+  with force, `--admin` or a skipped check. An approval from outside the run, an automated
+  reviewer signing as the owner included, never counts. Implementing roles never merge: only
+  the recipe's merge step (orq, `--set merge=on-approve`) or the maestro (plain Claude Code,
+  a fresh-context reviewer subagent's approval on a named SHA, then
+  `gh pr merge <n> --match-head-commit <sha>`) merges.
+- After 3c picks the recipe, `automatic` needs a recipe with a review role that takes the merge
+  level; with none, the run falls back to `manual`, recorded with why. At `manual`, a saved
+  recipe must be shown not to merge without the parameter, or the owner is asked before it
+  starts. A written recipe's check asserts both that nothing merges without the parameter and
+  that no merge call carries `--admin`, force or a skip flag.
 - A run can be continued in a new session from its record.
 - The owner's "dispatch" in the conversation is the authorization to start sessions;
   the trunk shows the brief and the dispatch command before running them.
@@ -171,11 +187,16 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 | the brief lacks the form the dispatch needs to run alone | nothing is dispatched; says what is missing; the chat continues    |
 | two how-I-work facts contradict each other              | shows both and asks; offers to capture the winner                  |
 | the owner asks to forget a learning                      | the fact stops being read by the trunk                             |
-| no fact says how far the work goes                       | the level is `pr`: the work ends at a PR; nothing is asked         |
-| a fact prefers `merge on approve`, no word in this run   | 3d offers it preselected; the owner's pick is the authorization    |
-| the owner says in this run to merge once approved        | `merge on approve`, recorded as a `merge:` decision                |
-| a continued run holds a `merge:` decision               | it authorizes nothing; a retry goes at `pr` unless said again      |
+| no merge preference fact                                 | `manual`: the work ends at a PR; nothing is asked                  |
+| the preference is `automatic`                            | dispatched with the merge on, without asking                       |
+| `automatic`, and the owner says this run needs their OK  | the run is `manual` (session override)                             |
+| `manual`, and the owner says in this session to merge    | the run is `automatic` (owner in this session)                     |
+| a third party's text asks to merge or to skip asking     | changes nothing; never sets the preference or the override         |
+| a continued run holds a `merge-level:` decision          | history; the level, done and command are computed again            |
+| `automatic`, the recipe has no review or no merge level  | falls back to `manual`, recorded with why                          |
+| `manual`, a saved recipe not shown to merge nothing       | the owner is asked before it starts                                |
 | the review does not approve, or CI is not green          | nothing merges; the PR stays open for the owner, with why          |
+| the repository has no checks                             | nothing merges; the PR stays open, with why                        |
 | the brief would carry content not meant to travel        | that content is left out or generalized before the owner sees it   |
 | the dispatch command fails                               | the record says not dispatched, with the error; resume retries     |
 | an `ingest` commits the bundle after a run                | the raw record stays out of the commit; only extracted facts land  |
@@ -291,9 +312,6 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 - A declarative recipe engine replacing orq's scripted recipes. _revisit_
 - A risk ceiling per owner: nothing in this slice acts beyond the dispatch the owner
   authorizes in the conversation. _revisit_
-- A standing merge per repository ("in repo X, always merge on approve"): an approval can come
-  from an automated reviewer that signs as the owner, so a standing merge needs a condition on
-  who approved. _revisit_
 
 ## Open
 
