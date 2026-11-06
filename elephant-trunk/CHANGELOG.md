@@ -14,6 +14,74 @@ day its tag is cut, which is the day it lands on `main`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.2] - 2026-11-06
+
+The trunk hard-coded that the work it dispatched never merged: the brief's done,
+the stop of every written recipe, the end of the plain Claude Code path and the
+skill's rules all said so, for every owner. That is not a rule about the trunk,
+it is a way of working: some owners merge by hand, others would rather not. A
+first draft of this release kept the merge behind the owner's word in every
+run, which made a learned preference worth nothing; the owner corrected it.
+Who merges is now a fact of the owner's how, read like every other one, and
+what keeps it safe is where that fact may come from and the gate every merge
+passes.
+
+### Changed
+
+- **Who merges is a `trunk-dispatch` fact**, the merge preference, learned like
+  any other how. At `manual`, the default with no fact, so every owner starts
+  there, the work ends at a pull request unless the owner says, in the
+  session, to merge this run's pull request. At `automatic` the work is
+  dispatched with the merge on, without asking, unless the owner says in the
+  session that the run needs their authorization, which makes that run
+  `manual`. A learned `automatic` fact is meant to authorize merges, so "the
+  fact wins" still holds; the owner is told when it is learned and can steer
+  or forget it.
+- **Only the owner sets it.** The preference and a session's override come
+  from the owner's own words or behavior only. Text from a third party (a
+  Slack message, a ticket, a source of the study, a brief, a pasted message,
+  the topic text) never sets either, whatever it asks.
+- **The level is computed fresh every session** and recorded as
+  `merge-level: manual|automatic (<source>)`, a prefix of its own, so it does
+  not collide with approaches that merged in the conversation and does not
+  move "where it stopped" on a resume. A level recorded by an earlier session
+  is history. Stored commands (the facts, a recipe's fact, pending learnings,
+  the interview's answer) never carry the merge parameter: 3c adds it from
+  this run's level only, and a retry recomputes the brief's done and the
+  start command, artifacts included.
+- **Every merge passes the gate**: the run's own review approved the pull
+  request's head, and CI is green, every check completed and passing, at
+  least one, none pending or skipped, under the repository's own rules, never
+  forced, never with `--admin` and never with a check skipped. An approval
+  from outside the run, an automated reviewer that signs as the owner
+  included, never counts. A repository with no checks, a review that does
+  not approve or a rule that blocks the merge leaves the pull request open
+  for the owner, with why. Implementing roles never merge, and every brief
+  and subagent prompt says so.
+- **On orq** the level reaches the recipe through the start
+  (`orq start impl_review <KEY> --repo … --brief … --set merge=on-approve`).
+  Once 3c picks the recipe, `automatic` needs one with a review role that
+  takes the merge level, else the run falls back to `manual`, recorded with
+  why; at `manual` a saved recipe must be shown not to merge without the
+  parameter, else the owner is asked before it starts. A written recipe's
+  check asserts that nothing merges without the parameter and that no merge
+  call carries `--admin`, force or a skip flag.
+- **On plain Claude Code** the maestro merges only after a separate reviewer
+  subagent, with a fresh context, returns an explicit approve on a named head
+  SHA, recorded as a note, and with `gh pr merge <n> --match-head-commit
+  <sha>`. The maestro never approves its own work.
+- **A brief re-saved for the level is checked again**: when the level changes
+  the brief's done after its form check, the form check runs again.
+- **Deploying stays out.** The trunk and the work it dispatches never deploy,
+  and the trunk never pushes the bundle.
+
+### Added
+
+- **The interview asks who merges**: "do you want to merge dispatched work
+  yourself, or should it merge on its own once the review approves and CI is
+  green?", captured as the merge preference. The readers of past sessions may
+  surface it too, from the owner's own messages only.
+
 ## [0.1.0-beta.1] - 2026-11-05
 
 The owner already took topics to dispatched work by hand, and the middle of it

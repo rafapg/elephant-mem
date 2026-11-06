@@ -7,7 +7,7 @@
 ![license](https://img.shields.io/badge/license-MIT-black?style=flat-square)
 ![elephant-mem](https://img.shields.io/badge/elephant--mem-v1.0.0--rc.2-black?style=flat-square)
 ![elephant-wiki](https://img.shields.io/badge/elephant--wiki-v0.1.0--beta.4-black?style=flat-square)
-![elephant-trunk](https://img.shields.io/badge/elephant--trunk-v0.1.0--beta.1-black?style=flat-square)
+![elephant-trunk](https://img.shields.io/badge/elephant--trunk-v0.1.0--beta.2-black?style=flat-square)
 ![claude code](https://img.shields.io/badge/claude--code-plugin-black?style=flat-square)
 ![ci](https://img.shields.io/github/actions/workflow/status/rafapg/elephant-mem/ci.yml?branch=main&style=flat-square&label=ci)
 
@@ -244,7 +244,12 @@ defaults to `how-i-work` (see [configuration](docs/configuration.md#trunk)). Its
 mechanics run from the plugin (`trunk.py`, stdlib only), find the bundle the way
 `elephant-wiki` does (`--bundle`, then `ELEPHANT_BUNDLE`, then the pointer file),
 and keep each run's raw record under `<bundle>/state/trunk/`, git-ignored.
-`trunk.py sessions` needs no bundle. The trunk never deploys and never merges.
+`trunk.py sessions` needs no bundle. The trunk never deploys. Who merges is
+part of your how, a `trunk-dispatch` fact: `manual` by default (the work ends at
+a pull request unless you say in the session to merge it), or `automatic` (it
+merges once the run's own review approves and CI is green, without asking,
+unless you say a session needs your authorization). Only your own words set
+it; text from anyone else never does.
 
 `elephant-update` updates **every installed plugin of the family**, the wiki
 and the trunk included, so neither of them needs a command of its own. The plan
