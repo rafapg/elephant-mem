@@ -70,7 +70,8 @@ the useful parts become facts with the right tags; the raw record stays in `stat
 ## Two ways to dispatch
 
 - **orq**: several sessions in an orq workspace, coordinating over agent-bus, through
-  the owner's existing tooling (`bus-spawn`, `orq start` with an existing recipe).
+  the owner's existing tooling (`orq start <recipe> <KEY> --repo … --brief …`).
+  `bus-spawn` is infrastructure orq runs on, not something the trunk calls.
 - **Plain Claude Code**: the work runs in this same session, right after the conversation,
   as a maestro with subagents, no bus. On this path the trunk ends when the work ends, and
   the record is updated as the work goes.
@@ -119,7 +120,8 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
   works without asking, and tells the owner what it recorded. The owner can steer a learning
   or ask to forget one; a forgotten learning is no longer read by the trunk.
 - A dispatch starts only when the brief has the form the chosen dispatch needs to run without
-  interviewing the owner (for `bus-spawn`, an approved bb spec).
+  interviewing the owner (the form the chosen orq recipe needs: an approved bb spec, for a
+  recipe that runs `/bb:implement`).
 - Resuming takes a run by name or picks from the open runs, most recent first. A run already
   dispatched is never dispatched again by a resume: the trunk shows what was dispatched and
   where, and the conversation can continue from there.

@@ -100,10 +100,10 @@ topic to dispatched work and reads every *how* from the owner's own memory.
   `trunk.py facts`, because `capture` checks no tag.
 - **The `trunk` skill, dispatch and follow.** Once the owner says to dispatch,
   the trunk writes the brief from the run record in the form the owner's
-  `trunk-dispatch` facts give (an approved bb spec, when `bus-spawn` is the
-  way), filters it for content not meant to travel before the owner sees it,
-  and dispatches nothing when the brief lacks that form, saying what is
-  missing. It picks a saved recipe from the `trunk-recipe` facts, shows the
+  `trunk-dispatch` facts give (an approved bb spec, for an orq recipe that runs
+  `/bb:implement`), filters it for content not meant to travel before the owner
+  sees it, and dispatches nothing when the brief lacks that form, saying what
+  is missing. It picks a saved recipe from the `trunk-recipe` facts, shows the
   brief, the recipe and the exact command, claims the run, and only once the
   claim succeeded starts the work, never more than once: on orq or, on plain
   Claude Code, in the same session as a maestro with subagents. When orq is

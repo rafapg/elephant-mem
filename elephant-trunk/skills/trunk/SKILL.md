@@ -300,9 +300,10 @@ request opened for the owner to review: the dispatched work never merges and
 never deploys.
 
 **The form** is the one the `trunk-dispatch` facts give for the chosen way.
-Some ways run alone only on a given form: `bus-spawn`, for one, goes straight
-to `/bb:implement` only on an approved bb spec, and anything less makes it
-interview the owner. Write the brief in that form. When the form is an
+Some ways run alone only on a given form: an orq recipe that runs
+`/bb:implement` (started with `orq start <recipe> <KEY> --repo … --brief …`)
+goes straight to the build only on an approved bb spec, and anything less
+makes it interview the owner. Write the brief in that form. When the form is an
 artifact (a spec file in the repository, a ticket), write it where the facts
 say, from the same brief.
 
@@ -926,7 +927,7 @@ Its prompt is this, filled in, in English whatever the owner speaks:
 > `trunk-study` (what they have a topic studied with, in what order, how deep,
 > how they want approaches shown and how many), `trunk-dispatch` (where work
 > runs once they decide: in the same session with subagents, or as separate
-> sessions with a tool such as orq or bus-spawn; the form a brief takes; the
+> sessions with a tool such as orq; the form a brief takes; the
 > commands that start work and show it running), `trunk-recipe` (how work is
 > split into sessions: roles, when each stops, saved recipes and when each
 > fits). Only what the owner does or asks for repeatedly or states as a rule;
