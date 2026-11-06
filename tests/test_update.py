@@ -963,9 +963,9 @@ def family_checks(eu, tmp):
            eu.plugin_of_key("elephant-mem@elephant-mem") == "elephant-mem")
     record("the optional plugin's key resolves the same way",
            eu.plugin_of_key("elephant-wiki@elephant-mem") == "elephant-wiki")
-    record("a key from another marketplace is not ours — the real registry on "
-           "the owner's machine carries exactly this one",
-           eu.plugin_of_key("bb@inspira-legal") is None)
+    record("a key from another marketplace is not ours, shaped like one a real registry "
+           "carries",
+           eu.plugin_of_key("bb@example-org") is None)
     record("a same-named plugin published by another marketplace is not ours",
            eu.plugin_of_key("elephant-mem@someone-elses-market") is None)
     record("an elephant-ish name from another marketplace is not ours either",
@@ -988,7 +988,7 @@ def family_checks(eu, tmp):
                                       "version": "0.1.0-beta.13"},
         "elephant-mem@someone-elses-market": {"installPath": str(theirs),
                                               "version": "9.9.9"},
-        "bb@inspira-legal": {"installPath": str(root), "version": "3.6.0"},
+        "bb@example-org": {"installPath": str(root), "version": "3.6.0"},
     })
     resolution = eu.resolve_plugins(plugins_dir=root)
     record("a foreign plugin sharing our name never wins on its higher version",
@@ -1014,7 +1014,7 @@ def registry_gap_checks(eu, tmp):
                         scripts={"recall.py": "print('recall 13')\n"})
     bundle = make_bundle(root, "bundle", scripts={"recall.py": "print('recall 13')\n"})
 
-    make_registry(root, {"bb@inspira-legal": {"installPath": str(root),
+    make_registry(root, {"bb@example-org": {"installPath": str(root),
                                               "version": "3.6.0"}})
     resolution = eu.resolve_plugins(plugins_dir=root)
     record("a registry naming no plugin of the family resolves nothing",

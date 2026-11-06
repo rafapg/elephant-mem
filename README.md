@@ -7,6 +7,7 @@
 ![license](https://img.shields.io/badge/license-MIT-black?style=flat-square)
 ![elephant-mem](https://img.shields.io/badge/elephant--mem-v1.0.0--rc.2-black?style=flat-square)
 ![elephant-wiki](https://img.shields.io/badge/elephant--wiki-v0.1.0--beta.4-black?style=flat-square)
+![elephant-trunk](https://img.shields.io/badge/elephant--trunk-v0.1.0--beta.1-black?style=flat-square)
 ![claude code](https://img.shields.io/badge/claude--code-plugin-black?style=flat-square)
 ![ci](https://img.shields.io/github/actions/workflow/status/rafapg/elephant-mem/ci.yml?branch=main&style=flat-square&label=ci)
 
@@ -208,23 +209,48 @@ latest version` and name a version older than the badge above. Nothing is
 broken and nothing is lagging on the publishing side — your clone is just
 behind.
 
-### two plugins, two version cycles
+### three plugins, three version cycles
 
-This marketplace ships **two** plugins: `elephant-mem` (the memory) and
-`elephant-wiki` (an optional [static wiki](elephant-wiki/) over your bundle).
-They are installed separately and **versioned independently** — the wiki changes
-far less often, so the two numbers in the badges above drift apart on purpose. A
-lower `elephant-wiki` version does not mean it is out of date.
+This marketplace ships **three** plugins: `elephant-mem` (the memory),
+`elephant-wiki` (an optional [static wiki](elephant-wiki/) over your bundle) and
+`elephant-trunk` (an optional [skill](elephant-trunk/) that takes a loose topic to
+dispatched work, reading every *how* from your own tagged facts). They are
+installed separately and **versioned independently**: the wiki changes far less
+often than the memory, and the trunk started its own count at 0.1.0-beta.1, so
+the numbers in the badges above drift apart on purpose.
+A lower `elephant-wiki` or `elephant-trunk` version does not mean it is out of
+date.
 
 Each plugin carries its own changelog and its own git-tag namespace:
-[`elephant-mem`](CHANGELOG.md) under `v0.1.0-beta.N`, and
-[`elephant-wiki`](elephant-wiki/CHANGELOG.md) under `wiki-v0.1.0-beta.N`. Up to
+[`elephant-mem`](CHANGELOG.md) under `v0.1.0-beta.N`,
+[`elephant-wiki`](elephant-wiki/CHANGELOG.md) under `wiki-v0.1.0-beta.N`, and
+[`elephant-trunk`](elephant-trunk/CHANGELOG.md) under `trunk-v0.1.0-beta.N`. Up to
 wiki 0.1.0-beta.2 a wiki bump was written into the `elephant-mem` release that
 shipped it instead; that history stayed where it is, and the wiki's own file
 links back to it.
 
+### elephant-trunk
+
+`/elephant-trunk:trunk <topic>` studies a topic with your memory, converges on an
+approach with you in a short conversation, and dispatches the work to Claude Code
+sessions (on orq, or in the same session) that carry it to a pull request. The
+skill is a skeleton: how you like a topic studied, how you dispatch and which
+recipes fit are read from your facts, tagged with your how-I-work tag plus one of
+`trunk-study`, `trunk-dispatch` or `trunk-recipe`. With no such facts it offers to
+read your past sessions (after a cost estimate) or to interview you.
+
+The how-I-work tag is set per bundle in `elephant.json` as `trunk.tag` and
+defaults to `how-i-work` (see [configuration](docs/configuration.md#trunk)). Its
+mechanics run from the plugin (`trunk.py`, stdlib only), find the bundle the way
+`elephant-wiki` does (`--bundle`, then `ELEPHANT_BUNDLE`, then the pointer file),
+and keep each run's raw record under `<bundle>/state/trunk/`, git-ignored.
+`trunk.py sessions` needs no bundle. The trunk never deploys and never merges.
+
 `elephant-update` updates **every installed plugin of the family**, the wiki
-included, so neither one needs a command of its own. What is `elephant-mem`-only
+and the trunk included, so neither of them needs a command of its own. The plan
+it shows before asking lists `elephant-mem` and the wiki only: the trunk is
+updated with them but has no line of its own there, so you approve its move
+without seeing it; the `Installed … (was …)` lines after the update do name it. What is `elephant-mem`-only
 is the weekly nudge, which compares that one version, and the preflight's stop: a
 stale wiki file is named and the mode carries on, because the wiki renders your
 memory rather than running it.
@@ -240,6 +266,8 @@ memory rather than running it.
 - [updating](docs/updating.md) — the `elephant-update` command, the preflight
   every mode runs before it works, and the launcher that makes the command
   reachable from a terminal.
+- [elephant-trunk](elephant-trunk/CHANGELOG.md) — the trunk plugin's own
+  changelog; its `trunk.tag` key is in [configuration](docs/configuration.md#trunk).
 - [changelog](CHANGELOG.md).
 
 ## license

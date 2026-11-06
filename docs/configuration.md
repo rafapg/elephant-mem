@@ -308,6 +308,34 @@ the schema.
 - Subscribers register themselves (see e.g. `elephant-wiki`'s `--register`);
   you rarely hand-edit this block.
 
+### `trunk`
+
+**`trunk`** (optional) — settings for the `elephant-trunk` plugin. It is the first
+extension namespace in `elephant.json` besides `hooks`; the plugin reads only its
+own key.
+
+```json
+"trunk": { "tag": "como-trabalhar" }
+```
+
+- `trunk.tag` (default `"how-i-work"`) — the how-I-work tag the trunk reads. The
+  trunk looks for active facts carrying this tag plus one of the fixed area tags
+  `trunk-study`, `trunk-dispatch` or `trunk-recipe`, straight from
+  `knowledge/manifest.jsonl`. Set it when your facts already carry another tag
+  (`como-trabalhar`, say), so they are read as they are. A missing key, or no
+  `elephant.json` at all, reads `how-i-work` and the trunk says how to set
+  another. A value that cannot be used (not a non-empty string, or a `trunk`
+  that is not an object), or an `elephant.json` that does not parse or is not
+  a JSON object, stops `trunk.py facts` and `trunk.py learning forget|steer`
+  with exit 1, and the skill with them, until the file is fixed: reading the default instead would list none of your
+  facts and capture new ones under a tag that goes unread once it is fixed.
+  `trunk.py config` names the problem and prints what it resolved.
+- Like every key here, `update` never re-syncs it. The plugin's script runs from
+  the plugin and is never copied into the bundle.
+- The raw run records live in `<bundle>/state/trunk/`, which the plugin keeps
+  git-ignored in the bundle, so an `ingest` never commits them (see
+  [Operational state](#3-operational-state--bundlestate)).
+
 ---
 
 ## 3. Operational state — `<bundle>/state/`
@@ -350,6 +378,15 @@ touches it. Managed by `scripts/state.py`.
   debug aid for unattended runs; safe to delete.
 - `state/phone/` — the audio inbox and diarized transcripts kept by
   `ingest-audio` (git-ignored in the bundle by default).
+- `state/trunk/` — written by the `elephant-trunk` plugin's `trunk.py`, not by
+  `state.py`: one raw record per run under `runs/<name>.json` (the topic, the
+  study, the decisions, the brief, each dispatch attempt), and under
+  `recipes/<run>/` the draft of a recipe written for that run. A record holds
+  whatever the conversation touched, so `trunk.py` adds `state/trunk/` to the
+  bundle's `.gitignore` before its first write and refuses to write when a rule
+  re-includes it or git already tracks a file there. It never enters the
+  bundle's history; an `ingest` over a record commits only the facts drawn from
+  it. Owner-readable only.
 
 ---
 

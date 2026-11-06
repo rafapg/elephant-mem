@@ -33,6 +33,7 @@ jobs:
       - run: python tests/test_decay.py
       - run: python tests/test_hooks.py
       - run: python tests/test_wiki.py
+      - run: python tests/test_trunk.py
       - run: python tests/test_frontmatter.py
       - run: python tests/test_backlog.py
       - run: python tests/test_recall.py

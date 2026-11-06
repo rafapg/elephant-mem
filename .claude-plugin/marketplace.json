@@ -12,6 +12,11 @@
       "name": "elephant-wiki",
       "source": "./elephant-wiki",
       "description": "Human-navigable wiki for an elephant-mem bundle — a local, zero-server static site over your markdown knowledge, kept current via the post_ingest hook."
+    },
+    {
+      "name": "elephant-trunk",
+      "source": "./elephant-trunk",
+      "description": "From a loose topic to dispatched work for an elephant-mem bundle — studies the topic with your memory, converges with you, and dispatches it to Claude Code sessions the way your own tagged facts say you work."
     }
   ]
 }
