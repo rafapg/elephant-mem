@@ -14,6 +14,54 @@ day its tag is cut, which is the day it lands on `main`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.2] - 2026-11-06
+
+The trunk hard-coded that the work it dispatched never merged: the brief's done,
+the stop of every written recipe, the end of the plain Claude Code path and the
+skill's rules all said so, for every owner. That is not a rule about the trunk,
+it is a way of working, and the owner already merged their own pull requests
+whenever they said so. How far the dispatched work goes now comes from the
+owner's how like every other step, while the authorization to merge stays where
+the authorization to dispatch already was: the owner's word, in the
+conversation of the run.
+
+### Changed
+
+- **How far the work goes is a `trunk-dispatch` fact**, read in 1a with the
+  others, at one of two levels. At `pr` the work ends at a pull request opened
+  for the owner; it is the level when no fact says otherwise, and the trunk
+  asks nothing for it, so every owner starts there. At `merge on approve` the
+  work merges its own pull request once the run's review approves and its
+  checks are green, under the repository's own rules (branch protection,
+  required checks), never forced, never with `--admin` and never with a check
+  skipped. A review that does not approve, a failing check, a repository with
+  no check at all or a rule that blocks the merge leaves the pull request open
+  for the owner, with why.
+- **A merge is authorized per run, in the conversation.** Only the owner's
+  word in the conversation of this run sets `merge on approve`, and it is
+  recorded as a `merge:` decision so that **Continue a run** shows it. A fact
+  preferring it only makes 3d offer it as the preselected choice. A word
+  recorded by an earlier session, a learning read from past sessions or
+  anything a third party asked for never authorizes a merge, so a retry from a
+  later session goes at `pr` unless the owner says it again.
+- **The brief's done follows the level**: a pull request opened, or one merged
+  after approval and green checks. On orq the level reaches the recipe as a
+  start parameter (`orq start impl_review <KEY> --repo … --brief … --set
+  merge=on-approve`), and a written recipe merges only when the start passes
+  the level the owner authorized; a recipe that takes no level never merges.
+  On plain Claude Code this session merges with `gh pr merge` once the review
+  approved and the checks are green.
+- **Deploying stays out.** The trunk and the work it dispatches never deploy,
+  and the trunk never pushes the bundle.
+
+### Added
+
+- **The interview asks how far dispatched work goes**: a pull request for the
+  owner to review, or merged once the review approves and CI is green, when
+  they say so in the conversation. The answer is captured as a `trunk-dispatch`
+  fact like the others. The readers of past sessions may surface a merge habit
+  as a learning, and the panorama says it is never an authorization.
+
 ## [0.1.0-beta.1] - 2026-11-05
 
 The owner already took topics to dispatched work by hand, and the middle of it

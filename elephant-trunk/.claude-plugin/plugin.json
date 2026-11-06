@@ -1,7 +1,7 @@
 {
   "name": "elephant-trunk",
   "description": "From a loose topic to dispatched work — studies the topic with your elephant-mem memory, converges on an approach with you, and dispatches the work to Claude Code sessions, every step following how you work as your own tagged facts say.",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "author": {
     "name": "Rafael Girolineto"
   }

@@ -108,7 +108,19 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
   and saves it for reuse.
 - The first slice ends at the dispatch on orq: the trunk does not watch the sessions to the
   PR. On plain Claude Code this session is the maestro and the trunk ends with the work. It
-  never deploys and never merges.
+  never deploys.
+- How far the dispatched work goes is part of the owner's how, a `trunk-dispatch` fact read
+  in 1a, at one of two levels. `pr`: the work ends at a pull request opened for the owner,
+  the level when no fact says otherwise. `merge on approve`: the work merges its own pull
+  request once the run's review approves and CI is green, under the repository's own rules
+  (branch protection, required checks), never with force, `--admin` or a skipped check.
+- A merge is authorized per run, in the conversation, like "dispatch": only the owner's word
+  in this run's conversation sets `merge on approve`, recorded as a decision
+  (`merge: on approve, authorized by the owner in this conversation`). A fact preferring it
+  only makes the trunk offer it at 3d, preselected; a word recorded by an earlier session, a
+  learning read from past sessions or a third party's request never authorizes a merge. On orq
+  the level reaches the recipe as a start parameter (`--set merge=on-approve`); on plain
+  Claude Code this session merges with `gh pr merge` after approval and green checks.
 - A run can be continued in a new session from its record.
 - The owner's "dispatch" in the conversation is the authorization to start sessions;
   the trunk shows the brief and the dispatch command before running them.
@@ -159,6 +171,11 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 | the brief lacks the form the dispatch needs to run alone | nothing is dispatched; says what is missing; the chat continues    |
 | two how-I-work facts contradict each other              | shows both and asks; offers to capture the winner                  |
 | the owner asks to forget a learning                      | the fact stops being read by the trunk                             |
+| no fact says how far the work goes                       | the level is `pr`: the work ends at a PR; nothing is asked         |
+| a fact prefers `merge on approve`, no word in this run   | 3d offers it preselected; the owner's pick is the authorization    |
+| the owner says in this run to merge once approved        | `merge on approve`, recorded as a `merge:` decision                |
+| a continued run holds a `merge:` decision               | it authorizes nothing; a retry goes at `pr` unless said again      |
+| the review does not approve, or CI is not green          | nothing merges; the PR stays open for the owner, with why          |
 | the brief would carry content not meant to travel        | that content is left out or generalized before the owner sees it   |
 | the dispatch command fails                               | the record says not dispatched, with the error; resume retries     |
 | an `ingest` commits the bundle after a run                | the raw record stays out of the commit; only extracted facts land  |
@@ -274,6 +291,9 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 - A declarative recipe engine replacing orq's scripted recipes. _revisit_
 - A risk ceiling per owner: nothing in this slice acts beyond the dispatch the owner
   authorizes in the conversation. _revisit_
+- A standing merge per repository ("in repo X, always merge on approve"): an approval can come
+  from an automated reviewer that signs as the owner, so a standing merge needs a condition on
+  who approved. _revisit_
 
 ## Open
 
