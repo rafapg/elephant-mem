@@ -22,7 +22,12 @@ Commands:
                         under another case or split on commas
     --area <tag>        only this area tag (repeatable; default: all three)
     --forgotten         the learnings forgotten or steered instead
-    --json              one JSON object on stdout
+    --json              one JSON object on stdout; each fact also carries
+                        its `origin` (owner, other or unknown) and the
+                        `channels` of the sources it cites: only a fact whose
+                        every source is the owner's own Claude Code
+                        conversation (channel claude-code[:<workspace>], as
+                        capture files it) is `owner`
   run new --topic <t>   start a run record; prints its name
     [--name <n>]        the run's name (default: <date>-<slug of the topic>)
   run show <name>       read a run record back (--json: the record itself)
@@ -34,7 +39,10 @@ Commands:
                         approaches (JSON array), recipe (JSON object), replaced;
                         decision, note, learning, pending (text, appended);
                         pending is a learning surfaced mid-run and not
-                        captured yet, kept so an exit before step 4 loses none
+                        captured yet, kept so an exit before step 4 loses none;
+                        a decision starting merge-level: must read
+                        merge-level: manual|automatic (<source>), and a
+                        recipe's command never carries a merge parameter
     [--pending <n>]     with learning or note: settles pending learning n
                         (1-based, in the record's `pending`), as captured
                         (learning) or set aside (note); refuses one settled
@@ -42,7 +50,10 @@ Commands:
                         before the dispatch command runs: flips an open run to
                         starting under the record's lock, so of two sessions
                         claiming it exactly one wins; refuses a run that is
-                        not open (starting or dispatched)
+                        not open (starting or dispatched); via orq, refuses a
+                        command whose merge parameter disagrees with the run's
+                        last merge-level: decision (any merge parameter when
+                        none is recorded; on-approve only at automatic)
   run dispatch <name> --via <orq|claude-code> --command <c> [--where <w>]
                         [--error <e>]
                         record how the start went, ending the claim: without
@@ -65,7 +76,8 @@ Commands:
   recipe draft <run> --name <n> --roles <r> --file <path|->
                         [--test <path>] [--command <c>]
                         a new recipe written for this run: kept as a draft under
-                        state/trunk/recipes/<run>/ and recorded as the run's recipe
+                        state/trunk/recipes/<run>/ and recorded as the run's recipe;
+                        --command never carries a merge parameter
   recipe checked <run> --command <c> [--error <e>]
                         record the check the draft went through; a failure keeps
                         the draft and the error, and nothing is dispatched
@@ -109,6 +121,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -350,6 +363,9 @@ def cmd_facts(args):
             f"python3 {os.path.join(bundle, 'scripts', 'build-index.py')}")
     if skipped:
         note(f"skipped {skipped} unreadable line(s) in knowledge/manifest.jsonl")
+    if not args.forgotten:
+        for f in facts + near:
+            f["origin"], f["channels"] = fact_origin(bundle, f["path"])
     if not facts:
         which = "forgotten or steered" if args.forgotten else "active"
         note(f'no {which} fact carries "{cfg["tag"]}" plus a trunk area tag ({", ".join(areas)})')
@@ -400,6 +416,78 @@ SETTLES_PENDING = ("learning", "note")
 # After the dispatch the conversation can go on, but what was dispatched stays
 # as it was dispatched.
 FROZEN_AFTER_DISPATCH = ("study", "approaches", "brief", "recipe")
+
+# The merge level of a run. The owner's merge preference is computed fresh in
+# every session and recorded as a decision of its own prefix; a stored command
+# (a recipe's, a fact's) never carries the merge parameter, which the skill
+# adds to the start command from this run's level only. A merge parameter in
+# any spelling: `merge=on-approve` (after `--set` or `-s`), `--set=merge=pr`,
+# `--merge`, `MERGE:pr`. A bare value-less flag is one too, read as unknown.
+MERGE_LEVEL_PREFIX = "merge-level:"
+MERGE_LEVEL_RE = re.compile(r"^merge-level:[ \t]*(manual|automatic)[ \t]*\((.+)\)[ \t]*$", re.I | re.S)
+MERGE_TOKEN_RE = re.compile(r"^(?:-{1,2}set[=:])?-{0,2}merge(?:[ \t]*[=:][ \t]*(.*))?$", re.I | re.S)
+MERGE_VALUES = {"manual": "pr", "automatic": "on-approve"}
+
+
+def merge_params(command):
+    """The merge parameters a command carries, in any spelling: one value per
+    parameter (lowercased), or None for one whose value cannot be read."""
+    try:
+        tokens = shlex.split(command or "")
+    except ValueError:
+        tokens = (command or "").split()
+    out = []
+    for i, tok in enumerate(tokens):
+        m = MERGE_TOKEN_RE.match(tok.strip())
+        if not m:
+            continue
+        value = m.group(1)
+        if value is None and i + 1 < len(tokens) and tokens[i + 1].startswith(("=", ":")):
+            value = tokens[i + 1][1:] or (tokens[i + 2] if i + 2 < len(tokens) else "")
+        value = (value or "").strip().strip("'\"").lower()
+        out.append(value or None)
+    return out
+
+
+def _refuse_stored_merge(command, what):
+    if merge_params(command):
+        die(f"{what} carries a merge parameter ({command!r}): a stored command never does. "
+            f"The merge level is set per run, from the owner's preference and this session; "
+            f"the start command gets it at 3c, and `run claim` checks it against the run's "
+            f"merge-level: decision")
+
+
+def last_merge_level(rec):
+    """`manual` or `automatic` from the run's last merge-level: decision, or None."""
+    for d in reversed(rec.get("decisions") or []):
+        text = (d.get("text") if isinstance(d, dict) else str(d)) or ""
+        if text.strip().lower().startswith(MERGE_LEVEL_PREFIX):
+            m = MERGE_LEVEL_RE.match(text.strip())
+            return m.group(1).lower() if m else None
+    return None
+
+
+def merge_param_problem(command, level):
+    """Why a dispatch command's merge parameter disagrees with the run's
+    merge level, or None when it agrees."""
+    values = merge_params(command)
+    if not values:
+        if level == "automatic":
+            return ("the run's last merge-level: decision is automatic and the command carries "
+                    "no merge parameter; add the recipe's (e.g. --set merge=on-approve), or "
+                    "record the fallback to manual with why")
+        return None
+    if level is None:
+        return ("the command carries a merge parameter and the run records no merge-level: "
+                "decision; record the level of this run first (merge-level: manual|automatic "
+                "(<source>))")
+    if any(v not in MERGE_VALUES.values() for v in values) or len(set(values)) > 1:
+        return (f"the command's merge parameter cannot be read as one of "
+                f"{', '.join(sorted(MERGE_VALUES.values()))} ({', '.join(str(v) for v in values)})")
+    if values[0] != MERGE_VALUES[level]:
+        return (f"the command's merge parameter is {values[0]} and the run's last merge-level: "
+                f"decision is {level}, which takes {MERGE_VALUES[level]}")
+    return None
 
 
 class RecordError(Exception):
@@ -766,10 +854,17 @@ def cmd_run_set(args):
         if field == "recipe" and "written" in value:
             die("a recipe written for this run is recorded with `trunk.py recipe draft`, "
                 "which keeps the draft its check is held against")
+        if field == "recipe" and isinstance(value.get("command"), str):
+            _refuse_stored_merge(value["command"], "the recipe's command")
         rec[field] = value
     else:
         if not raw.strip():
             die(f"an empty {field} adds nothing")
+        if field == "decision" and raw.strip().lower().startswith(MERGE_LEVEL_PREFIX) \
+                and not MERGE_LEVEL_RE.match(raw.strip()):
+            die("a merge-level: decision reads merge-level: manual|automatic (<source>), "
+                "the source being fact, owner in this session, session override or a "
+                "fallback with why; nothing was recorded")
         entry = {"at": t, "text": raw.strip()}
         if settles is not None:
             entry["settles"] = settles
@@ -800,7 +895,8 @@ def cmd_run_claim(args):
             f"{c.get('at')} ({c.get('command')}); nothing is started again until `run dispatch` "
             f"records how that start went (with --error when it did not start)")
     if args.via == "orq":
-        problem = written_recipe_problem(rec.get("recipe"))
+        problem = written_recipe_problem(rec.get("recipe")) \
+            or merge_param_problem(args.dispatch_command, last_merge_level(rec))
         if problem:
             die(f"nothing is dispatched: {problem}")
     t = now()
@@ -1112,6 +1208,7 @@ def cmd_recipe_draft(args):
         die("an empty recipe starts nothing")
     if not args.roles.strip():
         die("say the recipe's roles in --roles, one line per role")
+    _refuse_stored_merge(args.recipe_command, "--command")
     ensure_ignored(bundle)
     d = recipe_drafts(bundle, rec["name"])
     os.makedirs(d, mode=0o700, exist_ok=True)
@@ -1295,7 +1392,12 @@ def _fm_tags(lines):
     lines too, read to its `]`), a block list (comment and blank lines between
     its items passed over) or one scalar, each tag unquoted and stripped: the
     shapes build-index's own fallback parser reads."""
-    i = _top_index(lines, "tags")
+    return _fm_list(lines, "tags")
+
+
+def _fm_list(lines, key):
+    """A frontmatter's top-level list `key`, read as `_fm_tags` reads tags."""
+    i = _top_index(lines, key)
     if i is None:
         return []
     def bare(text):
@@ -1330,6 +1432,51 @@ def _is_learning(lines, tag, areas=AREA_TAGS):
         return []
     tags = _fm_tags(lines)
     return [a for a in AREA_TAGS if a in areas and a in tags] if tag in tags else []
+
+
+# Where a fact came from, read from the sources it cites. elephant-mem's
+# `capture` files the current Claude Code conversation (the owner's own words)
+# as a source whose `channel` is `claude-code` or `claude-code:<workspace>`;
+# `ingest` and the scheduled `catch-up` stamp the feed a source came from
+# (`slack:...`, `meeting`, `gcal:...`, `email`). The fact's own frontmatter and
+# the manifest carry no origin, so the source is the only place it is said.
+OWNER_CHANNEL_RE = re.compile(r"^claude-code(?::.*)?$")
+
+
+def _read_fm(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            split = _fm_split(fh.read().replace("\r\n", "\n"))
+    except (OSError, UnicodeDecodeError):
+        return None
+    return split[0] if split else None
+
+
+def fact_origin(bundle, path):
+    """(origin, channels) of a fact file: `owner` when it cites at least one
+    source and every source it cites is the owner's own Claude Code
+    conversation; `other` when any source came from another channel (a feed
+    the catch-up or an ingest read); `unknown` when it cites none, or a source
+    cannot be read or names no channel. Only `owner` is the owner's word."""
+    lines = _read_fm(path)
+    if lines is None:
+        return "unknown", []
+    links, channels, unknown, other = _fm_list(lines, "sources"), [], False, False
+    if not links:
+        return "unknown", []
+    for link in links:
+        if not link.startswith("/sources/") or "\\" in link or ".." in link.split("/"):
+            unknown = True
+            continue
+        src = _read_fm(os.path.join(bundle, "knowledge", *link.lstrip("/").split("/")))
+        channel = _scalar(_fm_value(src, "channel") or "").strip().lower() if src else ""
+        if not channel:
+            unknown = True
+            continue
+        channels.append(channel)
+        if not OWNER_CHANNEL_RE.match(channel):
+            other = True
+    return ("other" if other else "unknown" if unknown else "owner"), channels
 
 
 def forgotten_facts(bundle, tag, areas=AREA_TAGS):
@@ -2112,7 +2259,8 @@ def main(argv):
                    help="only this area tag (repeatable; default: all three)")
     p.add_argument("--forgotten", action="store_true",
                    help="the learnings forgotten or steered instead, never read as the owner's how")
-    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.add_argument("--json", action="store_true",
+                   help="print one JSON object; each fact carries its origin (owner, other, unknown)")
     p.set_defaults(func=cmd_facts)
 
     run = sub.add_parser("run", help="the run record: new, show, list, set, claim, dispatch, ingested")
@@ -2143,7 +2291,8 @@ def main(argv):
     p.add_argument("name")
     p.add_argument("--via", required=True, choices=DISPATCH_VIAS)
     p.add_argument("--command", dest="dispatch_command", required=True,
-                   help="the command about to start the work")
+                   help="the command about to start the work; via orq, its merge parameter must "
+                        "agree with the run's last merge-level: decision")
     p.add_argument("--where", default="", help="where the work will run (orq team, workspace, session)")
     p.add_argument("--json", action="store_true", help="print the run's summary and claim as JSON")
     p.set_defaults(func=cmd_run_claim)
@@ -2175,7 +2324,7 @@ def main(argv):
     p.add_argument("--file", required=True, help="the recipe's source (- for stdin)")
     p.add_argument("--test", default="", help="a check file kept beside it as test_<name>.py")
     p.add_argument("--command", dest="recipe_command", default="", metavar="COMMAND",
-                   help="the command that will start it, filled in for this run")
+                   help="the command that will start it, filled in for this run, never with a merge parameter")
     p.add_argument("--json", action="store_true", help="print the draft's paths and hash as JSON")
     p.set_defaults(func=cmd_recipe_draft)
     p = csub.add_parser("checked", parents=[common], help="record the check the draft went through")
