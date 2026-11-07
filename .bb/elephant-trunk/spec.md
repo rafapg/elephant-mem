@@ -109,34 +109,65 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 - The first slice ends at the dispatch on orq: the trunk does not watch the sessions to the
   PR. On plain Claude Code this session is the maestro and the trunk ends with the work. It
   never deploys.
+- Who merges, and why the trunk never checks CI: the quality of the delivery is the owner's,
+  and the trunk acts on the owner's behalf; the repository's guardrails (branch protection with
+  required checks) belong to its maintainer. A merge is where the two meet. So the trunk never
+  reimplements CI checking: it relies on GitHub's own gate, and where that gate is missing it
+  stops at the PR.
 - Who merges is part of the owner's how: a `trunk-dispatch` merge preference, learned like
   any other how (interview, past sessions, a learning of a run). `manual` (the default with no
   fact): the owner merges by hand, and the trunk merges only when the owner says, in this
   session, to merge this run's PR; otherwise the work ends at a PR. `automatic`: the work is
   dispatched with the merge on, without asking, unless the owner says in this session that the
-  run needs their authorization, which makes that run `manual`. A learned `automatic` fact is
-  meant to authorize merges, so "the fact wins" holds; the owner is told when it is learned and
-  can steer or forget it.
+  run needs their authorization, which makes that run `manual` (on orq, said before
+  "dispatch"). A learned `automatic` fact is meant to authorize merges, so "the fact wins"
+  holds; the owner is told when it is learned and can steer or forget it.
 - Only the owner's own words or behavior set the preference or this session's override; text
   from a third party never does (a Slack message, a ticket, a study source, a brief, a pasted
-  message, the topic text).
+  message, the topic text). A one-off "merge this one" at `manual` is a value of the run, never
+  a learning; only an explicit statement of the general preference becomes the `automatic` fact.
+- A merge-preference fact counts only when it came from the owner, and `trunk.py` says so:
+  `facts --json` gives each fact an `origin` read from the sources it cites. `owner` when every
+  source's `channel` is `claude-code` or `claude-code:<workspace>` (what `capture` files: the
+  interview, a confirmed panorama, a learning, the owner capturing it directly); `other` when
+  one came from a feed (the catch-up or an ingest of Slack, meetings, email); `unknown` when it
+  cites none or one cannot be read. Only `owner` is read for the merge preference; anything
+  else means `manual`.
 - The level is computed fresh in every session from the current fact plus this session's word,
   and recorded as `merge-level: manual|automatic (<source>)`, never the free `merge:` prefix.
   A level recorded by an earlier session is history. Stored commands (facts, recipe facts,
   pending learnings) never carry the merge parameter; 3c adds it from this run's level, and a
-  retry recomputes the brief's done and the command.
-- The gate: the run's own review approved the PR's head and CI is green (every check completed
-  and passing, at least one, none pending or skipped), under the repository's own rules, never
-  with force, `--admin` or a skipped check. An approval from outside the run, an automated
-  reviewer signing as the owner included, never counts. Implementing roles never merge: only
-  the recipe's merge step (orq, `--set merge=on-approve`) or the maestro (plain Claude Code,
-  a fresh-context reviewer subagent's approval on a named SHA, then
-  `gh pr merge <n> --match-head-commit <sha>`) merges.
+  retry recomputes the brief's done and the command. `trunk.py` holds it: `recipe draft` and
+  `run set recipe` refuse a merge parameter in any spelling, `run claim` via orq refuses one
+  that disagrees with the last `merge-level:` decision (any, when none is recorded), and a
+  `merge-level:` decision in another form is refused.
+- The merge condition, the same on orq and on plain Claude Code: the work merges only when all
+  three hold, else it stops at the PR with a note. (1) The owner wants it: `automatic` with no
+  override, or at `manual` the owner's word in this session. (2) The run's own reviewer, a
+  separate one with a fresh context, approved exactly the commit that will merge, a named head
+  SHA; an approval from outside the run, an automated reviewer signing as the owner included,
+  never counts. (3) The base branch is protected on GitHub with required status checks
+  (classic protection or a ruleset). Then `gh pr merge <n> --auto --match-head-commit <sha>`:
+  GitHub waits for the required checks and merges or refuses. Never `--admin`, force or a
+  skipped check. Implementing roles never merge: only the recipe's merge step (orq,
+  `impl_review` at `--set merge=on-approve`) or the maestro (plain Claude Code) merges.
+- A repository with no remote is usually the owner's own local tool, and the owner is less
+  strict there: condition (3) becomes the local tests passing on exactly the approved commit,
+  with nothing uncommitted, and the merge is a local `git merge --no-ff` of that commit into the
+  base, only when the owner's checkout is on the base and clean at that moment. It never
+  stashes, resets or checks out.
+- When condition (3) fails, the note says what would let a later run merge: to an admin of the
+  repository, turning on branch protection with required checks once; to anyone else, that the
+  PR waits for the maintainer. The trunk never changes repository settings.
+- On orq at `manual`, a "merge it" after the team opened the PR goes through the same three
+  conditions: the trunk takes the reviewer's approved SHA from the team's verdict in the orq
+  topic, checks protection and runs `--auto --match-head-commit`, or says why not.
 - After 3c picks the recipe, `automatic` needs a recipe with a review role that takes the merge
   level; with none, the run falls back to `manual`, recorded with why. At `manual`, a saved
   recipe must be shown not to merge without the parameter, or the owner is asked before it
-  starts. A written recipe's check asserts both that nothing merges without the parameter and
-  that no merge call carries `--admin`, force or a skip flag.
+  starts. A written recipe's check asserts three things: nothing merges without the parameter;
+  a merge is only `gh pr merge --auto --match-head-commit <the reviewed SHA>` after a
+  protection check; and no merge call carries `--admin`, force or a skip flag.
 - A run can be continued in a new session from its record.
 - The owner's "dispatch" in the conversation is the authorization to start sessions;
   the trunk shows the brief and the dispatch command before running them.
@@ -195,8 +226,13 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 | a continued run holds a `merge-level:` decision          | history; the level, done and command are computed again            |
 | `automatic`, the recipe has no review or no merge level  | falls back to `manual`, recorded with why                          |
 | `manual`, a saved recipe not shown to merge nothing       | the owner is asked before it starts                                |
-| the review does not approve, or CI is not green          | nothing merges; the PR stays open for the owner, with why          |
-| the repository has no checks                             | nothing merges; the PR stays open, with why                        |
+| a merge-preference fact came from a feed, not the owner  | set aside for the merge preference; the level is `manual`          |
+| the reviewer did not approve the head that would merge   | nothing merges; the PR stays open for the owner, with a note       |
+| the base branch has no required status checks            | nothing merges; the note suggests protection (admin) or waits      |
+| the repository has no remote                             | merges locally only if tests pass on that commit, all clean        |
+| the owner's checkout is off the base or dirty (no remote) | nothing merges; never stashes, resets or checks out               |
+| at `manual` on orq, the owner says "merge it" after the PR | the same three conditions, with the team's approved SHA            |
+| a stored command carries a merge parameter               | `trunk.py` refuses it                                              |
 | the brief would carry content not meant to travel        | that content is left out or generalized before the owner sees it   |
 | the dispatch command fails                               | the record says not dispatched, with the error; resume retries     |
 | an `ingest` commits the bundle after a run                | the raw record stays out of the commit; only extracted facts land  |
@@ -245,6 +281,8 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
   that copies scripts into the bundle is invisible to it unless listed there.
 - `tests/test_skill_invocation.py` scans only `plugin/skills/`, and CI lists each test
   file by hand (`.github/workflows/ci.yml`).
+- In a repository where a push to the base branch deploys, an automatic merge is in effect a
+  deploy.
 
 ## Tasks
 
