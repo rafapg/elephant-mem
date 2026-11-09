@@ -1,5 +1,5 @@
 ---
-status: pending
+status: in-progress
 created: 2026-11-09
 slug: trunk-follow
 ---
