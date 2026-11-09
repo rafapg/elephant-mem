@@ -1049,8 +1049,10 @@ What is left of step 4 is said and offered, never run silently:
   this session)`), and merge only under the same three conditions (3a). The
   owner's word never stands in for the run's own review.
   - **The approved SHA comes from the run's record**, never from memory: the
-    reviewer's verdict the team recorded, with its `sha` meta (the recipe
-    pins the builder's commit and asks the reviewer for it at every level).
+    `approved` message the team posted on its own topic, with its `sha` meta
+    (and `pr`, the pull request's link). The `impl_review` recipe pins the
+    builder's commit and asks the reviewer for it at every level, and posts
+    that message only for an approve with green tests on that exact SHA.
     Record it in this run as a note (`review: approve <sha> (orq verdict)`).
   - **It must be the pull request's current head**
     (`gh pr view <number> --repo <owner>/<repo> --json headRefOid`).
