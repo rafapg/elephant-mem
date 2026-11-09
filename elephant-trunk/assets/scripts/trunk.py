@@ -42,7 +42,8 @@ Commands:
                         captured yet, kept so an exit before step 4 loses none;
                         a decision starting merge-level: must read
                         merge-level: manual|automatic (<source>), and a
-                        recipe's command never carries a merge parameter
+                        recipe's command, a pending learning or a learning
+                        never carries a merge parameter
     [--pending <n>]     with learning or note: settles pending learning n
                         (1-based, in the record's `pending`), as captured
                         (learning) or set aside (note); refuses one settled
@@ -52,8 +53,9 @@ Commands:
                         claiming it exactly one wins; refuses a run that is
                         not open (starting or dispatched); via orq, refuses a
                         command whose merge parameter disagrees with the run's
-                        last merge-level: decision (any merge parameter when
-                        none is recorded; on-approve only at automatic)
+                        last merge-level: decision recorded after its last
+                        start and dispatch: decision (any merge parameter
+                        when there is none; on-approve only at automatic)
   run dispatch <name> --via <orq|claude-code> --command <c> [--where <w>]
                         [--error <e>]
                         record how the start went, ending the claim: without
@@ -422,11 +424,15 @@ FROZEN_AFTER_DISPATCH = ("study", "approaches", "brief", "recipe")
 # (a recipe's, a fact's) never carries the merge parameter, which the skill
 # adds to the start command from this run's level only. A merge parameter in
 # any spelling: `merge=on-approve` (after `--set` or `-s`), `--set=merge=pr`,
-# `--merge`, `MERGE:pr`. A bare value-less flag is one too, read as unknown.
+# `--merge`, `MERGE:pr`. A bare value-less flag is one too, read as unknown. A
+# bare `merge` word is one only after `--set`/`-s` or before an `=`: as the
+# value of another option (`--branch merge`) it is not.
 MERGE_LEVEL_PREFIX = "merge-level:"
 MERGE_LEVEL_RE = re.compile(r"^merge-level:[ \t]*(manual|automatic)[ \t]*\((.+)\)[ \t]*$", re.I | re.S)
 MERGE_TOKEN_RE = re.compile(r"^(?:-{1,2}set[=:])?-{0,2}merge(?:[ \t]*[=:][ \t]*(.*))?$", re.I | re.S)
 MERGE_VALUES = {"manual": "pr", "automatic": "on-approve"}
+SET_FLAGS = ("--set", "-set", "-s")
+DISPATCH_PREFIX = "dispatch:"
 
 
 def merge_params(command):
@@ -442,6 +448,10 @@ def merge_params(command):
         if not m:
             continue
         value = m.group(1)
+        bare = value is None and not tok.strip().startswith("-")
+        if bare and not (i and tokens[i - 1].strip().lower() in SET_FLAGS) \
+                and not (i + 1 < len(tokens) and tokens[i + 1].startswith(("=", ":"))):
+            continue
         if value is None and i + 1 < len(tokens) and tokens[i + 1].startswith(("=", ":")):
             value = tokens[i + 1][1:] or (tokens[i + 2] if i + 2 < len(tokens) else "")
         value = (value or "").strip().strip("'\"").lower()
@@ -457,11 +467,27 @@ def _refuse_stored_merge(command, what):
             f"merge-level: decision")
 
 
+def _at(item):
+    return str(item.get("at") or "") if isinstance(item, dict) else ""
+
+
 def last_merge_level(rec):
-    """`manual` or `automatic` from the run's last merge-level: decision, or None."""
-    for d in reversed(rec.get("decisions") or []):
+    """`manual` or `automatic` from the run's last merge-level: decision, or
+    None. Only a decision recorded after the run's last start (an attempt or
+    a claim) and after its last `dispatch:` decision counts: the level is
+    stated in the session that starts the run, at 3c, after the owner's word
+    to dispatch, so one recorded before a failed start or before a newer
+    dispatch word is history from another session."""
+    decisions = rec.get("decisions") or []
+    cutoff = max([_at(a) for a in rec.get("attempts") or []] + [_at(rec.get("claim"))]
+                 + [_at(d) for d in decisions
+                    if isinstance(d, dict) and str(d.get("text") or "").strip().lower()
+                    .startswith(DISPATCH_PREFIX)] + [""])
+    for d in reversed(decisions):
         text = (d.get("text") if isinstance(d, dict) else str(d)) or ""
         if text.strip().lower().startswith(MERGE_LEVEL_PREFIX):
+            if _at(d) <= cutoff:
+                return None
             m = MERGE_LEVEL_RE.match(text.strip())
             return m.group(1).lower() if m else None
     return None
@@ -473,14 +499,15 @@ def merge_param_problem(command, level):
     values = merge_params(command)
     if not values:
         if level == "automatic":
-            return ("the run's last merge-level: decision is automatic and the command carries "
-                    "no merge parameter; add the recipe's (e.g. --set merge=on-approve), or "
-                    "record the fallback to manual with why")
+            return ("the run's merge level in this session is automatic and the command "
+                    "carries no merge parameter, so it does not match the level; build the start "
+                    "command again from the level, or record the fallback to manual with why")
         return None
     if level is None:
         return ("the command carries a merge parameter and the run records no merge-level: "
-                "decision; record the level of this run first (merge-level: manual|automatic "
-                "(<source>))")
+                "decision of this session (after its last start and its last dispatch: "
+                "decision); the owner states the level in this session, and it is recorded "
+                "before the start (merge-level: manual|automatic (<source>))")
     if any(v not in MERGE_VALUES.values() for v in values) or len(set(values)) > 1:
         return (f"the command's merge parameter cannot be read as one of "
                 f"{', '.join(sorted(MERGE_VALUES.values()))} ({', '.join(str(v) for v in values)})")
@@ -860,6 +887,8 @@ def cmd_run_set(args):
     else:
         if not raw.strip():
             die(f"an empty {field} adds nothing")
+        if field in ("pending", "learning"):
+            _refuse_stored_merge(raw, f"the {field}")
         if field == "decision" and raw.strip().lower().startswith(MERGE_LEVEL_PREFIX) \
                 and not MERGE_LEVEL_RE.match(raw.strip()):
             die("a merge-level: decision reads merge-level: manual|automatic (<source>), "

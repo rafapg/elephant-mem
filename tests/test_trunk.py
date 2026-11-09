@@ -1191,6 +1191,51 @@ def _merge_level(root, home):
     record("the last merge-level: decision is the one held: a session override refuses on-approve",
            r.returncode != 0 and show("m-last").get("status") == "open", r.stderr)
 
+    # A level stated before a failed start, or before a newer dispatch word, is
+    # another session's: it never passes a claim, and the refusal never says to
+    # add the merge parameter.
+    new("m-stale", "dispatch: the approach", "merge-level: automatic (fact)")
+    claim("m-stale", on)
+    run(TRUNK, "run", "dispatch", "--bundle", b, "m-stale", "--via", "orq", "--command", on,
+        "--error", "orq: no such team", env=env)
+    r = claim("m-stale", on)
+    record("a merge-level: decision recorded before the run's last failed start no longer passes a claim",
+           r.returncode != 0 and "this session" in r.stderr and show("m-stale").get("status") == "open", r.stderr)
+    record("the refusal says the owner states the level in this session, never to add the parameter",
+           "--set merge" not in r.stderr and "add the" not in r.stderr, r.stderr)
+    run(TRUNK, "run", "set", "--bundle", b, "m-stale", "decision", "--value", "dispatch: the approach, again", env=env)
+    run(TRUNK, "run", "set", "--bundle", b, "m-stale", "decision", "--value",
+        "merge-level: automatic (fact)", env=env)
+    r = claim("m-stale", on)
+    record("a merge-level: decision recorded after the retry's dispatch word passes the claim",
+           r.returncode == 0 and show("m-stale").get("status") == "starting", r.stderr)
+    new("m-redispatch", "merge-level: automatic (fact)", "dispatch: a newer word")
+    r = claim("m-redispatch", on)
+    record("a merge-level: decision older than the last dispatch: decision does not pass a claim",
+           r.returncode != 0 and show("m-redispatch").get("status") == "open", r.stderr)
+    new("m-auto-hint", "dispatch: go", "merge-level: automatic (fact)")
+    r = claim("m-auto-hint", "orq start impl_review K")
+    record("at automatic with no parameter, the refusal does not tell how to add one",
+           r.returncode != 0 and "--set merge" not in r.stderr, r.stderr)
+
+    # A bare `merge` word as another option's value is not a merge parameter;
+    # pending learnings and learnings never store one.
+    r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "recipe", "--value",
+            json.dumps({"name": "impl_review", "fact": None, "command": "orq start impl_review K --branch merge",
+                        "roles": "x"}), env=env)
+    record("a command with `--branch merge` carries no merge parameter", r.returncode == 0, r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "pending", "--value",
+            "trunk-dispatch: starts with orq start impl_review <KEY> --set merge=on-approve", env=env)
+    record("a pending learning carrying a merge parameter is refused",
+           r.returncode != 0 and "merge parameter" in r.stderr and not show("m-draft").get("pending"), r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "learning", "--value",
+            "/facts/x.md: starts with orq start impl_review <KEY> -s merge=pr", env=env)
+    record("a learning carrying a merge parameter is refused",
+           r.returncode != 0 and "merge parameter" in r.stderr and not show("m-draft").get("learnings"), r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "pending", "--value",
+            "trunk-dispatch: the owner does not want to merge by hand", env=env)
+    record("a pending learning that only talks about merging is kept", r.returncode == 0, r.stderr)
+
 
 def _recipe_written(root, home):
     env = env_for(home)
