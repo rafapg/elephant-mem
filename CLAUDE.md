@@ -55,14 +55,20 @@ What follows from that:
     this release: …", see 0.1.0-beta.5). That history was left where it is and
     is linked from the wiki's own file; don't move it, and don't add new inline
     notes.
-- **Only `elephant-mem`'s version is machine-read.** The `update` mode fetches
-  `plugin/.claude-plugin/plugin.json` from `main` and compares it to the
-  installed one. Nothing reads the wiki's or the trunk's `version`; it is there
-  for the marketplace and for humans. So a forgotten wiki or trunk bump is
-  cosmetic, while a forgotten `elephant-mem` bump silently withholds the update
-  prompt from every installed user. The trunk is not in `update`'s preflight
-  either: its script runs from the plugin and is never copied into the bundle,
-  so there is no stale copy to compare.
+- **Only `elephant-mem`'s version drives the update nudge.** The weekly nudge
+  fetches `plugin/.claude-plugin/plugin.json` from `main` and compares it to the
+  installed one; nothing there reads the wiki's or the trunk's `version`. So a
+  release that moves only the wiki or the trunk never prompts anyone, and a
+  forgotten `elephant-mem` bump silently withholds the prompt from every
+  installed user. The wiki's and the trunk's versions are still read, by
+  `elephant-update` and by the CLI: the run's plan has a line for each of the
+  three plugins and the run updates every installed one, the trunk included,
+  and `claude plugin update` installs nothing while the clone declares the
+  version already installed. So a forgotten wiki or trunk bump is not cosmetic:
+  the change reaches nobody through `update`, which reports that plugin current. The trunk
+  is not in `update`'s preflight (`--check`) nor in its copy: its script runs
+  from the plugin and is never copied into the bundle, so there is no stale copy
+  to compare and nothing to copy.
 - **A release is not reachable the moment it lands on `main`.** `marketplace.json`
   carries no `version` — it points at `./plugin`, so the version the CLI sees comes
   from `plugin.json` **at the commit the user's local marketplace clone sits on**

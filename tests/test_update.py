@@ -385,10 +385,15 @@ def make_clone(root, sources, marketplace="elephant-mem"):
     places. `marketplace.json` declares no version of its own, which is why a
     clone that stopped at an older commit can report a user current."""
     clone = Path(root) / "marketplaces" / marketplace
+    catalogue = [{"name": "elephant-mem", "source": "./plugin"},
+                 {"name": "elephant-wiki", "source": "./elephant-wiki"}]
+    # A world that stages a third plugin gets it in the catalogue too, the way
+    # the real marketplace.json lists `elephant-trunk`.
+    listed = {entry["name"] for entry in catalogue}
+    catalogue += [{"name": name, "source": "./" + source}
+                  for source, (name, _, _) in sources.items() if name not in listed]
     write(clone / ".claude-plugin" / "marketplace.json", json.dumps({
-        "name": marketplace,
-        "plugins": [{"name": "elephant-mem", "source": "./plugin"},
-                    {"name": "elephant-wiki", "source": "./elephant-wiki"}],
+        "name": marketplace, "plugins": catalogue,
     }, indent=2) + "\n")
     for source, (name, version, ships_from) in sources.items():
         write(clone / source / ".claude-plugin" / "plugin.json",
@@ -554,6 +559,7 @@ def main():
         bundle_checks(eu, tmp)
         check_cli_checks(eu, tmp)
         run_checks(eu, tmp)
+        trunk_checks(eu, tmp)
         dirty_knowledge_checks(eu, tmp)
         failure_checks(eu, tmp)
         launcher_checks(eu, tmp)
@@ -1602,6 +1608,208 @@ def run_checks(eu, tmp):
         record(f"`{' '.join(flags)}` is a usage error, and exits could-not-verify",
                done.returncode == eu.CHECK_CANNOT_VERIFY,
                f"{done.returncode} {done.stderr!r}")
+
+
+# ── elephant-trunk: a family member that publishes nothing ──────────────────
+
+TRUNK_SCRIPT = "print('trunk')\n"
+INDEX_AS_REBUILT = "# Entity index\n\n- rebuilt by build-index\n"
+
+
+def make_trunk_world(root, *, trunk_installed=True):
+    """A machine where `elephant-mem` and `elephant-wiki` are current, the bundle
+    matches them, and the clone carries a newer `elephant-trunk`: the state the
+    owner was in when trunk 0.1.0-beta.2 shipped alone.
+
+    The trunk ships `assets/scripts/trunk.py`, as the real one does, at a path
+    the required set's own `scripts/*.py` pattern would match. Nothing may copy
+    it. The bundle's index already reads as `build-index.py` writes it, so a run
+    that copies nothing also stages nothing, and the commit is observable as
+    absent.
+    """
+    mem_scripts = {"recall.py": "print('recall rc2')\n",
+                   "build-index.py": STUB_BUILD_INDEX,
+                   "validate-okf.py": STUB_VALIDATE_OK}
+    mem_templates = {"open-loop.md": "# loop rc2\n"}
+    wiki_scripts = {"wiki.py": "print('wiki 4')\n",
+                    "wiki.js": "// spa 4\n", "graph.js": "// graph 4\n"}
+    mem = make_plugin(root, "elephant-mem", version="1.0.0-rc.2",
+                      scripts=mem_scripts, templates=mem_templates,
+                      bin_files={"elephant-update":
+                                 EXECUTABLE.read_text(encoding="utf-8")})
+    wiki = make_plugin(root, "elephant-wiki", version="0.1.0-beta.4",
+                       scripts=wiki_scripts)
+    entries = {
+        "elephant-mem@elephant-mem": {"installPath": str(mem),
+                                      "version": "1.0.0-rc.2"},
+        "elephant-wiki@elephant-mem": {"installPath": str(wiki),
+                                       "version": "0.1.0-beta.4"},
+    }
+    if trunk_installed:
+        trunk1 = make_plugin(root, "elephant-trunk", version="0.1.0-beta.1",
+                             scripts={"trunk.py": "print('trunk 1')\n"})
+        entries["elephant-trunk@elephant-mem"] = {"installPath": str(trunk1),
+                                                  "version": "0.1.0-beta.1"}
+    registry = make_registry(root, entries)
+    trunk2 = make_plugin(root, "elephant-trunk", version="0.1.0-beta.2",
+                         marketplace="staging", scripts={"trunk.py": TRUNK_SCRIPT})
+    clone = make_clone(root, {
+        "plugin": ("elephant-mem", "1.0.0-rc.2", mem),
+        "elephant-wiki": ("elephant-wiki", "0.1.0-beta.4", wiki),
+        "elephant-trunk": ("elephant-trunk", "0.1.0-beta.2", trunk2),
+    })
+    bundle = make_bundle(
+        root, "bundle", scripts={**mem_scripts, "wiki.py": "print('wiki 4')\n"},
+        templates=mem_templates,
+        extra={**HAND_WRITTEN,
+               ".gitignore": (REAL_MEM_PLUGIN / "assets" / "seed" / ".gitignore")
+               .read_text(encoding="utf-8"),
+               "knowledge/entities/index.md": INDEX_AS_REBUILT})
+    home = Path(root) / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    log = write(Path(root) / "claude-calls.log", "")
+    world = {
+        "root": Path(root), "bundle": bundle, "registry": registry,
+        "clone": clone, "log": log, "home": home,
+        "pointer": write_pointer(Path(root) / "pointer.json", bundle),
+        "plan": {"log": str(log), "clone": str(clone),
+                 "cache": str(Path(root) / "cache"), "registry": str(registry),
+                 "marketplace": "elephant-mem", "declare": {}},
+    }
+    world["claude"] = make_fake_claude(root, world["plan"])
+    world["head"] = init_git(bundle)
+    return world
+
+
+def trunk_checks(eu, tmp):
+    """`elephant-trunk` is in the family the plan names and the run updates, and
+    publishes nothing into the bundle.
+
+    The run took the family from the registry's key suffix all along, so an
+    installed trunk was always updated. What failed was the plan: it named only
+    `elephant-mem` and the wiki, so a trunk-only release printed "already
+    current" for both and "the bundle's copies match", a plan with nothing in it
+    to approve. The owner had to update the trunk by hand."""
+    real_trunk = REPO_ROOT / "elephant-trunk"
+    record("the trunk is a named member of the family the plan lists",
+           eu.TRUNK_PLUGIN == "elephant-trunk" and eu.TRUNK_PLUGIN in eu.FAMILY,
+           getattr(eu, "FAMILY", None))
+    record("the trunk has no published set: nothing of it is copied into a bundle",
+           not any(spec.plugin == eu.TRUNK_PLUGIN for spec in eu.PUBLISHED),
+           eu.PUBLISHED)
+    record("the real trunk ships its script under assets/scripts/, so the "
+           "exclusion is doing real work",
+           (real_trunk / "assets" / "scripts" / "trunk.py").is_file())
+
+    root = tmp / "trunk-compare"
+    in_sync = make_bundle(root, "bundle",
+                          scripts={"recall.py": "print('r')\n"})
+    mem = make_plugin(root, "elephant-mem", scripts={"recall.py": "print('r')\n"})
+    result = eu.compare({"elephant-mem": mem, "elephant-trunk": real_trunk}, in_sync)
+    record("compare() with the real trunk resolved reads none of its files, and a "
+           "bundle without trunk.py is still in sync",
+           result.code == eu.CHECK_IN_SYNC
+           and not any(e.plugin == eu.TRUNK_PLUGIN for e in result.entries)
+           and "scripts/trunk.py" not in rels(result.entries),
+           [(e.rel, e.plugin, e.state) for e in result.entries])
+
+    plan = eu.plan_lines(
+        in_sync,
+        eu.Resolution([eu.PluginInstall("elephant-mem", "1.0.0-rc.2", mem, "registry"),
+                       eu.PluginInstall("elephant-trunk", "0.1.0-beta.2",
+                                        real_trunk, "registry"),
+                       eu.PluginInstall("elephant-later", "0.1.0", mem, "registry")]),
+        {"elephant-mem": "1.0.0-rc.2", "elephant-trunk": "0.1.0-beta.2",
+         "elephant-later": "0.1.0"}, result)
+    record("an installed, current trunk gets an 'already current' line",
+           "  elephant-trunk: 0.1.0-beta.2, already current" in plan, plan)
+    record("a family member the plan does not know by name still gets a line, "
+           "after the named three, so the plan cannot fall behind the run again",
+           "  elephant-later: 0.1.0, already current" in plan
+           and plan.index("  elephant-later: 0.1.0, already current")
+           > plan.index("  elephant-trunk: 0.1.0-beta.2, already current"), plan)
+    record("with nothing moving, the plan says no installed plugin has a newer "
+           "version",
+           "  no installed plugin has a newer version in the clone" in plan, plan)
+
+    if not git_available():
+        record("git on PATH (every GitHub-hosted runner has it)", False,
+               "git not found: the full run commits, so these checks cannot run")
+        return
+
+    # ── installed and behind: a trunk-only release ───────────────────────────
+    world = make_trunk_world(tmp / "trunk-run")
+    bundle, registry = world["bundle"], world["registry"]
+    before = snapshot(bundle)
+    done = in_world(world, "--plan")
+    record("trunk-only release: --plan exits 0", done.returncode == eu.RUN_OK,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("trunk-only release: the plan names the trunk's move",
+           "  elephant-trunk: 0.1.0-beta.1 → 0.1.0-beta.2" in done.stdout,
+           done.stdout)
+    record("trunk-only release: and says the run installs it, while elephant-mem "
+           "and the wiki read as current",
+           "  the run installs elephant-trunk 0.1.0-beta.2" in done.stdout
+           and "  elephant-mem: 1.0.0-rc.2, already current" in done.stdout
+           and "  elephant-wiki: 0.1.0-beta.4, already current" in done.stdout,
+           done.stdout)
+    record("trunk-only release: the plan lists no file to copy, trunk.py included",
+           "the bundle's copies match" in done.stdout
+           and "trunk.py" not in done.stdout, done.stdout)
+    record("trunk-only release: --plan wrote nothing into the bundle",
+           snapshot(bundle) == before, sorted(set(snapshot(bundle)) ^ set(before)))
+
+    calls(world, clear=True)
+    done = in_world(world, "--yes", "--no-refresh")
+    record("trunk-only release: the run exits 0 rather than stopping on a "
+           "current elephant-mem", done.returncode == eu.RUN_OK,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("trunk-only release: the run updates the trunk with one `claude plugin "
+           "update` call of its own",
+           "plugin update elephant-trunk@elephant-mem -y" in calls(world),
+           calls(world))
+    record("trunk-only release: the registry now names trunk 0.1.0-beta.2",
+           eu.resolve_plugins(plugins_dir=world["root"])
+           .version_of("elephant-trunk") == "0.1.0-beta.2",
+           registry.read_text(encoding="utf-8"))
+    record("trunk-only release: the run reports the move and the restart it needs",
+           "Installed elephant-trunk 0.1.0-beta.2 (was 0.1.0-beta.1)" in done.stdout
+           and "restarted to load elephant-trunk 0.1.0-beta.2" in done.stdout,
+           done.stdout)
+    record("trunk-only release: nothing of the trunk lands in the bundle",
+           not (bundle / "scripts" / "trunk.py").exists()
+           and not any("trunk" in rel for rel in snapshot(bundle)),
+           sorted(rel for rel in snapshot(bundle) if "trunk" in rel))
+    record("trunk-only release: the copy found nothing to do and no commit was made",
+           "already in sync" in done.stdout and "no commit was made" in done.stdout
+           and git(bundle, "rev-parse", "HEAD").stdout.strip() == world["head"],
+           done.stdout)
+    done = in_world(world, "--plan")
+    record("after the update the plan reads the trunk as current",
+           "  elephant-trunk: 0.1.0-beta.2, already current" in done.stdout
+           and "  no installed plugin has a newer version in the clone" in done.stdout,
+           done.stdout)
+
+    # ── not installed: offered by the clone, never installed ─────────────────
+    world = make_trunk_world(tmp / "trunk-absent", trunk_installed=False)
+    done = in_world(world, "--plan")
+    record("an uninstalled trunk is named as not installed, with what the clone "
+           "offers",
+           "  elephant-trunk: not installed (the clone offers 0.1.0-beta.2)"
+           in done.stdout, done.stdout)
+    calls(world, clear=True)
+    done = in_world(world, "--yes", "--no-refresh")
+    record("an uninstalled trunk: the run exits 0",
+           done.returncode == eu.RUN_OK,
+           f"{done.returncode}\n{done.stdout}\n{done.stderr}")
+    record("an uninstalled trunk is never installed: no update call names it",
+           not any("elephant-trunk" in line for line in calls(world)),
+           calls(world))
+    record("an uninstalled trunk is never installed: neither the registry nor the "
+           "cache holds it afterwards",
+           "elephant-trunk" not in world["registry"].read_text(encoding="utf-8")
+           and not (world["root"] / "cache" / "elephant-mem" / "elephant-trunk").exists(),
+           world["registry"].read_text(encoding="utf-8"))
 
 
 def dirty_knowledge_checks(eu, tmp):
