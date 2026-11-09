@@ -278,8 +278,9 @@ def _run(root):
            r.stderr or r.stdout)
     record("a set trunk.tag prints no hint about setting one",
            "trunk.tag" not in r.stderr, r.stderr)
-    record("the area tags are the fixed three",
-           cfg is not None and cfg["area_tags"] == ["trunk-study", "trunk-dispatch", "trunk-recipe"],
+    record("the area tags are the fixed four",
+           cfg is not None and cfg["area_tags"] == ["trunk-study", "trunk-dispatch", "trunk-recipe",
+                                                     "trunk-follow"],
            cfg)
 
     absent = make_bundle(root, "absent", {"owner": {"slug": "t"}, "hooks": {}})
@@ -393,7 +394,7 @@ def _run(root):
            st.get("desc") == "study with the repos", st)
     record("the JSON names the tag read and the areas asked for",
            out is not None and out["tag"] == "como-trabalhar" and out["tag_source"] == "elephant.json"
-           and out["areas"] == ["trunk-study", "trunk-dispatch", "trunk-recipe"], out)
+           and out["areas"] == ["trunk-study", "trunk-dispatch", "trunk-recipe", "trunk-follow"], out)
 
     r, out = facts_json("--bundle", how, "--area", "trunk-recipe", env=env_for(home))
     record("--area narrows the list to that area",
@@ -508,6 +509,7 @@ def _run(root):
            r.returncode != 0 and "no bundle pointer" in r.stderr, r.stderr)
 
     _fact_origin(root, home)
+    _hours(root, home)
     _run_record(root, home)
     _claim(root, home)
     _merge_level(root, home)
@@ -1123,6 +1125,67 @@ def _fact_origin(root, home):
     chans = {f["link"]: f.get("channels") for f in (out or {}).get("facts", [])}
     record("facts --json names the channels it read",
            chans.get("/facts/mixed.md") == ["claude-code:elephant", "meeting"], chans)
+
+
+def _hours(root, home):
+    """`hours` reads elephant.json's timezone and trunk.business_hours, with
+    Monday to Friday 09:00 to 18:00 when none are set, and says whether they
+    are open, when they close and when they open next; `config --json` names
+    the Slack self-DM delivery.start_day posts to."""
+    env = env_for(home)
+
+    def hours(b, at):
+        r = run(TRUNK, "hours", "--bundle", b, "--at", at, "--json", env=env)
+        try:
+            return r, json.loads(r.stdout)
+        except ValueError:
+            return r, None
+
+    plain = make_bundle(root, "hours-default", {"timezone": "-03:00"})
+    r, out = hours(plain, "2026-11-09T15:00:00Z")  # a Monday, 12:00 at -03:00
+    record("with no business hours set, Monday to Friday 09:00 to 18:00 in the bundle's timezone",
+           out is not None and out["hours_source"] == "default"
+           and out["hours"] == {"days": ["mon", "tue", "wed", "thu", "fri"], "start": "09:00", "end": "18:00"}
+           and out["open"] is True and out["closes"] == "2026-11-09T18:00:00-03:00"
+           and out["opens"] == "2026-11-10T09:00:00-03:00", out or r.stderr)
+    r, out = hours(plain, "2026-11-13T22:00:00Z")  # Friday 19:00 at -03:00
+    record("closed on a Friday evening, the hours open next on Monday",
+           out is not None and out["open"] is False and out["closes"] is None
+           and out["opens"] == "2026-11-16T09:00:00-03:00", out or r.stderr)
+
+    custom = make_bundle(root, "hours-custom", {
+        "timezone": "+01:00", "trunk": {"business_hours": {"days": ["Wed", "mon"], "start": "10:00",
+                                                           "end": "12:30"}}})
+    r, out = hours(custom, "2026-11-09T08:30:00Z")  # Monday 09:30 at +01:00
+    record("trunk.business_hours sets the days and the window, before it opens today",
+           out is not None and out["hours_source"] == "elephant.json" and out["hours"]["days"] == ["mon", "wed"]
+           and out["open"] is False and out["opens"] == "2026-11-09T10:00:00+01:00", out or r.stderr)
+
+    for label, value in (("end before they start", {"start": "18:00", "end": "09:00"}),
+                         ("name no weekday", {"days": ["someday"]}),
+                         ("are not HH:MM", {"start": "9am"}),
+                         ("are not an object", "9 to 6")):
+        b = make_bundle(root, f"hours-bad-{len(checks)}", {"trunk": {"business_hours": value}})
+        r, out = hours(b, "2026-11-09T15:00:00Z")
+        record(f"business hours that {label} read the default and say why",
+               r.returncode == 0 and out is not None and out["hours_source"] == "default"
+               and out["problems"] and "business_hours" in r.stderr, out or r.stderr)
+
+    zoned = make_bundle(root, "hours-zone", {"timezone": "Nowhere/Atlantis"})
+    r, out = hours(zoned, "2026-11-09T15:00:00Z")
+    record("a timezone no machine knows reads the machine's zone and says why",
+           r.returncode == 0 and out is not None and out["timezone"] == "machine"
+           and "timezone" in r.stderr, out or r.stderr)
+    r = run(TRUNK, "hours", "--bundle", plain, "--at", "2026-11-09T12:00:00", env=env)
+    record("a time with no offset is refused", r.returncode == 1 and "offset" in r.stderr, r.stderr)
+
+    dm = make_bundle(root, "slack-dm", {"delivery": {"start_day": {"via": "slack", "channel_id": "U0SELF"}}})
+    r, cfg = config_json("--bundle", dm, env=env)
+    record("config --json names the Slack self-DM delivery.start_day posts to",
+           cfg is not None and cfg.get("slack_dm") == "U0SELF", cfg)
+    r, cfg = config_json("--bundle", plain, env=env)
+    record("with no Slack delivery, the self-DM is null",
+           cfg is not None and "slack_dm" in cfg and cfg["slack_dm"] is None, cfg)
 
 
 def _merge_level(root, home):

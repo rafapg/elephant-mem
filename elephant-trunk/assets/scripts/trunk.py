@@ -13,14 +13,23 @@ knows by name, so an in-bundle copy would go stale with no one to refresh it.
 
 Commands:
   config                print the bundle and the how-I-work tag the trunk reads
-    --json              the same, as one JSON object on stdout
+    --json              the same, as one JSON object on stdout, with
+                        `slack_dm`: the channel delivery.start_day posts to
+                        when it is via slack (the owner's self-DM), else null
+  hours [--at <time>]   the owner's business hours: elephant.json's timezone
+                        (IANA name or fixed offset; the machine's when unset)
+                        and trunk.business_hours (days, start, end; Monday to
+                        Friday 09:00 to 18:00 when unset), whether they are
+                        open at --at (default: now), when the open window
+                        closes and when the next one opens
+    --json              the same, as one JSON object
   facts                 list the active facts carrying the how-I-work tag plus a
                         trunk area tag, read from knowledge/manifest.jsonl only;
                         exits 1, with `problem` in --json, when elephant.json is
                         present but its trunk.tag cannot be used; --json
                         also names the near misses, facts that would match
                         under another case or split on commas
-    --area <tag>        only this area tag (repeatable; default: all three)
+    --area <tag>        only this area tag (repeatable; default: all four)
     --forgotten         the learnings forgotten or steered instead
     --json              one JSON object on stdout; each fact also carries
                         its `origin` (owner, other or unknown) and the
@@ -188,7 +197,9 @@ POINTER = os.path.expanduser("~/.config/elephant-mem/config.json")
 # The how-I-work tag when elephant.json sets none. The area tags are fixed: the
 # skill reads the owner's how for each step through one of them.
 DEFAULT_TAG = "how-i-work"
-AREA_TAGS = ("trunk-study", "trunk-dispatch", "trunk-recipe")
+# trunk-follow: how the owner merges, deploys, keeps hours, breaks and is told,
+# read by the session an event wakes once the work reached a pull request.
+AREA_TAGS = ("trunk-study", "trunk-dispatch", "trunk-recipe", "trunk-follow")
 # A learning the owner forgot is `deprecated`, one they steered elsewhere is
 # `superseded`: elephant-mem's own fact statuses, so every reader of the
 # bundle, not only the trunk, stops presenting it as current.
@@ -272,10 +283,33 @@ def read_tag(bundle):
     return tag.strip(), "elephant.json", None
 
 
+def read_elephant_json(bundle):
+    """elephant.json as a dict, or {} when it is missing or not an object."""
+    try:
+        with open(os.path.join(bundle, "elephant.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def slack_dm(cfg):
+    """The owner's Slack self-DM as the bundle already names it: the channel
+    `delivery.start_day` posts to when it goes via slack. None otherwise."""
+    d = cfg.get("delivery")
+    d = d.get("start_day") if isinstance(d, dict) else None
+    if isinstance(d, dict) and d.get("via") == "slack":
+        ch = d.get("channel_id")
+        if isinstance(ch, str) and ch.strip():
+            return ch.strip()
+    return None
+
+
 def config(bundle):
     tag, source, problem = read_tag(bundle)
     return {"bundle": bundle, "tag": tag, "tag_source": source,
-            "area_tags": list(AREA_TAGS), "problem": problem}
+            "area_tags": list(AREA_TAGS), "problem": problem,
+            "slack_dm": slack_dm(read_elephant_json(bundle))}
 
 
 def announce_tag(cfg):
@@ -297,6 +331,128 @@ def cmd_config(args):
     print(f"trunk: bundle {cfg['bundle']}")
     print(f"trunk: how-I-work tag {cfg['tag']} (from {cfg['tag_source']})")
     print(f"trunk: area tags {', '.join(cfg['area_tags'])}")
+    if cfg["slack_dm"]:
+        print(f"trunk: Slack self-DM {cfg['slack_dm']}")
+    return 0
+
+
+# ── business hours ───────────────────────────────────────────────────────────
+#
+# A change the trunk judges critical, in a repo where the merge deploys, merges
+# only inside the owner's business hours. The hours are elephant.json's
+# `trunk.business_hours`, read in its top-level `timezone`; with none set,
+# Monday to Friday, 09:00 to 18:00. A value that cannot be used reads the
+# default and says why, so a typo never stops the follow.
+
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+DEFAULT_HOURS = {"days": list(WEEKDAYS[:5]), "start": "09:00", "end": "18:00"}
+HHMM_RE = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
+OFFSET_RE = re.compile(r"([+-])(\d{2}):?(\d{2})")
+
+
+def _zone(value):
+    """(tzinfo, name, problem) for elephant.json's `timezone`: a fixed offset
+    (`-03:00`, `Z`, `UTC`) or an IANA name. Unset, or unusable, is the
+    machine's own zone, the default elephant-mem documents for it."""
+    machine = datetime.datetime.now().astimezone().tzinfo
+    if value is None:
+        return machine, None, None
+    if not isinstance(value, str) or not value.strip():
+        return machine, None, f'"timezone" in elephant.json is not a usable zone ({value!r})'
+    raw = value.strip()
+    if raw.upper() in ("Z", "UTC"):
+        return datetime.timezone.utc, raw, None
+    m = OFFSET_RE.fullmatch(raw)
+    if m:
+        minutes = int(m.group(2)) * 60 + int(m.group(3))
+        if minutes < 24 * 60:
+            sign = -1 if m.group(1) == "-" else 1
+            return datetime.timezone(datetime.timedelta(minutes=sign * minutes)), raw, None
+        return machine, None, f'"timezone" in elephant.json is not a usable offset ({raw!r})'
+    try:
+        import zoneinfo
+        return zoneinfo.ZoneInfo(raw), raw, None
+    except Exception:  # an unknown name, or no tz database on this machine
+        return machine, None, f'"timezone" in elephant.json names no zone this machine knows ({raw!r})'
+
+
+def read_hours(cfg):
+    """(hours, source, problem): the business hours elephant.json sets under
+    `trunk.business_hours`, as {"days": [...], "start": "HH:MM", "end":
+    "HH:MM"}, or the default with source "default"."""
+    trunk = cfg.get("trunk")
+    value = trunk.get("business_hours") if isinstance(trunk, dict) else None
+    if value is None:
+        return dict(DEFAULT_HOURS), "default", None
+    why = None
+    if not isinstance(value, dict):
+        why = "is not an object"
+    else:
+        days = value.get("days", DEFAULT_HOURS["days"])
+        start, end = value.get("start", DEFAULT_HOURS["start"]), value.get("end", DEFAULT_HOURS["end"])
+        if not isinstance(days, list) or not days or \
+                any(not isinstance(d, str) or d.strip().lower()[:3] not in WEEKDAYS for d in days):
+            why = f"has days that are not weekdays ({days!r}; mon to sun)"
+        elif not all(isinstance(v, str) and HHMM_RE.fullmatch(v.strip()) for v in (start, end)):
+            why = f"has a start or end that is not HH:MM ({start!r}, {end!r})"
+        elif start.strip() >= end.strip():
+            why = f"ends before it starts ({start} to {end})"
+    if why:
+        return dict(DEFAULT_HOURS), "default", f'"trunk.business_hours" in elephant.json {why}'
+    days = sorted({d.strip().lower()[:3] for d in value.get("days", DEFAULT_HOURS["days"])},
+                  key=WEEKDAYS.index)
+    return ({"days": days, "start": value.get("start", DEFAULT_HOURS["start"]).strip(),
+             "end": value.get("end", DEFAULT_HOURS["end"]).strip()}, "elephant.json", None)
+
+
+def hours_at(hours, tz, at):
+    """Whether the hours are open at `at` (aware), the end of the open window
+    (or None), and the start of the next window after `at`."""
+    local = at.astimezone(tz)
+
+    def edge(day, hhmm):
+        h, m = (int(x) for x in hhmm.split(":"))
+        return datetime.datetime(day.year, day.month, day.day, h, m, tzinfo=tz)
+
+    open_now, closes, opens = False, None, None
+    for k in range(0, 9):
+        day = local.date() + datetime.timedelta(days=k)
+        if WEEKDAYS[day.weekday()] not in hours["days"]:
+            continue
+        start, end = edge(day, hours["start"]), edge(day, hours["end"])
+        if k == 0 and start <= local < end:
+            open_now, closes = True, end
+        elif start > local:
+            opens = start
+            break
+    return open_now, closes, opens
+
+
+def cmd_hours(args):
+    bundle = resolve_bundle(args.bundle)
+    cfg = read_elephant_json(bundle)
+    tz, zone, zproblem = _zone(cfg.get("timezone"))
+    hours, source, hproblem = read_hours(cfg)
+    problems = [p for p in (zproblem, hproblem) if p]
+    for p in problems:
+        note(f"{p}; reading the default")
+    at = parse_when(args.at, "--at") if args.at else None
+    at = datetime.datetime.fromisoformat(at) if at else datetime.datetime.now(datetime.timezone.utc)
+    open_now, closes, opens = hours_at(hours, tz, at)
+    iso = lambda d: d.isoformat() if d else None
+    out = {"bundle": bundle, "timezone": zone or "machine", "hours": hours, "hours_source": source,
+           "problems": problems, "at": at.astimezone(tz).isoformat(), "open": open_now,
+           "closes": iso(closes), "opens": iso(opens)}
+    if args.json:
+        print(json.dumps(out, ensure_ascii=False))
+        return 0
+    days = ", ".join(hours["days"])
+    print(f"trunk: business hours {days}, {hours['start']} to {hours['end']} "
+          f"({out['timezone']}, from {source})")
+    if open_now:
+        print(f"trunk: open now, closes {out['closes']}")
+    else:
+        print(f"trunk: closed now, opens {out['opens']}")
     return 0
 
 
@@ -3390,10 +3546,16 @@ def main(argv):
     p = sub.add_parser("config", parents=[common], help="print the bundle and the how-I-work tag")
     p.add_argument("--json", action="store_true", help="print one JSON object")
     p.set_defaults(func=cmd_config)
+    p = sub.add_parser("hours", parents=[common],
+                       help="the owner's business hours: open now, when they close, when they open next")
+    p.add_argument("--at", default="", metavar="TIME",
+                   help="read them at this time, ISO 8601 with its offset (default: now)")
+    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.set_defaults(func=cmd_hours)
     p = sub.add_parser("facts", parents=[common],
                        help="list the owner's how: facts with the how-I-work tag plus a trunk area tag")
     p.add_argument("--area", action="append", choices=AREA_TAGS,
-                   help="only this area tag (repeatable; default: all three)")
+                   help="only this area tag (repeatable; default: all four)")
     p.add_argument("--forgotten", action="store_true",
                    help="the learnings forgotten or steered instead, never read as the owner's how")
     p.add_argument("--json", action="store_true",
