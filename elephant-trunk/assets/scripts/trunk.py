@@ -101,6 +101,24 @@ Commands:
                         commit. Only that commit is read: an earlier or later
                         one, or a partial copy (the study pasted into a
                         source), is not checked
+  follow poll [--now <time>]
+                        one tick of the follow: for each waiting run, the
+                        sources in order (its orq team, read from orq's
+                        store; its pull request, its merge commit's deploy
+                        and time, read with gh), each compared with what the
+                        run last saw; only a difference enqueues a typed event
+                        under state/trunk/follow/queue/ and moves the wait.
+                        Time is the held hour arriving, the health window
+                        ending, a reminder after 3 days with no change and
+                        the give-back after 7. A source that cannot read
+                        enqueues nothing and says why in the tick's log
+                        (state/trunk/follow/poll.log); with no waiting run
+                        and nothing queued it writes nothing
+  follow queue [--all]  the events not delivered yet, oldest first
+  follow take <id>      take a pending event for delivery: of two routines,
+                        one does; an event whose run is gone is dropped
+  follow mark <id> --as <delivered|failed|dropped> [--why <w>]
+                        how the delivery went; failed keeps it queued
   recipe draft <run> --name <n> --roles <r> --file <path|->
                         [--test <path>] [--command <c>]
                         a new recipe written for this run: kept as a draft under
@@ -132,7 +150,8 @@ Commands:
   --bundle <path>       override bundle location (default: ELEPHANT_BUNDLE, then
                         the machine pointer ~/.config/elephant-mem/config.json)
 
-Run records live in <bundle>/state/trunk/runs/<name>.json. Before any write the
+Run records live in <bundle>/state/trunk/runs/<name>.json, the follow's queue in
+<bundle>/state/trunk/follow/queue/<id>.json. Before any write the
 script makes sure `state/trunk/` is git-ignored in the bundle (appending it to
 the bundle's .gitignore when needed) and, in a git bundle, asks git whether it
 is: a record git would commit is never written.
@@ -144,6 +163,7 @@ Pure stdlib, Python 3.10+. Cross-platform (explicit UTF-8 I/O).
 """
 import argparse
 import atexit
+import contextlib
 import datetime
 import hashlib
 import json
@@ -156,6 +176,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+import urllib.request
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -656,23 +677,44 @@ def lock_record(bundle, name, wait=LOCK_WAIT):
     path = lock_path(bundle, name)
     if not os.path.isdir(runs_dir(bundle)):
         return  # no record to change: the load that follows says so
+    if not _acquire(path, wait):
+        die(f"run {name} is being changed by another trunk.py (lock {path}); "
+            f"try again, and remove that file only if no trunk.py is running")
+    atexit.register(_release, path)
+
+
+def _acquire(path, wait):
+    """Create the empty lock file `path` with O_EXCL, retrying for `wait`
+    seconds; False when another process still holds it."""
     deadline = time.monotonic() + wait
     while True:
         try:
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
-            break
+            return True
         except FileExistsError:
             if time.monotonic() >= deadline:
-                die(f"run {name} is being changed by another trunk.py (lock {path}); "
-                    f"try again, and remove that file only if no trunk.py is running")
+                return False
             time.sleep(0.02)
 
-    def release():
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
-    atexit.register(release)
+
+def _release(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def held(path, wait=LOCK_WAIT):
+    """A lock held for a block only, not until the process exits: yields
+    whether it was taken. The follow's poll changes many runs in one process
+    and must not keep each locked while it reads GitHub for the next."""
+    ok = _acquire(path, wait)
+    try:
+        yield ok
+    finally:
+        if ok:
+            _release(path)
 
 
 def load_for_update(bundle, name):
@@ -1412,6 +1454,784 @@ def cmd_run_hold(args):
         print(json.dumps(view, ensure_ascii=False))
     else:
         print(f"run {rec['name']}: {'held' if view['hold'] else 'not held'}")
+    return 0
+
+
+# ── the follow: the sources and the queue ────────────────────────────────────
+#
+# `follow poll` is one tick of the follow. For each waiting run it runs the
+# sources in order (the run's orq team, its pull request, the deploy of the
+# merge commit, then time), each reading one kind of thing with no model, and
+# compares what it sees with what the run last saw (`wait.state[<source>]`).
+# Only a difference enqueues. An event is one JSON file under
+# state/trunk/follow/queue/, named by a hash of the run, its wait, the source,
+# the event and the wait it moved from, created with O_EXCL: the same state
+# never enqueues twice, even when a tick dies between the queue and the
+# record, and of two ticks only one creates it. An event carries structured
+# fields only (numbers, states, logins, SHAs, kinds, timestamps), each checked
+# against its shape before it is kept: a review body, a comment, a log line or
+# a message's text is never read into one. From orq's store only the
+# messages' metadata is read, never their text.
+#
+# `act` says what an event asks of the routine. `decide` wakes a session that
+# continues the run from it: an approval, a local approval, the hour arriving,
+# the health window ending, a merge whose deploy is a step the trunk runs.
+# `notify` is a note the routine sends itself: a change request, failing
+# checks, a head that moved, a broken deploy, a merge or a close, a team done
+# with no approval, the reminder, the give-back. The poll moves the wait only
+# where the next step is a fact (the team approved: wait on the approval; the
+# pull request merged: wait on the deploy; closed: the wait ends) and leaves
+# every judgment to the woken session.
+
+FOLLOW_SOURCES = ("team", "pr", "deploy", "time")
+EVENT_ACTS = ("decide", "notify")
+EVENT_PENDING, EVENT_TAKEN, EVENT_DELIVERED, EVENT_DROPPED = "pending", "taken", "delivered", "dropped"
+EVENT_OPEN = (EVENT_PENDING, EVENT_TAKEN)
+MARKS = ("delivered", "failed", "dropped")
+EVENT_VERSION = 1
+REMIND_DAYS, GIVE_BACK_DAYS = 3, 7
+# A taken event that no mark followed for this long is taken again: the
+# routine that took it died. The routine runs hourly.
+TAKE_STALE = 3600.0
+# A poll lock this old was left by a tick that died.
+POLL_STALE = 1800.0
+# orq's own override of where its store is, and its default.
+BUS_DB_ENV = "AGENT_BUS_DB"
+BUS_DB_DEFAULT = os.path.join("~", ".agent_bus", "agent_bus.sqlite")
+LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?")
+EVENT_ID_RE = re.compile(r"[0-9a-f]{16}")
+GH_TIMEOUT = 60
+# The pull request is read while the run waits on what comes before its merge.
+PR_ON = ("approval", "hour", "merge", "owner")
+PR_FIELDS = "state,headRefOid,latestReviews,statusCheckRollup,mergeCommit,mergedBy,mergedAt,autoMergeRequest"
+CHECK_FAILED = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
+CHECK_PENDING = {"PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"}
+DEPLOY_FAILED, DEPLOY_DONE = {"failure", "error"}, {"success", "inactive"}
+RUN_FAILED = {"failure", "timed_out", "cancelled", "startup_failure", "action_required"}
+RUN_DONE = {"success", "skipped", "neutral"}
+DEPLOYMENTS_READ = 10
+
+
+class SourceError(Exception):
+    """A source that could not read what it reads: no event, a line in the
+    tick's log, and the next tick retries."""
+
+
+class Step:
+    """What one source makes of what it saw: the events, the wait's fields that
+    change, the sources' last-seen state that changes, the reminder, and the
+    end of the wait as (outcome, why)."""
+
+    def __init__(self):
+        self.events, self.changes, self.state = [], {}, {}
+        self.reminded, self.end = False, None
+
+    def event(self, etype, act, **fields):
+        self.events.append((etype, act, fields))
+
+
+def follow_dir(bundle):
+    return os.path.join(bundle, "state", "trunk", "follow")
+
+
+def queue_dir(bundle):
+    return os.path.join(follow_dir(bundle), "queue")
+
+
+def event_path(bundle, eid):
+    return os.path.join(queue_dir(bundle), eid + ".json")
+
+
+def _when(value):
+    """A timestamp from a record or from GitHub as an aware datetime, or None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw[-1] in "Zz":
+        raw = raw[:-1] + "+00:00"
+    try:
+        when = datetime.datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return when if when.tzinfo else None
+
+
+def _stamp(value):
+    """A timestamp kept in an event or a state: ISO 8601 in UTC, or None."""
+    when = _when(value)
+    return when.astimezone(datetime.timezone.utc).isoformat(timespec="seconds") if when else None
+
+
+def _sha(value):
+    value = value.strip().lower() if isinstance(value, str) else ""
+    return value if SHA_RE.fullmatch(value) else None
+
+
+def _login(value):
+    value = value.strip() if isinstance(value, str) else ""
+    return value if LOGIN_RE.fullmatch(value) else None
+
+
+def _count(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _dig(data, *keys):
+    for k in keys:
+        data = data.get(k) if isinstance(data, dict) else None
+    return data
+
+
+# ── the sources: what each reads ─────────────────────────────────────────────
+
+def bus_db():
+    return os.path.abspath(os.path.expanduser(os.environ.get(BUS_DB_ENV) or BUS_DB_DEFAULT))
+
+
+def observe_team(team):
+    """What the run's orq team shows in orq's store: `approved` (the SHA, the
+    round, the pull request, the reviewers requested), `finished` (done or
+    closed with no approval), `error` (its last word was an error, and `orq
+    resume` can still take it on), `running`; None when no team of that key
+    ever started."""
+    try:
+        import sqlite3
+    except ImportError:
+        raise SourceError("this Python has no sqlite3 to read orq's store")
+    path = bus_db()
+    if not os.path.isfile(path):
+        raise SourceError(f"no orq store at {path}")
+    try:
+        uri = "file:" + urllib.request.pathname2url(path) + "?mode=ro"
+        with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=10)) as db:
+            topic = db.execute("SELECT topic_id, status FROM topics WHERE name = ? "
+                               "ORDER BY created_at DESC LIMIT 1", (f"orq/{team}",)).fetchone()
+            if not topic:
+                return None
+            rows = db.execute("SELECT metadata_json FROM messages WHERE topic_id = ? ORDER BY seq",
+                              (topic[0],)).fetchall()
+    except sqlite3.Error as exc:
+        raise SourceError(f"orq's store at {path} cannot be read ({exc})")
+    kinds, approved = [], None
+    for (raw,) in rows:
+        try:
+            meta = json.loads(raw) if raw else {}
+        except ValueError:
+            continue
+        kind = meta.get("kind") if isinstance(meta, dict) else None
+        if isinstance(kind, str):
+            kinds.append(kind)
+            if kind == "approved" and _sha(meta.get("sha")):
+                approved = meta
+    if approved is not None:
+        out = {"status": "approved", "sha": _sha(approved.get("sha")), "round": _count(approved.get("round")),
+               "pr": None, "repo": None,
+               "reviewers": sorted({x for x in (_login(p) for p in str(approved.get("reviewers") or "").split(","))
+                                    if x})}
+        m = PR_URL_RE.fullmatch(str(approved.get("pr") or "").strip())
+        if m:
+            out["repo"], out["pr"] = m.group(1), int(m.group(2))
+        return out
+    if "done" in kinds or topic[1] == "closed":
+        return {"status": "finished"}
+    if kinds and kinds[-1] == "error":
+        return {"status": "error"}
+    return {"status": "running"}
+
+
+def gh_json(gh, what, *args):
+    """`gh <args>` as JSON. A failure is a SourceError naming `what` and the
+    first line gh printed; the tick's log keeps it, no event does."""
+    try:
+        r = subprocess.run([gh, *args], capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=GH_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SourceError(f"gh could not read {what} ({type(exc).__name__})")
+    if r.returncode != 0:
+        first = (r.stderr or r.stdout or "").strip().splitlines()
+        raise SourceError(f"gh could not read {what} (exit {r.returncode}"
+                          f"{': ' + first[0][:160] if first else ''})")
+    try:
+        return json.loads(r.stdout or "null")
+    except ValueError:
+        raise SourceError(f"gh printed no JSON for {what}")
+
+
+def _checks(rollup):
+    """The head's checks, from the status check rollup: fail, pending, pass, none."""
+    seen = set()
+    for c in rollup if isinstance(rollup, list) else []:
+        if not isinstance(c, dict):
+            continue
+        status = str(c.get("status") or "").upper()
+        conclusion = str(c.get("conclusion") or "").upper()
+        state = str(c.get("state") or "").upper()
+        if conclusion in CHECK_FAILED or state in CHECK_FAILED:
+            seen.add("fail")
+        elif (status and status != "COMPLETED") or state in CHECK_PENDING:
+            seen.add("pending")
+        else:
+            seen.add("pass")
+    for verdict in ("fail", "pending", "pass"):
+        if verdict in seen:
+            return verdict
+    return "none"
+
+
+def observe_pr(gh, repo, pr):
+    """The pull request as the follow reads it: its state, head, the approvals
+    (login and the commit each approved), who requests changes, the head's
+    checks, whether an auto-merge is scheduled, the merge commit and who merged
+    or closed it."""
+    what = f"pull request {repo}#{pr}"
+    data = gh_json(gh, what, "pr", "view", str(pr), "--repo", repo, "--json", PR_FIELDS)
+    state = data.get("state") if isinstance(data, dict) else None
+    if state not in ("OPEN", "MERGED", "CLOSED"):
+        raise SourceError(f"gh gave {what} no state it knows")
+    approvals, changes = {}, set()
+    for review in data.get("latestReviews") or []:
+        login = _login(_dig(review, "author", "login"))
+        if not login:
+            continue
+        if _dig(review, "state") == "APPROVED":
+            approvals[login] = _sha(_dig(review, "commit", "oid"))
+        elif _dig(review, "state") == "CHANGES_REQUESTED":
+            changes.add(login)
+    out = {"state": state, "head": _sha(data.get("headRefOid")), "approvals": approvals,
+           "changes": sorted(changes), "checks": _checks(data.get("statusCheckRollup")),
+           "auto_merge": bool(data.get("autoMergeRequest")), "merge": None, "merged_at": None, "by": None}
+    if state == "MERGED":
+        out["merge"] = _sha(_dig(data, "mergeCommit", "oid"))
+        out["merged_at"] = _stamp(data.get("mergedAt"))
+        out["by"] = _login(_dig(data, "mergedBy", "login"))
+    elif state == "CLOSED":
+        out["by"] = _login(_dig(gh_json(gh, f"who closed {what}", "api", f"repos/{repo}/issues/{pr}"),
+                                "closed_by", "login"))
+    return out
+
+
+def observe_deploy(gh, repo, sha):
+    """The deploy GitHub records for the merge commit: its deployments when it
+    has any (each one's latest status), else the workflow runs the push of
+    that commit started. `state` is success, failure, pending, or none when
+    GitHub records nothing for it yet."""
+    what = f"the deploy of {repo}@{sha[:12]}"
+    deps = gh_json(gh, what, "api", "-X", "GET", f"repos/{repo}/deployments", "-f", f"sha={sha}")
+    deps = [d for d in deps if _count(_dig(d, "id"))] if isinstance(deps, list) else []
+    states, stamps = [], []
+    if deps:
+        signal = "deployment"
+        for d in deps[:DEPLOYMENTS_READ]:
+            statuses = gh_json(gh, what, "api", f"repos/{repo}/deployments/{d['id']}/statuses")
+            last = statuses[0] if isinstance(statuses, list) and statuses and isinstance(statuses[0], dict) else {}
+            states.append(str(last.get("state") or "pending").lower())
+            stamps.append(_stamp(last.get("created_at")))
+        state = ("failure" if any(s in DEPLOY_FAILED for s in states)
+                 else "success" if all(s in DEPLOY_DONE for s in states) else "pending")
+    else:
+        runs = gh_json(gh, what, "api", "-X", "GET", f"repos/{repo}/actions/runs",
+                       "-f", f"head_sha={sha}", "-f", "event=push")
+        runs = [r for r in (_dig(runs, "workflow_runs") or []) if isinstance(r, dict)]
+        if not runs:
+            return {"sha": sha, "signal": "none", "state": "none", "finished_at": None}
+        signal = "workflow"
+        for r in runs:
+            conclusion = str(r.get("conclusion") or "").lower()
+            states.append("pending" if r.get("status") != "completed" else
+                          "failure" if conclusion in RUN_FAILED else
+                          "success" if conclusion in RUN_DONE else "pending")
+            stamps.append(_stamp(r.get("updated_at")))
+        state = ("failure" if "failure" in states
+                 else "success" if all(s == "success" for s in states) else "pending")
+    finished = max((s for s in stamps if s), default=None) if state == "success" else None
+    return {"sha": sha, "signal": signal, "state": state, "finished_at": finished}
+
+
+# ── the steps: what each source makes of a change ───────────────────────────
+
+def _health(wait):
+    return bool(wait.get("health_window") or wait.get("health_rule"))
+
+
+def step_team(wait, obs):
+    seen = (wait.get("state") or {}).get("team") or {}
+    if wait.get("on") != "team" or obs == seen:
+        return None
+    team, step = wait.get("team"), Step()
+    step.state["team"] = obs
+    if obs["status"] == "approved":
+        repo = wait.get("repo") or ""
+        on_github = bool(REPO_RE.fullmatch(repo))
+        if obs["pr"]:
+            if on_github and repo.lower() != obs["repo"].lower():
+                raise SourceError(f"team {team} opened {obs['repo']}#{obs['pr']}, and the wait's repo is {repo}")
+            step.changes.update(pr=obs["pr"], approved_sha=obs["sha"], on="approval",
+                                repo=repo if on_github else obs["repo"])
+        else:
+            step.changes.update(approved_sha=obs["sha"], on="merge")
+        # With a pull request, what comes next is its approval: a note. With
+        # none (a repo with no remote), the local merge is decided now.
+        step.event("team-approved", "notify" if obs["pr"] else "decide", team=team, sha=obs["sha"],
+                   round=obs["round"], pr=obs["pr"], reviewers=obs["reviewers"])
+    elif obs["status"] == "finished":
+        step.event("team-finished", "notify", team=team)
+        step.changes["on"] = "owner"
+    elif obs["status"] == "error":
+        step.event("team-error", "notify", team=team)
+    return step
+
+
+def _merged(wait, obs, step):
+    """The pull request merged, by the trunk or by anyone: the run moves on to
+    the deploy as its repo defines it."""
+    pr, kind = wait.get("pr"), wait.get("deploy")
+    act = "notify"
+    if kind == "unknown":
+        step.end = ("merged", f"pull request #{pr} merged; what deploying means in this repo is the owner's")
+    elif kind in ("merge", "local"):
+        if _health(wait):
+            step.changes["on"] = "health"
+            step.state["deploy"] = {"sha": obs["merge"], "signal": "merge", "state": "success",
+                                    "finished_at": obs["merged_at"]}
+        else:
+            step.end = ("live", f"pull request #{pr} merged, and the merge is the deploy")
+    elif kind == "service":
+        step.changes["on"] = "deploy"
+    else:
+        # A release or a `lexflow deploy` is a step the trunk runs; with no
+        # deploy recorded, the session discerns it now.
+        step.changes["on"], act = "deploy", "decide"
+    step.event("pr-merged", act, pr=pr, merge_sha=obs["merge"], by=obs["by"], deploy=kind)
+
+
+def step_pr(wait, obs):
+    seen = (wait.get("state") or {}).get("pr") or {}
+    if wait.get("on") not in PR_ON or obs == seen:
+        return None
+    pr, step = wait.get("pr"), Step()
+    step.state["pr"] = obs
+    if obs["state"] == "MERGED":
+        if seen.get("state") != "MERGED":
+            _merged(wait, obs, step)
+        return step
+    if obs["state"] == "CLOSED":
+        if seen.get("state") != "CLOSED":
+            step.event("pr-closed", "notify", pr=pr, by=obs["by"])
+            step.end = ("closed", f"pull request #{pr} closed with no merge"
+                                  + (f" by {obs['by']}" if obs["by"] else ""))
+        return step
+    head, before = obs["head"], seen.get("approvals") or {}
+    for login, commit in sorted(obs["approvals"].items()):
+        if login not in before or before[login] != commit:
+            step.event("pr-approved", "decide", pr=pr, reviewer=login, head=head, reviewed=commit)
+    for login in obs["changes"]:
+        if login not in (seen.get("changes") or []):
+            step.event("pr-changes-requested", "notify", pr=pr, reviewer=login, head=head)
+            step.changes["on"] = "owner"
+    if obs["checks"] == "fail" and (seen.get("checks") != "fail" or seen.get("head") != head):
+        step.event("pr-checks-failed", "notify", pr=pr, head=head)
+        step.changes["on"] = "owner"
+    approved = wait.get("approved_sha")
+    if approved and head and not head.startswith(approved) and seen.get("head") != head:
+        step.event("pr-head-moved", "notify", pr=pr, head=head, approved_sha=approved)
+    return step
+
+
+def step_deploy(wait, obs):
+    seen = (wait.get("state") or {}).get("deploy") or {}
+    if wait.get("on") != "deploy" or obs == seen:
+        return None
+    step = Step()
+    step.state["deploy"] = obs
+    if obs["state"] == "success" and seen.get("state") != "success":
+        step.event("deploy-succeeded", "notify", sha=obs["sha"], signal=obs["signal"],
+                   finished_at=obs["finished_at"])
+        if _health(wait):
+            step.changes["on"] = "health"
+        else:
+            step.end = ("live", "the deploy finished well, and the repo has no service to check")
+    elif obs["state"] == "failure" and seen.get("state") != "failure":
+        step.event("deploy-failed", "notify", sha=obs["sha"], signal=obs["signal"])
+        step.changes["on"] = "owner"
+    return step
+
+
+def step_time(wait, t):
+    """The hour a held run waits for arriving, and the health window ending."""
+    seen = (wait.get("state") or {}).get("time") or {}
+    new, step = dict(seen), Step()
+    until = wait.get("hold_until")
+    # The hour holds a merge: once the run is past it, a hold-until left
+    # behind wakes no one.
+    if wait.get("on") in PR_ON and until and _when(until) and t >= _when(until) and seen.get("hour") != until:
+        step.event("hour-open", "decide", hold_until=until)
+        new["hour"] = until
+    if wait.get("on") == "health":
+        # The window counts from the deploy's end when a source saw it, else
+        # from when the run started waiting on health, kept so it never slides.
+        start = _dig(wait, "state", "deploy", "finished_at") or seen.get("health_from") or wait.get("since")
+        new["health_from"] = start
+        window = wait.get("health_window") or 0
+        began = _when(start)
+        if began and t >= began + datetime.timedelta(minutes=window) and seen.get("health") != start:
+            step.event("health-window-ended", "decide", deployed_at=_stamp(start), window=window)
+            new["health"] = start
+    if new != seen:
+        step.state["time"] = new
+    return step if step.events or step.state else None
+
+
+def step_stale(wait, t):
+    """A wait with no change for 3 days gets one reminder; at 7 it ends, and
+    the work is the owner's."""
+    since = _when(wait.get("since"))
+    if not since:
+        return None
+    age, step = t - since, Step()
+    if age >= datetime.timedelta(days=GIVE_BACK_DAYS):
+        step.event("given-back", "notify", on=wait.get("on"), since=_stamp(wait.get("since")),
+                   days=GIVE_BACK_DAYS)
+        step.end = ("given-back", f"no change for {GIVE_BACK_DAYS} days; the work is the owner's")
+    elif age >= datetime.timedelta(days=REMIND_DAYS) and not wait.get("reminded"):
+        step.event("reminder", "notify", on=wait.get("on"), since=_stamp(wait.get("since")), days=REMIND_DAYS)
+        step.reminded = True
+    else:
+        return None
+    return step
+
+
+# ── the queue ────────────────────────────────────────────────────────────────
+
+def _event_id(run, wait_n, source, etype, fields, wait):
+    """The same event from the same wait is the same file: what makes a tick
+    that died between the queue and the record enqueue nothing twice."""
+    key = json.dumps([run, wait_n, source, etype, fields, wait.get("state") or {}, wait.get("since"),
+                      wait.get("on")], sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
+def read_event(bundle, eid):
+    path = event_path(bundle, eid)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            ev = json.load(fh)
+    except FileNotFoundError:
+        raise RecordError(f"no event {eid} in the queue ({path})")
+    except (OSError, ValueError) as exc:
+        raise RecordError(f"the event {path} is unreadable ({exc})")
+    if not isinstance(ev, dict) or ev.get("id") != eid or ev.get("status") not in \
+            (EVENT_PENDING, EVENT_TAKEN, EVENT_DELIVERED, EVENT_DROPPED):
+        raise RecordError(f"the event {path} is not an event")
+    return ev
+
+
+def _write_event(bundle, ev):
+    d = queue_dir(bundle)
+    fd, tmp = tempfile.mkstemp(prefix=".event-", suffix=".tmp", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(ev, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        os.replace(tmp, event_path(bundle, ev["id"]))
+    except BaseException:
+        _release(tmp)
+        raise
+
+
+def enqueue(bundle, ev):
+    """Create the event's file; False when it is already queued. A file a dead
+    tick left empty is written again."""
+    os.makedirs(queue_dir(bundle), mode=0o700, exist_ok=True)
+    try:
+        os.close(os.open(event_path(bundle, ev["id"]), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        try:
+            read_event(bundle, ev["id"])
+            return False
+        except RecordError:
+            pass
+    _write_event(bundle, ev)
+    return True
+
+
+def list_events(bundle):
+    """Every readable event, oldest first, plus the files that could not be read."""
+    try:
+        ids = sorted(f[:-5] for f in os.listdir(queue_dir(bundle))
+                     if f.endswith(".json") and EVENT_ID_RE.fullmatch(f[:-5]))
+    except FileNotFoundError:
+        return [], []
+    events, bad = [], []
+    for eid in ids:
+        try:
+            events.append(read_event(bundle, eid))
+        except RecordError:
+            bad.append(event_path(bundle, eid))
+    events.sort(key=lambda e: (str(e.get("at", "")), e["id"]))
+    return events, bad
+
+
+def _is_open(ev, t=None):
+    """Pending, or taken by a routine that never marked it."""
+    if ev["status"] == EVENT_PENDING:
+        return True
+    if ev["status"] != EVENT_TAKEN:
+        return False
+    taken = _when(ev.get("taken"))
+    t = t or datetime.datetime.now(datetime.timezone.utc)
+    return not taken or (t - taken).total_seconds() >= TAKE_STALE
+
+
+def _drop(bundle, ev, why, t_iso):
+    ev["status"], ev["done"] = EVENT_DROPPED, {"at": t_iso, "as": "dropped", "why": why}
+    _write_event(bundle, ev)
+
+
+# ── the tick ─────────────────────────────────────────────────────────────────
+
+def _apply(bundle, name, wait_n, source, step_of, t, new, log):
+    """Under the run's lock, read the record fresh and let `step_of(wait)` say
+    what changed; enqueue its events, then write the wait. Returns the record
+    as written (or as read, when nothing changed), or None when the run is no
+    longer this wait."""
+    t_iso = t.isoformat()
+    with held(lock_path(bundle, name)) as ok:
+        if not ok:
+            log(f"{name}: its record is being changed by another trunk.py; the next tick retries")
+            return None
+        try:
+            rec = read_record(bundle, name)
+        except RecordError as exc:
+            log(f"{name}: {exc}")
+            return None
+        wait = rec.get("wait")
+        if rec["status"] != STATUS_WAITING or not isinstance(wait, dict) \
+                or len(rec.get("past_waits") or []) != wait_n:
+            return None
+        try:
+            step = step_of(wait)
+        except SourceError as exc:
+            log(f"{name}: {source}: {exc}")
+            return rec
+        if not step:
+            return rec
+        for etype, act, fields in step.events:
+            ev = {"version": EVENT_VERSION, "id": _event_id(name, wait_n, source, etype, fields, wait),
+                  "run": name, "source": source, "type": etype, "act": act, "at": t_iso, "fields": fields,
+                  "status": EVENT_PENDING, "taken": None, "attempts": [], "done": None}
+            if enqueue(bundle, ev):
+                new.append(ev)
+        state = dict(wait.get("state") or {})
+        state.update(step.state)
+        moved = state != (wait.get("state") or {}) or step.changes.get("on", wait.get("on")) != wait.get("on")
+        wait.update(step.changes)
+        wait["state"] = state
+        if moved:
+            wait["since"], wait["reminded"] = t_iso, None
+        if step.reminded:
+            wait["reminded"] = t_iso
+        if step.end:
+            outcome, why = step.end
+            wait["ended"] = {"at": t_iso, "outcome": outcome, "why": why}
+            rec["status"] = STATUS_DISPATCHED
+        rec["wait"], rec["updated"] = wait, t_iso
+        write_record(bundle, rec)
+        return rec
+
+
+def follow_run(bundle, rec, t, gh, new, log):
+    """One waiting run through the sources, in order; each sees the wait as
+    the one before it left it."""
+    name, wait_n = rec["name"], len(rec.get("past_waits") or [])
+
+    def go(source, step_of):
+        nonlocal rec
+        got = _apply(bundle, name, wait_n, source, step_of, t, new, log)
+        if got is not None:
+            rec = got
+        return got is not None and rec["status"] == STATUS_WAITING
+
+    def read(what, observe, *args):
+        try:
+            return observe(*args)
+        except SourceError as exc:
+            log(f"{name}: {what}: {exc}")
+            return None
+
+    wait = rec["wait"]
+    if wait.get("on") == "team":
+        if not wait.get("team"):
+            log(f"{name}: it waits on its team and names none (`run wait set {name} --team <key>`)")
+        else:
+            try:
+                obs = observe_team(wait["team"])
+            except SourceError as exc:
+                log(f"{name}: team: {exc}")
+                obs = False
+            if obs is None:
+                log(f"{name}: team: no orq team {wait['team']} in orq's store yet")
+            elif obs and not go("team", lambda w: step_team(w, obs)):
+                return
+    wait = rec["wait"]
+    github = bool(REPO_RE.fullmatch(wait.get("repo") or ""))
+    if wait.get("on") in PR_ON and wait.get("pr") and github:
+        obs = read("pr", observe_pr, gh, wait["repo"], wait["pr"]) if gh else None
+        if not gh:
+            log(f"{name}: pr: gh is not on PATH, so no pull request is read")
+        if obs is not None and not go("pr", lambda w: step_pr(w, obs)):
+            return
+    wait = rec["wait"]
+    merge = _dig(wait, "state", "pr", "merge")
+    if wait.get("on") == "deploy" and wait.get("deploy") == "service" and merge and github:
+        obs = read("deploy", observe_deploy, gh, wait["repo"], merge) if gh else None
+        if not gh:
+            log(f"{name}: deploy: gh is not on PATH, so no deploy is read")
+        if obs is not None and not go("deploy", lambda w: step_deploy(w, obs)):
+            return
+    if go("time", lambda w: step_time(w, t)):
+        go("time", lambda w: step_stale(w, t))
+
+
+def _poll_lock(bundle):
+    """The tick's own lock: two ticks never run the sources at once. One left
+    by a tick that died is taken over once it is old."""
+    path = os.path.join(follow_dir(bundle), ".poll.lock")
+    os.makedirs(follow_dir(bundle), mode=0o700, exist_ok=True)
+    if _acquire(path, 0):
+        return path
+    try:
+        if time.time() - os.path.getmtime(path) >= POLL_STALE:
+            _release(path)
+            if _acquire(path, 0):
+                return path
+    except OSError:
+        pass
+    return None
+
+
+def cmd_follow_poll(args):
+    bundle = resolve_bundle(args.bundle)
+    t = (datetime.datetime.fromisoformat(parse_when(args.now, "--now")) if args.now
+         else datetime.datetime.now(datetime.timezone.utc))
+    t_iso = t.isoformat()
+    lines, new = [], []
+
+    def log(line):
+        if line not in lines:
+            lines.append(line)
+
+    recs, bad = waiting_runs(bundle)
+    for n in bad:
+        log(f"skipped the unreadable run record {record_path(bundle, n)}")
+    events, unreadable = list_events(bundle)
+    opened = [e for e in events if e["status"] in EVENT_OPEN]
+    busy = False
+    if recs or opened:
+        ensure_ignored(bundle)
+        lock = _poll_lock(bundle)
+        if lock is None:
+            busy = True
+            log("another poll is running; this tick reads nothing")
+        else:
+            try:
+                for ev in opened:
+                    if not os.path.isfile(record_path(bundle, ev["run"])):
+                        with held(os.path.join(queue_dir(bundle), f".{ev['id']}.lock")) as ok:
+                            if ok:
+                                _drop(bundle, ev, "the run no longer exists", t_iso)
+                                log(f"dropped event {ev['id']} ({ev['type']}): run {ev['run']} no longer exists")
+                gh = shutil.which("gh")
+                for rec in sorted(recs, key=lambda r: r["name"]):
+                    follow_run(bundle, rec, t, gh, new, log)
+            finally:
+                _release(lock)
+    for path in unreadable:
+        log(f"skipped the unreadable event {path}")
+    if lines:
+        os.makedirs(follow_dir(bundle), mode=0o700, exist_ok=True)
+        with open(os.path.join(follow_dir(bundle), "poll.log"), "a", encoding="utf-8") as fh:
+            fh.writelines(f"{t_iso} {ln}\n" for ln in lines)
+    pending = [e for e in list_events(bundle)[0] if _is_open(e, t)]
+    if args.json:
+        print(json.dumps({"bundle": bundle, "at": t_iso, "waiting": len(recs), "busy": busy, "new": new,
+                          "pending": pending, "log": lines}, ensure_ascii=False))
+        return 0
+    for ln in lines:
+        note(ln)
+    print(f"follow: {len(recs)} waiting, {len(new)} new, {len(pending)} pending")
+    for e in new:
+        print(f"{e['id']}\t{e['run']}\t{e['type']}\t{e['act']}")
+    return 0
+
+
+def cmd_follow_queue(args):
+    bundle = resolve_bundle(args.bundle)
+    events, bad = list_events(bundle)
+    if not args.all:
+        events = [e for e in events if _is_open(e)]
+    for path in bad:
+        note(f"skipped the unreadable event {path}")
+    if args.json:
+        print(json.dumps({"bundle": bundle, "events": events, "unreadable": bad}, ensure_ascii=False))
+        return 0
+    for e in events:
+        print(f"{e['id']}\t{e['run']}\t{e['type']}\t{e['act']}\t{e['status']}")
+    return 0
+
+
+def _event_for_update(bundle, eid):
+    """The event, read under its own lock, held until this process exits."""
+    if not EVENT_ID_RE.fullmatch(eid or ""):
+        die(f'"{eid}" is not an event id (16 hex digits, as `follow queue` names it)')
+    if os.path.isdir(queue_dir(bundle)):
+        path = os.path.join(queue_dir(bundle), f".{eid}.lock")
+        if not _acquire(path, LOCK_WAIT):
+            die(f"event {eid} is being changed by another trunk.py (lock {path}); try again")
+        atexit.register(_release, path)
+    try:
+        return read_event(bundle, eid)
+    except RecordError as exc:
+        die(str(exc))
+
+
+def cmd_follow_take(args):
+    """Take a pending event for delivery: of two routines taking it, one does."""
+    bundle = resolve_bundle(args.bundle)
+    ev = _event_for_update(bundle, args.id)
+    t_iso = now()
+    if not _is_open(ev):
+        die(f"event {ev['id']} is {ev['status']}: another routine has it, or it was delivered; "
+            f"nothing was taken")
+    if not os.path.isfile(record_path(bundle, ev["run"])):
+        _drop(bundle, ev, "the run no longer exists", t_iso)
+        die(f"event {ev['id']}: run {ev['run']} no longer exists; the event is dropped")
+    ev["status"], ev["taken"] = EVENT_TAKEN, t_iso
+    _write_event(bundle, ev)
+    print(json.dumps(ev, ensure_ascii=False) if args.json else f"event {ev['id']}: taken")
+    return 0
+
+
+def cmd_follow_mark(args):
+    """How a delivery went: delivered and dropped close the event; failed
+    keeps it queued, with the attempt, for the next tick."""
+    bundle = resolve_bundle(args.bundle)
+    ev = _event_for_update(bundle, args.id)
+    why = (args.why or "").strip()
+    if "\n" in why:
+        die("--why is one line")
+    if ev["status"] not in EVENT_OPEN:
+        die(f"event {ev['id']} is already {ev['status']}; nothing was recorded")
+    t_iso = now()
+    if args.mark == "failed":
+        if not why:
+            die("say why the delivery failed with --why")
+        ev["attempts"].append({"at": t_iso, "why": why})
+        ev["status"], ev["taken"] = EVENT_PENDING, None
+    else:
+        ev["status"] = EVENT_DELIVERED if args.mark == "delivered" else EVENT_DROPPED
+        ev["done"] = {"at": t_iso, "as": args.mark, "why": why or None}
+    _write_event(bundle, ev)
+    print(json.dumps(ev, ensure_ascii=False) if args.json else f"event {ev['id']}: {ev['status']}")
     return 0
 
 
@@ -2676,6 +3496,30 @@ def main(argv):
     p.add_argument("--lift", action="store_true", help="lift the hold, on the owner's word")
     p.add_argument("--json", action="store_true", help="print the run's summary, wait and hold as JSON")
     p.set_defaults(func=cmd_run_hold)
+
+    follow = sub.add_parser("follow", help="the waiting runs' sources and the queue: poll, queue, take, mark")
+    fsub = follow.add_subparsers(dest="follow_command", required=True)
+    p = fsub.add_parser("poll", parents=[common],
+                        help="one tick: run the sources over the waiting runs, enqueue what changed")
+    p.add_argument("--now", default="", metavar="TIME",
+                   help="the time the tick reads (ISO 8601 with its offset; default: now), for a dry run or a test")
+    p.add_argument("--json", action="store_true", help="print the tick as one JSON object")
+    p.set_defaults(func=cmd_follow_poll)
+    p = fsub.add_parser("queue", parents=[common], help="the events not delivered yet, oldest first")
+    p.add_argument("--all", action="store_true", help="every event, delivered and dropped too")
+    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.set_defaults(func=cmd_follow_queue)
+    p = fsub.add_parser("take", parents=[common], help="take a pending event for delivery")
+    p.add_argument("id", help="the event's id, as follow queue names it")
+    p.add_argument("--json", action="store_true", help="print the event")
+    p.set_defaults(func=cmd_follow_take)
+    p = fsub.add_parser("mark", parents=[common], help="how the delivery of an event went")
+    p.add_argument("id", help="the event's id, as follow queue names it")
+    p.add_argument("--as", dest="mark", required=True, choices=MARKS,
+                   help="delivered or dropped close it; failed keeps it queued")
+    p.add_argument("--why", default="", help="why, in one line (required with failed)")
+    p.add_argument("--json", action="store_true", help="print the event")
+    p.set_defaults(func=cmd_follow_mark)
 
     recipe = sub.add_parser("recipe", help="a recipe written for a run: draft, checked, save, fact")
     csub = recipe.add_subparsers(dest="recipe_command_name", required=True)
