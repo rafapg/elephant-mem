@@ -32,13 +32,14 @@ It is the whole path in one run, in this order:
 2. Refreshes your local clone of the marketplace
    (`claude plugin marketplace update elephant-mem`).
 3. Reads the installed and published versions **off that refreshed clone** and
-   prints the version delta and the file-level plan. The delta names
-   `elephant-mem` and `elephant-wiki` only: an installed `elephant-trunk` has
-   no line in it, though step 5 updates it too and the `Installed … (was …)`
-   lines printed after the update name its move.
+   prints the version delta and the file-level plan. The delta has a line for
+   `elephant-mem`, `elephant-wiki` and `elephant-trunk`, and one more line
+   naming every installed plugin that moves. A trunk-only release shows there
+   even though it copies nothing into the bundle.
 4. Asks once. Declining installs and copies nothing.
 5. Runs `claude plugin update <plugin>@elephant-mem -y` for each installed plugin
-   of the family, `elephant-trunk` included.
+   of the family, `elephant-trunk` included. A plugin that is not installed is
+   never installed by the run.
 6. Re-reads Claude Code's registry for the directories the install just wrote.
 7. Copies the published files into the bundle.
 8. Runs `build-index.py`, then `validate-okf.py`.
@@ -150,6 +151,7 @@ directory the run resolved:
   does not run it.
 - `elephant-trunk` is not in the table: its script runs from the plugin and is
   never copied into the bundle, so there is no stale copy for a preflight to find.
+  The run still updates the plugin itself (step 5), and the plan names its move.
 - `elephant-wiki` not being installed is not could-not-verify. With no plugin
   publishing them, wiki files in the bundle are files no plugin ships: ignored.
 - Files the bundle holds that **neither** plugin ships are never drift and are

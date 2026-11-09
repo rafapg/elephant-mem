@@ -3,8 +3,9 @@ name: update
 disable-model-invocation: true
 description: >
   Run the whole update path from inside Claude Code: refresh the marketplace
-  clone, update the installed plugins of the elephant-mem family, and re-sync
-  this bundle's copied scripts/ and templates/. Shows the plan, asks once in the
+  clone, update the installed plugins of the elephant-mem family
+  (elephant-mem, elephant-wiki, elephant-trunk), and re-sync this bundle's
+  copied scripts/ and templates/. Shows the plan, asks once in the
   conversation, then calls `elephant-update` — the same executable a terminal
   runs. It rewrites the derived files under knowledge/ and stamps state/, and
   never touches a hand-written fact, loop or source, nor elephant.json,
@@ -67,7 +68,10 @@ and the run that follows are about the same bundle.
 
 `--plan` refreshes the marketplace clone (`claude plugin marketplace update
 elephant-mem`), reads the installed and the published versions off it, and
-prints the version delta and the file-level plan. It installs nothing, copies
+prints the version delta and the file-level plan. The delta has one line per
+plugin of the family: `elephant-mem`, `elephant-wiki` and `elephant-trunk`,
+each installed and moving (`<installed> → <available>`), already current, or
+not installed. A line `the run installs …` names every plugin that moves. It installs nothing, copies
 nothing, commits nothing and stamps nothing, which is what makes it safe to show
 before asking. Relay what it printed in `conversation_language`.
 
@@ -101,6 +105,14 @@ reporting. `--plan` has already written nothing beyond the refreshed clone.
 Ask in the conversation (AskUserQuestion), in `conversation_language`, showing
 what the plan said would change: the version delta and the files that would be
 installed or updated in the bundle.
+
+A version delta with no file behind it is still a change. `elephant-trunk`
+publishes nothing into the bundle, so a trunk-only release prints `the bundle's
+copies match` next to `the run installs elephant-trunk <version>`: ask, do not
+report "nothing to do". Only a plan saying `no installed plugin has a newer
+version in the clone` **and** that the bundle's copies match has nothing to
+install or copy; even then the run still rewrites the launcher and stamps, so
+offer it rather than skip it.
 
 If the user declines, stop. Nothing is installed and nothing is copied. The
 refreshed clone stays as it is, which is deliberate and harmless.
@@ -140,7 +152,8 @@ work.
 
 Short recap in `conversation_language`, from what the run printed:
 
-- **Versions**: which plugins of the family moved, and from what to what.
+- **Versions**: which plugins of the family moved, and from what to what. The
+  trunk's move is here and nowhere else: it copies nothing into the bundle.
 - **Files**: what was installed or updated in `<bundle>/scripts/` and
   `<bundle>/templates/`, and whether a commit was made.
 - **Already in sync**: when there was nothing to copy and nothing staged, no
@@ -166,6 +179,8 @@ Writes, inside the bundle:
   publish. `elephant-mem`'s set is required and is copied in full; the wiki's
   three files are optional and are updated only where the bundle already has
   them. A bundle file neither plugin ships is left alone rather than removed.
+  `elephant-trunk` publishes nothing: its `trunk.py` runs from the plugin, so
+  the run updates the plugin and copies none of it.
 - the derived files under `knowledge/` that `build-index.py` rewrites (entity hub
   blocks, archive shards, the manifest).
 - one **local** commit covering `knowledge`, `scripts` and `templates` — never a

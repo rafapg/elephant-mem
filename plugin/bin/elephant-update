@@ -81,9 +81,25 @@ RUN_FAILED_AFTER_COPY = 6
 # files, which is not drift and installs nothing, and one holding an older copy
 # is drift the update fixes but never a stop — the wiki renders the memory, it
 # does not run it.
+#
+# `elephant-trunk` publishes nothing into the bundle: its `trunk.py` runs from
+# the plugin directory and is never copied. So it has no entry in PUBLISHED, and
+# `compare()`, which globs only the plugins PUBLISHED names, never reads its
+# directory, even though the trunk ships `assets/scripts/trunk.py` at a path the
+# required set's own pattern would match. The copy, the index rebuild and the
+# commit never see it. It is a family member for the install alone: the plan
+# names it and the run updates it when it is installed.
 MARKETPLACE = "elephant-mem"
 REQUIRED_PLUGIN = "elephant-mem"
 OPTIONAL_PLUGIN = "elephant-wiki"
+TRUNK_PLUGIN = "elephant-trunk"
+
+# The plugins the plan names, in the order it names them. The run itself takes
+# the family from the registry's `@elephant-mem` suffix, so it always updated an
+# installed trunk; the plan named only the first two, and a trunk-only release
+# read there as "already current" twice over. A family member not listed here
+# still gets a line, after these, so the plan cannot drift from the run again.
+FAMILY = (REQUIRED_PLUGIN, OPTIONAL_PLUGIN, TRUNK_PLUGIN)
 
 PublishedSet = namedtuple("PublishedSet", "plugin required patterns")
 
@@ -721,10 +737,10 @@ def _rejects_flag(output, flag):
 def install_plugins(plugins, marketplace=MARKETPLACE):
     """`(ok, detail)` after updating each installed plugin of the family.
 
-    One call per plugin: `elephant-mem` and `elephant-wiki` version separately,
-    and only the ones actually installed are touched — an absent `elephant-wiki`
-    is a plugin the user never installed, not one this run should install for
-    them. `-y` because the CLI requires it when stdout is not a TTY, which is
+    One call per plugin: `elephant-mem`, `elephant-wiki` and `elephant-trunk`
+    version separately, and only the ones actually installed are touched. An
+    absent wiki or trunk is a plugin the user never installed, not one this run
+    should install for them. `-y` because the CLI requires it when stdout is not a TTY, which is
     always the case here.
 
     A handful of CLI point releases have shipped `plugin update` without the
@@ -820,9 +836,16 @@ def plan_lines(bundle, resolution, published, comparison, notes=(), against=""):
     the plugin installed right now: a plan read against the installed version
     prints "nothing to copy" on exactly the run that is about to copy three
     files, which is a plan nobody can approve.
+
+    A version line counts as much as a file line. A release can move a plugin
+    that publishes nothing into the bundle (the trunk always does), and that run
+    copies nothing while still installing something, so the plan says in one
+    line whether any installed plugin moves.
     """
     lines = [f"Bundle: {bundle}"]
-    for plugin in (REQUIRED_PLUGIN, OPTIONAL_PLUGIN):
+    others = sorted(p for p in resolution.installs if p not in FAMILY)
+    moving = []
+    for plugin in FAMILY + tuple(others):
         installed = resolution.version_of(plugin)
         available = published.get(plugin, "")
         if not installed:
@@ -833,10 +856,15 @@ def plan_lines(bundle, resolution, published, comparison, notes=(), against=""):
                          f"clone declares no version")
         elif parse_version(available) > parse_version(installed):
             lines.append(f"  {plugin}: {installed} → {available}")
+            moving.append(f"{plugin} {available}")
         elif installed == available:
             lines.append(f"  {plugin}: {installed}, already current")
         else:
             lines.append(f"  {plugin}: {installed} installed, {available} in the clone")
+    if moving:
+        lines.append(f"  the run installs {', '.join(moving)}")
+    elif resolution.installs:
+        lines.append("  no installed plugin has a newer version in the clone")
     for note in list(resolution.notes) + list(notes):
         lines.append(f"  note: {note}")
     if comparison.cannot_verify:
