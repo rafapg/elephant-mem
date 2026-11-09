@@ -40,8 +40,9 @@ Commands:
                         decision, note, learning, pending (text, appended);
                         pending is a learning surfaced mid-run and not
                         captured yet, kept so an exit before step 4 loses none;
-                        a decision starting merge-level: must read
-                        merge-level: manual|automatic (<source>), and a
+                        a merge-level: decision is refused (the merge level
+                        is retired, one already recorded stays as history),
+                        a hold: or hold lifted: decision says why, and a
                         recipe's command, a pending learning or a learning
                         never carries a merge parameter
     [--pending <n>]     with learning or note: settles pending learning n
@@ -51,11 +52,10 @@ Commands:
                         before the dispatch command runs: flips an open run to
                         starting under the record's lock, so of two sessions
                         claiming it exactly one wins; refuses a run that is
-                        not open (starting or dispatched); via orq, refuses a
-                        command whose merge parameter disagrees with the run's
-                        last merge-level: decision recorded after its last
-                        start and dispatch: decision (any merge parameter
-                        when there is none; on-approve only at automatic)
+                        not open (starting, dispatched or waiting); via orq,
+                        refuses a command carrying a merge parameter: the
+                        start stops at the pull request, and the merge is
+                        decided when the run's wait sees it approved
   run dispatch <name> --via <orq|claude-code> --command <c> [--where <w>]
                         [--error <e>]
                         record how the start went, ending the claim: without
@@ -64,6 +64,32 @@ Commands:
                         starting (claim it first); when --command is not the
                         claimed one, refuses it via orq and warns via
                         claude-code; a dispatched run refuses another
+  run wait set <name> [--on <what>] [--repo <r>] [--branch <b>] [--team <k>]
+                        [--pr <n|url>] [--sha <sha>] [--session <s>]
+                        [--deploy <kind>] [--health-rule <r>]
+                        [--health-window <min>] [--hold-until <time>]
+                        [--state <json>] [--reminded]
+                        a dispatched run starts waiting (--on required) or a
+                        waiting run's wait changes: what it waits on (team,
+                        approval, hour, merge, deploy, health, owner), the
+                        repo (owner/name, or a local path), the branch, the
+                        orq team, the pull request, the approved SHA, the
+                        owning orq session, the deploy kind (service,
+                        release, lexflow, local, merge, unknown) and health
+                        rule, no merge before --hold-until, what the sources
+                        last saw (--state, merged key by key, null drops a
+                        key), the reminder sent; an empty value clears a
+                        field; a change of --on or of the state moves
+                        `since` and clears `reminded`
+  run wait show <name>  the run's wait and hold (--json: one object)
+  run wait list         the waiting runs, most recent first
+  run wait end <name> --outcome <live|merged|closed|given-back> --why <w>
+                        the wait ends; the run is dispatched again, the wait
+                        kept with how it ended
+  run hold <name> --why <w> [--lift]
+                        the owner's hold: a hold: decision that blocks the
+                        run's merge until a hold lifted: decision, recorded
+                        only on the owner's word
   run ingested <name> [--commit <sha>]
                         after `ingest` ran over a dispatched run's record:
                         checks that nothing under state/trunk/ is tracked and
@@ -403,7 +429,14 @@ STATUS_OPEN, STATUS_DISPATCHED = "open", "dispatched"
 # Between `run claim` and the `run dispatch` that records how the start went:
 # the dispatch command may be running, so nothing else may start it.
 STATUS_STARTING = "starting"
-STATUSES = (STATUS_OPEN, STATUS_STARTING, STATUS_DISPATCHED)
+# A dispatched run whose work ends in a pull request or a branch waits on what
+# comes next (the team, the approval, the hour, the merge, the deploy, the
+# health window, the owner), with a structured `wait`; when the wait ends the
+# run is `dispatched` again, the wait kept with how it ended.
+STATUS_WAITING = "waiting"
+STATUSES = (STATUS_OPEN, STATUS_STARTING, STATUS_DISPATCHED, STATUS_WAITING)
+# Past the start: what was dispatched stays as dispatched, waiting or not.
+STARTED = (STATUS_DISPATCHED, STATUS_WAITING)
 # How long a write waits for another trunk.py holding the same record.
 LOCK_WAIT = 10.0
 DISPATCH_VIAS = ("orq", "claude-code")
@@ -419,20 +452,21 @@ SETTLES_PENDING = ("learning", "note")
 # as it was dispatched.
 FROZEN_AFTER_DISPATCH = ("study", "approaches", "brief", "recipe")
 
-# The merge level of a run. The owner's merge preference is computed fresh in
-# every session and recorded as a decision of its own prefix; a stored command
-# (a recipe's, a fact's) never carries the merge parameter, which the skill
-# adds to the start command from this run's level only. A merge parameter in
-# any spelling: `merge=on-approve` (after `--set` or `-s`), `--set=merge=pr`,
-# `--merge`, `MERGE:pr`. A bare value-less flag is one too, read as unknown. A
-# bare `merge` word is one only after `--set`/`-s` or before an `=`: as the
-# value of another option (`--branch merge`) it is not.
-MERGE_LEVEL_PREFIX = "merge-level:"
-MERGE_LEVEL_RE = re.compile(r"^merge-level:[ \t]*(manual|automatic)[ \t]*\((.+)\)[ \t]*$", re.I | re.S)
+# The merge parameter. The merge used to be a per-run level (`merge-level:
+# manual|automatic`, recorded as a decision) that the start command carried; it
+# is retired. On orq the start stops at the pull request, and the merge is
+# decided when the run's wait sees the pull request approved, from the owner's
+# trunk-follow facts. So no command the trunk stores or starts carries a merge
+# parameter. A `merge-level:` decision already in a record stays as history and
+# is never read. A merge parameter in any spelling: `merge=on-approve` (after
+# `--set` or `-s`), `--set=merge=pr`, `--merge`, `MERGE:pr`. A bare value-less
+# flag is one too. A bare `merge` word is one only after `--set`/`-s` or before
+# an `=`: as the value of another option (`--branch merge`) it is not.
+RETIRED_MERGE_LEVEL = "merge-level:"
 MERGE_TOKEN_RE = re.compile(r"^(?:-{1,2}set[=:])?-{0,2}merge(?:[ \t]*[=:][ \t]*(.*))?$", re.I | re.S)
-MERGE_VALUES = {"manual": "pr", "automatic": "on-approve"}
 SET_FLAGS = ("--set", "-set", "-s")
-DISPATCH_PREFIX = "dispatch:"
+MERGE_IS_THE_FOLLOWS = ("the start stops at the pull request, and the merge is decided when the "
+                        "run's wait sees it approved")
 
 
 def merge_params(command):
@@ -461,59 +495,16 @@ def merge_params(command):
 
 def _refuse_stored_merge(command, what):
     if merge_params(command):
-        die(f"{what} carries a merge parameter ({command!r}): a stored command never does. "
-            f"The merge level is set per run, from the owner's preference and this session; "
-            f"the start command gets it at 3c, and `run claim` checks it against the run's "
-            f"merge-level: decision")
+        die(f"{what} carries a merge parameter ({command!r}): no command the trunk stores or "
+            f"starts carries one; {MERGE_IS_THE_FOLLOWS}")
 
 
-def _at(item):
-    return str(item.get("at") or "") if isinstance(item, dict) else ""
-
-
-def last_merge_level(rec):
-    """`manual` or `automatic` from the run's last merge-level: decision, or
-    None. Only a decision recorded after the run's last start (an attempt or
-    a claim) and after its last `dispatch:` decision counts: the level is
-    stated in the session that starts the run, at 3c, after the owner's word
-    to dispatch, so one recorded before a failed start or before a newer
-    dispatch word is history from another session."""
-    decisions = rec.get("decisions") or []
-    cutoff = max([_at(a) for a in rec.get("attempts") or []] + [_at(rec.get("claim"))]
-                 + [_at(d) for d in decisions
-                    if isinstance(d, dict) and str(d.get("text") or "").strip().lower()
-                    .startswith(DISPATCH_PREFIX)] + [""])
-    for d in reversed(decisions):
-        text = (d.get("text") if isinstance(d, dict) else str(d)) or ""
-        if text.strip().lower().startswith(MERGE_LEVEL_PREFIX):
-            if _at(d) <= cutoff:
-                return None
-            m = MERGE_LEVEL_RE.match(text.strip())
-            return m.group(1).lower() if m else None
-    return None
-
-
-def merge_param_problem(command, level):
-    """Why a dispatch command's merge parameter disagrees with the run's
-    merge level, or None when it agrees."""
-    values = merge_params(command)
-    if not values:
-        if level == "automatic":
-            return ("the run's merge level in this session is automatic and the command "
-                    "carries no merge parameter, so it does not match the level; build the start "
-                    "command again from the level, or record the fallback to manual with why")
-        return None
-    if level is None:
-        return ("the command carries a merge parameter and the run records no merge-level: "
-                "decision of this session (after its last start and its last dispatch: "
-                "decision); the owner states the level in this session, and it is recorded "
-                "before the start (merge-level: manual|automatic (<source>))")
-    if any(v not in MERGE_VALUES.values() for v in values) or len(set(values)) > 1:
-        return (f"the command's merge parameter cannot be read as one of "
-                f"{', '.join(sorted(MERGE_VALUES.values()))} ({', '.join(str(v) for v in values)})")
-    if values[0] != MERGE_VALUES[level]:
-        return (f"the command's merge parameter is {values[0]} and the run's last merge-level: "
-                f"decision is {level}, which takes {MERGE_VALUES[level]}")
+def merge_param_problem(command):
+    """Why an orq start command cannot run as it is, or None: it carries a
+    merge parameter, and the merge is the follow's."""
+    if merge_params(command):
+        return (f"the command carries a merge parameter; on orq {MERGE_IS_THE_FOLLOWS}, so start "
+                f"it with no merge parameter")
     return None
 
 
@@ -773,6 +764,10 @@ def cmd_run_show(args):
         d = rec["dispatch"]
         print(f"\n## dispatched\nvia {d.get('via')} at {d.get('at')}"
               f"{', ' + d['where'] if d.get('where') else ''}\n{d.get('command')}")
+    wait_lines = _wait_lines(rec)
+    if wait_lines:
+        print("\n## " + ("waiting" if rec["status"] == STATUS_WAITING else "wait"))
+        print("\n".join(wait_lines))
     if rec["status"] == STATUS_STARTING:
         c = rec.get("claim") or {}
         print(f"\n## starting\nclaimed via {c.get('via')} at {c.get('at')}"
@@ -817,7 +812,7 @@ def cmd_run_list(args):
     for n in bad:
         note(f"skipped the unreadable run record {record_path(bundle, n)}")
     if args.open:
-        recs = [r for r in recs if r["status"] != STATUS_DISPATCHED]
+        recs = [r for r in recs if r["status"] not in STARTED]
     if args.json:
         # The unreadable ones are listed too, by path, so a resume that picks
         # from this list can say which records it could not offer.
@@ -847,7 +842,7 @@ def cmd_run_set(args):
     bundle = resolve_bundle(args.bundle)
     field, raw = args.field, _value(args)
     rec = load_for_update(bundle, check_name(args.name))
-    if rec["status"] == STATUS_DISPATCHED and field in FROZEN_AFTER_DISPATCH:
+    if rec["status"] in STARTED and field in FROZEN_AFTER_DISPATCH:
         die(f"run {rec['name']} was already dispatched; its {field} stays as dispatched "
             f"(add a decision or a note instead)")
     if rec["status"] == STATUS_STARTING and field in FROZEN_AFTER_DISPATCH:
@@ -889,11 +884,11 @@ def cmd_run_set(args):
             die(f"an empty {field} adds nothing")
         if field in ("pending", "learning"):
             _refuse_stored_merge(raw, f"the {field}")
-        if field == "decision" and raw.strip().lower().startswith(MERGE_LEVEL_PREFIX) \
-                and not MERGE_LEVEL_RE.match(raw.strip()):
-            die("a merge-level: decision reads merge-level: manual|automatic (<source>), "
-                "the source being fact, owner in this session, session override or a "
-                "fallback with why; nothing was recorded")
+        if field == "decision" and raw.strip().lower().startswith(RETIRED_MERGE_LEVEL):
+            die(f"the merge level is retired: {MERGE_IS_THE_FOLLOWS}, from the owner's facts; "
+                f"to keep this run from merging, `run hold` it; nothing was recorded")
+        if field == "decision":
+            hold_decision_or_die(raw)
         entry = {"at": t, "text": raw.strip()}
         if settles is not None:
             entry["settles"] = settles
@@ -904,7 +899,7 @@ def cmd_run_set(args):
 
 
 def _refuse_dispatched(rec):
-    if rec["status"] == STATUS_DISPATCHED:
+    if rec["status"] in STARTED:
         d = rec.get("dispatch") or {}
         die(f"run {rec['name']} was already dispatched via {d.get('via')} at {d.get('at')}"
             f"{' (' + d['where'] + ')' if d.get('where') else ''}; it is never dispatched again")
@@ -925,7 +920,7 @@ def cmd_run_claim(args):
             f"records how that start went (with --error when it did not start)")
     if args.via == "orq":
         problem = written_recipe_problem(rec.get("recipe")) \
-            or merge_param_problem(args.dispatch_command, last_merge_level(rec))
+            or merge_param_problem(args.dispatch_command)
         if problem:
             die(f"nothing is dispatched: {problem}")
     t = now()
@@ -1092,7 +1087,7 @@ def cmd_run_ingested(args):
     pasted into a source), is not found."""
     bundle = resolve_bundle(args.bundle)
     rec = load_for_update(bundle, check_name(args.name))
-    if rec["status"] != STATUS_DISPATCHED:
+    if rec["status"] not in STARTED:
         die(f"run {rec['name']} was not dispatched; its record is ingested after the dispatch")
     commit = args.commit or None
     inside = _git(bundle, "rev-parse", "--is-inside-work-tree")
@@ -1124,6 +1119,299 @@ def cmd_run_ingested(args):
         print(json.dumps({**summary(rec), "ingests": rec["ingests"]}, ensure_ascii=False))
     else:
         print(f"run {rec['name']}: ingested{' in ' + commit[:12] if commit else ''}")
+    return 0
+
+
+# ── the wait: what a dispatched run waits on next ────────────────────────────
+#
+# A run whose work ends in a pull request or a branch does not end there: it
+# waits, with a structured record the follow reads. Every field is structured
+# (a name, a number, a SHA, a kind, a timestamp); `state` holds what the
+# sources last saw, so the same state never enqueues twice. `since` is when
+# what it waits on, or what was last seen, last changed; `reminded` is when the
+# reminder for the current stretch went, and resets with `since`. Ending the
+# wait makes the run `dispatched` again, the wait kept with how it ended.
+#
+# The owner's hold is a decision of its own prefix: `hold: <why>` blocks the
+# merge until a later `hold lifted: <why>`, recorded only on the owner's word.
+
+WAIT_ON = ("team", "approval", "hour", "merge", "deploy", "health", "owner")
+DEPLOY_KINDS = ("service", "release", "lexflow", "local", "merge", "unknown")
+WAIT_OUTCOMES = ("live", "merged", "closed", "given-back")
+WAIT_TEXT = ("repo", "branch", "team", "session", "deploy", "health_rule")
+HOLD_PREFIX, LIFT_PREFIX = "hold:", "hold lifted:"
+REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+PR_URL_RE = re.compile(r"https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)(?:[/?#].*)?")
+SHA_RE = re.compile(r"[0-9a-f]{7,40}")
+# An orq team key, a session or agent name: one token, no whitespace.
+WAIT_KEY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}")
+BRANCH_RE = re.compile(r"[^\s~^:?*\[\\]{1,255}")
+
+
+def new_wait(t):
+    return {"on": None, "repo": None, "branch": None, "team": None, "pr": None,
+            "approved_sha": None, "session": None, "deploy": None, "health_rule": None,
+            "health_window": None, "hold_until": None, "since": t, "state": {},
+            "reminded": None, "ended": None}
+
+
+def hold_of(rec):
+    """The owner's hold on the run: its last `hold:` decision when no `hold
+    lifted:` decision came after it, else None."""
+    for d in reversed(rec.get("decisions") or []):
+        text = ((d.get("text") if isinstance(d, dict) else str(d)) or "").strip()
+        if text.lower().startswith(LIFT_PREFIX):
+            return None
+        if text.lower().startswith(HOLD_PREFIX):
+            return d if isinstance(d, dict) else {"at": None, "text": text}
+    return None
+
+
+def hold_decision_or_die(raw):
+    """A `hold:` or `hold lifted:` decision says why; one with nothing after
+    its prefix is refused."""
+    text = raw.strip()
+    for prefix in (LIFT_PREFIX, HOLD_PREFIX):
+        if text.lower().startswith(prefix):
+            if not text[len(prefix):].strip():
+                die(f"a {prefix} decision says why after the prefix ({prefix} <why>); "
+                    f"nothing was recorded")
+            return
+
+
+def parse_when(value, what):
+    """An ISO 8601 time carrying its offset (a trailing Z is UTC), as one
+    string; a time without an offset is refused, it would be read in no zone."""
+    raw = value.strip()
+    try:
+        when = datetime.datetime.fromisoformat(raw[:-1] + "+00:00" if raw[-1:] in "Zz" and raw else raw)
+    except ValueError:
+        die(f"{what} must be an ISO 8601 time with its offset, like 2026-11-10T09:00:00-03:00 ({value!r})")
+    if when.tzinfo is None:
+        die(f"{what} must carry its offset (-03:00, +00:00 or Z), or it is read in no zone ({value!r})")
+    return when.isoformat()
+
+
+def _wait_changes(args, wait):
+    """The fields `run wait set` changes, validated, as a dict. An empty value
+    clears a field."""
+    out = {}
+    if args.on is not None:
+        out["on"] = args.on
+    for field in WAIT_TEXT:
+        value = getattr(args, field)
+        if value is None:
+            continue
+        value = value.strip()
+        if value and field == "repo" and not (REPO_RE.fullmatch(value) or os.path.isabs(value)):
+            die(f"--repo is owner/name on GitHub, or the absolute path of a repo with no remote ({value!r})")
+        if value and field in ("team", "session") and not WAIT_KEY_RE.fullmatch(value):
+            die(f"--{field} is one name, without spaces ({value!r})")
+        if value and field == "branch" and not BRANCH_RE.fullmatch(value):
+            die(f"--branch is not a branch name ({value!r})")
+        if value and field == "deploy" and value not in DEPLOY_KINDS:
+            die(f"--deploy is one of {', '.join(DEPLOY_KINDS)} ({value!r})")
+        if field == "health_rule" and "\n" in value:
+            die("--health-rule is one line")
+        out[field] = value or None
+    if args.pr is not None:
+        value = args.pr.strip()
+        m = PR_URL_RE.fullmatch(value)
+        if m:
+            repo = out.get("repo") if "repo" in out else wait.get("repo")
+            if repo and repo.lower() != m.group(1).lower():
+                die(f"--pr {value} is a pull request of {m.group(1)}, and the wait's repo is {repo}")
+            if not repo:
+                out["repo"] = m.group(1)
+            out["pr"] = int(m.group(2))
+        elif value.lstrip("#").isdigit() and int(value.lstrip("#")) > 0:
+            out["pr"] = int(value.lstrip("#"))
+        elif not value:
+            out["pr"] = None
+        else:
+            die(f"--pr is the pull request's number or its GitHub URL ({value!r})")
+    if args.sha is not None:
+        value = args.sha.strip().lower()
+        if value and not SHA_RE.fullmatch(value):
+            die(f"--sha is a commit SHA, 7 to 40 hex digits ({args.sha!r})")
+        out["approved_sha"] = value or None
+    if args.health_window is not None:
+        value = args.health_window.strip()
+        if value and not (value.isdigit() and int(value) > 0):
+            die(f"--health-window is a whole number of minutes ({args.health_window!r})")
+        out["health_window"] = int(value) if value else None
+    if args.hold_until is not None:
+        out["hold_until"] = parse_when(args.hold_until, "--hold-until") if args.hold_until.strip() else None
+    if args.state is not None:
+        try:
+            state = json.loads(args.state)
+        except ValueError as exc:
+            die(f"--state must be a JSON object ({exc})")
+        if not isinstance(state, dict):
+            die("--state must be a JSON object, one key per source")
+        merged = dict(wait.get("state") or {})
+        for k, v in state.items():
+            if v is None:
+                merged.pop(k, None)
+            else:
+                merged[k] = v
+        out["state"] = merged
+    return out
+
+
+def cmd_run_wait_set(args):
+    """Start or update the wait of a dispatched run. A run starts waiting with
+    --on; a waiting run takes any field alone. A change to what it waits on,
+    or to what the sources last saw, moves `since` and clears `reminded`."""
+    bundle = resolve_bundle(args.bundle)
+    rec = load_for_update(bundle, check_name(args.name))
+    if rec["status"] not in STARTED:
+        die(f"run {rec['name']} is {rec['status']}: a run waits once it was dispatched "
+            f"(`run dispatch` records the start first); nothing was recorded")
+    t = now()
+    fresh = rec["status"] != STATUS_WAITING or not isinstance(rec.get("wait"), dict)
+    if fresh and not args.on:
+        die(f"run {rec['name']} is not waiting yet: say what it waits on with --on "
+            f"({', '.join(WAIT_ON)}); nothing was recorded")
+    if fresh:
+        if isinstance(rec.get("wait"), dict):
+            rec.setdefault("past_waits", []).append(rec["wait"])
+        wait = new_wait(t)
+    else:
+        wait = rec["wait"]
+    changes = _wait_changes(args, wait)
+    moved = not fresh and any(k in changes and changes[k] != wait.get(k) for k in ("on", "state"))
+    wait.update(changes)
+    if moved:
+        wait["since"], wait["reminded"] = t, None
+    if args.reminded:
+        wait["reminded"] = t
+    rec["wait"], rec["status"], rec["updated"] = wait, STATUS_WAITING, t
+    write_record(bundle, rec)
+    if args.json:
+        print(json.dumps({**summary(rec), "wait": wait}, ensure_ascii=False))
+    else:
+        print(f"run {rec['name']}: waiting on {wait['on']}")
+    return 0
+
+
+def cmd_run_wait_end(args):
+    """End a run's wait: the run is `dispatched` again, the wait kept with how
+    it ended and why."""
+    bundle = resolve_bundle(args.bundle)
+    rec = load_for_update(bundle, check_name(args.name))
+    if rec["status"] != STATUS_WAITING:
+        die(f"run {rec['name']} is not waiting ({rec['status']}); nothing was recorded")
+    why = (args.why or "").strip()
+    if not why:
+        die("say why the wait ends with --why")
+    t = now()
+    wait = rec["wait"] if isinstance(rec.get("wait"), dict) else new_wait(t)
+    wait["ended"] = {"at": t, "outcome": args.outcome, "why": why}
+    rec["wait"], rec["status"], rec["updated"] = wait, STATUS_DISPATCHED, t
+    write_record(bundle, rec)
+    if args.json:
+        print(json.dumps({**summary(rec), "wait": wait}, ensure_ascii=False))
+    else:
+        print(f"run {rec['name']}: the wait ended, {args.outcome}")
+    return 0
+
+
+def wait_view(rec):
+    """What a reader of the wait needs: the run, its wait and its hold."""
+    return {**summary(rec), "wait": rec.get("wait") if isinstance(rec.get("wait"), dict) else None,
+            "hold": hold_of(rec)}
+
+
+def _wait_lines(rec):
+    wait = rec.get("wait") if isinstance(rec.get("wait"), dict) else None
+    lines = []
+    if wait:
+        ended = wait.get("ended") or None
+        head = (f"ended {ended.get('at')}: {ended.get('outcome')}, {ended.get('why')}" if ended
+                else f"waiting on {wait.get('on')} since {wait.get('since')}")
+        lines.append(head)
+        where = wait.get("repo") or ""
+        if wait.get("pr"):
+            where += f"#{wait['pr']}"
+        if wait.get("branch"):
+            where += f" ({wait['branch']})"
+        for label, value in (("where", where.strip()), ("team", wait.get("team")),
+                             ("session", wait.get("session")), ("approved", wait.get("approved_sha")),
+                             ("deploy", wait.get("deploy")), ("health", wait.get("health_rule")),
+                             ("health window", f"{wait['health_window']} min" if wait.get("health_window") else None),
+                             ("hold until", wait.get("hold_until")), ("reminded", wait.get("reminded")),
+                             ("last seen", json.dumps(wait["state"], ensure_ascii=False, sort_keys=True)
+                              if wait.get("state") else None)):
+            if value:
+                lines.append(f"{label}: {value}")
+    hold = hold_of(rec)
+    if hold:
+        lines.append(f"held since {hold.get('at')}: {hold.get('text')}")
+    return lines
+
+
+def cmd_run_wait_show(args):
+    bundle = resolve_bundle(args.bundle)
+    rec = load_or_die(bundle, check_name(args.name))
+    if args.json:
+        print(json.dumps(wait_view(rec), ensure_ascii=False))
+        return 0
+    lines = _wait_lines(rec)
+    print(f"run {rec['name']} — {rec['status']}")
+    print("\n".join(lines) if lines else "it has never waited")
+    return 0
+
+
+def waiting_runs(bundle):
+    """The waiting runs, most recently updated first, plus the names of the
+    records that could not be read."""
+    recs, bad = list_records(bundle)
+    return [r for r in recs if r["status"] == STATUS_WAITING], bad
+
+
+def cmd_run_wait_list(args):
+    bundle = resolve_bundle(args.bundle)
+    recs, bad = waiting_runs(bundle)
+    for n in bad:
+        note(f"skipped the unreadable run record {record_path(bundle, n)}")
+    if args.json:
+        print(json.dumps({"bundle": bundle, "runs": [wait_view(r) for r in recs],
+                          "unreadable": [record_path(bundle, n) for n in bad]}, ensure_ascii=False))
+        return 0
+    for r in recs:
+        w = r.get("wait") if isinstance(r.get("wait"), dict) else {}
+        where = (w.get("repo") or "") + (f"#{w['pr']}" if w.get("pr") else "")
+        print(f"{r['name']}\t{w.get('on')}\t{w.get('since', '')}\t{where}"
+              f"{chr(9) + 'held' if hold_of(r) else ''}")
+    return 0
+
+
+def cmd_run_hold(args):
+    """Record the owner's hold on a run, or lift it. A hold blocks the run's
+    merge until the owner lifts it in a session."""
+    bundle = resolve_bundle(args.bundle)
+    rec = load_for_update(bundle, check_name(args.name))
+    why = (args.why or "").strip()
+    if not why or "\n" in why:
+        die("say why in one line with --why")
+    held = hold_of(rec)
+    if args.lift and not held:
+        die(f"run {rec['name']} has no hold to lift; nothing was recorded")
+    if not args.lift and held:
+        note(f"run {rec['name']} is already held since {held.get('at')} ({held.get('text')}); "
+             f"nothing was recorded")
+    else:
+        t = now()
+        prefix = LIFT_PREFIX if args.lift else HOLD_PREFIX
+        rec.setdefault("decisions", []).append({"at": t, "text": f"{prefix} {why}"})
+        rec["updated"] = t
+        write_record(bundle, rec)
+    view = wait_view(rec)
+    if args.json:
+        print(json.dumps(view, ensure_ascii=False))
+    else:
+        print(f"run {rec['name']}: {'held' if view['hold'] else 'not held'}")
     return 0
 
 
@@ -1208,7 +1496,7 @@ def _read_bytes(spec, what):
 def _open_for_recipe(args, after_dispatch=False):
     bundle = resolve_bundle(args.bundle)
     rec = load_for_update(bundle, check_name(args.run))
-    if rec["status"] == STATUS_DISPATCHED and not after_dispatch:
+    if rec["status"] in STARTED and not after_dispatch:
         die(f"run {rec['name']} was already dispatched; its recipe stays as dispatched")
     if rec["status"] == STATUS_STARTING and not after_dispatch:
         die(f"run {rec['name']} is being started; its recipe stays as claimed until "
@@ -2292,7 +2580,8 @@ def main(argv):
                    help="print one JSON object; each fact carries its origin (owner, other, unknown)")
     p.set_defaults(func=cmd_facts)
 
-    run = sub.add_parser("run", help="the run record: new, show, list, set, claim, dispatch, ingested")
+    run = sub.add_parser("run", help="the run record: new, show, list, set, claim, dispatch, ingested, "
+                                     "wait, hold")
     rsub = run.add_subparsers(dest="run_command", required=True)
     p = rsub.add_parser("new", parents=[common], help="start a run record")
     p.add_argument("--topic", required=True, help="the topic, in one line")
@@ -2320,8 +2609,7 @@ def main(argv):
     p.add_argument("name")
     p.add_argument("--via", required=True, choices=DISPATCH_VIAS)
     p.add_argument("--command", dest="dispatch_command", required=True,
-                   help="the command about to start the work; via orq, its merge parameter must "
-                        "agree with the run's last merge-level: decision")
+                   help="the command about to start the work; via orq, it carries no merge parameter")
     p.add_argument("--where", default="", help="where the work will run (orq team, workspace, session)")
     p.add_argument("--json", action="store_true", help="print the run's summary and claim as JSON")
     p.set_defaults(func=cmd_run_claim)
@@ -2343,6 +2631,51 @@ def main(argv):
     p.add_argument("--commit", default="", help="the ingest commit (default: the bundle's HEAD)")
     p.add_argument("--json", action="store_true", help="print the run's summary and its ingests as JSON")
     p.set_defaults(func=cmd_run_ingested)
+    wait = rsub.add_parser("wait", help="what a dispatched run waits on next: set, show, list, end")
+    wsub = wait.add_subparsers(dest="wait_command", required=True)
+    p = wsub.add_parser("set", parents=[common],
+                        help="start or update the wait of a dispatched run (an empty value clears a field)")
+    p.add_argument("name")
+    p.add_argument("--on", default=None, choices=WAIT_ON, help="what the run waits on now")
+    p.add_argument("--repo", default=None, help="owner/name on GitHub, or the absolute path of a local repo")
+    p.add_argument("--branch", default=None, help="the branch the work is on")
+    p.add_argument("--team", default=None, help="the orq team key the work was dispatched to")
+    p.add_argument("--pr", default=None, help="the pull request: its number or its GitHub URL")
+    p.add_argument("--sha", default=None, help="the commit the run's reviewer approved")
+    p.add_argument("--session", default=None, help="the orq session that owns the run")
+    p.add_argument("--deploy", default=None, metavar="KIND",
+                   help=f"what deploying means in this repo: {', '.join(DEPLOY_KINDS)}")
+    p.add_argument("--health-rule", dest="health_rule", default=None,
+                   help="what healthy means after the deploy, in one line")
+    p.add_argument("--health-window", dest="health_window", default=None, metavar="MINUTES",
+                   help="how long after the deploy health is watched")
+    p.add_argument("--hold-until", dest="hold_until", default=None, metavar="TIME",
+                   help="no merge before this time (ISO 8601 with its offset)")
+    p.add_argument("--state", default=None, metavar="JSON",
+                   help="what the sources last saw, a JSON object merged key by key (null drops a key)")
+    p.add_argument("--reminded", action="store_true", help="the reminder for this stretch was sent")
+    p.add_argument("--json", action="store_true", help="print the run's summary and its wait as JSON")
+    p.set_defaults(func=cmd_run_wait_set)
+    p = wsub.add_parser("show", parents=[common], help="read a run's wait and hold back")
+    p.add_argument("name")
+    p.add_argument("--json", action="store_true", help="print the run's summary, wait and hold as JSON")
+    p.set_defaults(func=cmd_run_wait_show)
+    p = wsub.add_parser("list", parents=[common], help="the waiting runs, most recent first")
+    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.set_defaults(func=cmd_run_wait_list)
+    p = wsub.add_parser("end", parents=[common], help="end a run's wait: it is dispatched again")
+    p.add_argument("name")
+    p.add_argument("--outcome", required=True, choices=WAIT_OUTCOMES, help="how the wait ended")
+    p.add_argument("--why", required=True, help="why, in one line")
+    p.add_argument("--json", action="store_true", help="print the run's summary and its wait as JSON")
+    p.set_defaults(func=cmd_run_wait_end)
+    p = rsub.add_parser("hold", parents=[common],
+                        help="the owner's hold on a run: no merge until the owner lifts it")
+    p.add_argument("name")
+    p.add_argument("--why", required=True, help="why, in one line")
+    p.add_argument("--lift", action="store_true", help="lift the hold, on the owner's word")
+    p.add_argument("--json", action="store_true", help="print the run's summary, wait and hold as JSON")
+    p.set_defaults(func=cmd_run_hold)
 
     recipe = sub.add_parser("recipe", help="a recipe written for a run: draft, checked, save, fact")
     csub = recipe.add_subparsers(dest="recipe_command_name", required=True)

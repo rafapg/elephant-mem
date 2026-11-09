@@ -249,7 +249,7 @@ skipped: a personal tool with a handful of runs a week; the owner reads the outc
 
 ### Phase 1: the waiting run
 
-- [ ] **1. The run waits**: `trunk.py` gains a `waiting` status and a structured
+- [x] **1. The run waits**: `trunk.py` gains a `waiting` status and a structured
       wait (what it waits on, repo, pull request, approved SHA, owning orq
       session, deploy kind and health rule, hold-until, since, last state,
       reminded), a `hold` decision, and `run` subcommands to set and read them;

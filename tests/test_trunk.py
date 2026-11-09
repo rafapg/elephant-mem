@@ -16,9 +16,10 @@ A learning the owner steers or forgets leaves the facts the trunk reads: its
 fact becomes `superseded` or `deprecated` in its own file, the bundle's real
 build-index.py rebuilds the manifest, and only the trunk's own how is touched.
 `facts --json` says where each fact came from (`owner` only when every source it
-cites is the owner's own Claude Code conversation), and no stored command
-carries a merge parameter, while `run claim` holds one to the run's last
-`merge-level:` decision.
+cites is the owner's own Claude Code conversation), and no stored command and no
+orq start carries a merge parameter: the merge level is retired. A dispatched
+run waits with a structured wait (`run wait set|show|list|end`), and the
+owner's hold (`run hold`) is a decision of its own prefix.
 Past sessions read on first use are estimated without a bundle, and their
 extract keeps the owner's own messages and the names of what ran, never tool
 output, the assistant's text, a command's arguments or a credential.
@@ -507,6 +508,7 @@ def _run(root):
     _run_record(root, home)
     _claim(root, home)
     _merge_level(root, home)
+    _wait(root, home)
     _recipe_written(root, home)
     _steer_and_forget(root, home)
     _past_sessions(root, home)
@@ -1120,9 +1122,9 @@ def _fact_origin(root, home):
 
 
 def _merge_level(root, home):
-    """A stored command never carries a merge parameter, and the claim holds
-    the start command's merge parameter to the run's last merge-level:
-    decision."""
+    """The merge level is retired: no stored command and no orq start carries
+    a merge parameter, a new merge-level: decision is refused, and one already
+    in a record stays as history, never read."""
     env = env_for(home)
     b = make_bundle(root, "merges", {"trunk": {"tag": "como-trabalhar"}})
     show = lambda n: run_json("show", "--bundle", b, n, env=env)[1] or {}
@@ -1155,68 +1157,48 @@ def _merge_level(root, home):
                         "roles": "x"}), env=env)
     record("a command whose only merge is a word inside a quoted argument is kept",
            r.returncode == 0 and show("m-draft").get("recipe", {}).get("name") == "impl_review", r.stderr)
-    r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "decision", "--value", "merge-level: sometimes", env=env)
-    record("a merge-level: decision not in its form is refused",
-           r.returncode != 0 and "merge-level: manual|automatic" in r.stderr
-           and not show("m-draft").get("decisions"), r.stderr)
+    for d in ("merge-level: automatic (fact)", "merge-level: manual (owner in this session)",
+              "Merge-Level: sometimes"):
+        r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "decision", "--value", d, env=env)
+        record(f"a merge-level: decision is refused, the level retired: {d}",
+               r.returncode != 0 and "retired" in r.stderr and "run hold" in r.stderr
+               and not show("m-draft").get("decisions"), r.stderr)
     r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "decision", "--value",
             "approaches merged: the two are one", env=env)
     record("a decision about approaches that merged is not a merge level", r.returncode == 0, r.stderr)
 
-    on, pr = "orq start impl_review K --set merge=on-approve", "orq start impl_review K --set merge=pr"
+    # On orq the start stops at the pull request: no claim carries a merge
+    # parameter, in any spelling, whatever the record says.
+    on = "orq start impl_review K --set merge=on-approve"
     new("m-none")
-    r = claim("m-none", on)
-    record("with no merge-level: decision, a claim carrying a merge parameter is refused, the run still open",
-           r.returncode != 0 and "no merge-level" in r.stderr and show("m-none").get("status") == "open", r.stderr)
-    r = claim("m-none", "this session: build, review, then merge per the level", via="claude-code")
+    for cmd, why in ((on, "merge=on-approve"), ("orq start impl_review K --set merge=pr", "merge=pr"),
+                     ("orq start impl_review K --merge", "a bare --merge"),
+                     ("orq start impl_review K --set=merge=on-approve", "--set=merge=on-approve")):
+        r = claim("m-none", cmd)
+        record(f"via orq, a claim carrying a merge parameter is refused, the run still open: {why}",
+               r.returncode != 0 and "merge parameter" in r.stderr and "pull request" in r.stderr
+               and show("m-none").get("status") == "open", r.stderr)
+    r = claim("m-none", "this session: build, review, open the pull request", via="claude-code")
     record("via claude-code the plan line is prose, never read for a merge parameter",
            r.returncode == 0 and show("m-none").get("status") == "starting", r.stderr)
-    new("m-manual", "merge-level: manual (fact)")
-    r = claim("m-manual", on)
-    record("at manual, a claim with merge=on-approve is refused",
-           r.returncode != 0 and "manual" in r.stderr and show("m-manual").get("status") == "open", r.stderr)
-    r = claim("m-manual", "orq start impl_review K")
-    record("at manual, a claim with no merge parameter starts", r.returncode == 0, r.stderr)
-    new("m-auto", "merge-level: automatic (fact)")
-    for cmd, why in (("orq start impl_review K", "no merge parameter"), (pr, "merge=pr"),
-                     ("orq start impl_review K --merge", "a bare --merge"),
-                     (on + " --set merge=pr", "two that disagree")):
-        r = claim("m-auto", cmd)
-        record(f"at automatic, a claim with {why} is refused",
-               r.returncode != 0 and show("m-auto").get("status") == "open", r.stderr)
-    r = claim("m-auto", "orq start impl_review K --set=merge=on-approve")
-    record("at automatic, a claim with merge=on-approve, in any spelling, starts", r.returncode == 0, r.stderr)
-    new("m-last", "merge-level: automatic (fact)", "merge-level: manual (session override)")
-    r = claim("m-last", on)
-    record("the last merge-level: decision is the one held: a session override refuses on-approve",
-           r.returncode != 0 and show("m-last").get("status") == "open", r.stderr)
 
-    # A level stated before a failed start, or before a newer dispatch word, is
-    # another session's: it never passes a claim, and the refusal never says to
-    # add the merge parameter.
-    new("m-stale", "dispatch: the approach", "merge-level: automatic (fact)")
-    claim("m-stale", on)
-    run(TRUNK, "run", "dispatch", "--bundle", b, "m-stale", "--via", "orq", "--command", on,
-        "--error", "orq: no such team", env=env)
-    r = claim("m-stale", on)
-    record("a merge-level: decision recorded before the run's last failed start no longer passes a claim",
-           r.returncode != 0 and "this session" in r.stderr and show("m-stale").get("status") == "open", r.stderr)
-    record("the refusal says the owner states the level in this session, never to add the parameter",
-           "--set merge" not in r.stderr and "add the" not in r.stderr, r.stderr)
-    run(TRUNK, "run", "set", "--bundle", b, "m-stale", "decision", "--value", "dispatch: the approach, again", env=env)
-    run(TRUNK, "run", "set", "--bundle", b, "m-stale", "decision", "--value",
-        "merge-level: automatic (fact)", env=env)
-    r = claim("m-stale", on)
-    record("a merge-level: decision recorded after the retry's dispatch word passes the claim",
-           r.returncode == 0 and show("m-stale").get("status") == "starting", r.stderr)
-    new("m-redispatch", "merge-level: automatic (fact)", "dispatch: a newer word")
-    r = claim("m-redispatch", on)
-    record("a merge-level: decision older than the last dispatch: decision does not pass a claim",
-           r.returncode != 0 and show("m-redispatch").get("status") == "open", r.stderr)
-    new("m-auto-hint", "dispatch: go", "merge-level: automatic (fact)")
-    r = claim("m-auto-hint", "orq start impl_review K")
-    record("at automatic with no parameter, the refusal does not tell how to add one",
-           r.returncode != 0 and "--set merge" not in r.stderr, r.stderr)
+    # A record from before the retirement keeps its merge-level: decisions as
+    # history: it still reads, and they no longer gate a claim.
+    new("m-old")
+    path = b / "state" / "trunk" / "runs" / "m-old.json"
+    old = json.loads(path.read_text(encoding="utf-8"))
+    old["decisions"] = [{"at": "2026-10-01T10:00:00+00:00", "text": "dispatch: the approach"},
+                        {"at": "2026-10-01T10:01:00+00:00", "text": "merge-level: automatic (fact)"}]
+    path.write_text(json.dumps(old), encoding="utf-8")
+    r = run(TRUNK, "run", "show", "--bundle", b, "m-old", env=env)
+    record("a record carrying an old merge-level: decision still reads, the decision kept as history",
+           r.returncode == 0 and "merge-level: automatic (fact)" in r.stdout, r.stderr or r.stdout)
+    r = claim("m-old", on)
+    record("an old merge-level: automatic no longer passes a merge parameter",
+           r.returncode != 0 and show("m-old").get("status") == "open", r.stderr)
+    r = claim("m-old", "orq start impl_review K")
+    record("an old merge-level: decision does not stop a claim with no merge parameter",
+           r.returncode == 0 and show("m-old").get("status") == "starting", r.stderr)
 
     # A bare `merge` word as another option's value is not a merge parameter;
     # pending learnings and learnings never store one.
@@ -1235,6 +1217,200 @@ def _merge_level(root, home):
     r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "pending", "--value",
             "trunk-dispatch: the owner does not want to merge by hand", env=env)
     record("a pending learning that only talks about merging is kept", r.returncode == 0, r.stderr)
+
+
+def _wait(root, home):
+    """A dispatched run waits with a structured wait, read back by `run wait
+    show|list`, ended by `run wait end`; the owner's hold is a decision of its
+    own prefix that only a `hold lifted:` decision lifts."""
+    env = env_for(home)
+    b = make_bundle(root, "waits", {"trunk": {"tag": "como-trabalhar"}})
+    show = lambda n: run_json("show", "--bundle", b, n, env=env)[1] or {}
+    wait = lambda n: (show(n).get("wait") or {})
+
+    def wset(n, *args):
+        return run(TRUNK, "run", "wait", "set", "--bundle", b, n, *args, env=env)
+
+    def dispatched(n):
+        run(TRUNK, "run", "new", "--bundle", b, "--topic", n, "--name", n, env=env)
+        run(TRUNK, "run", "set", "--bundle", b, n, "brief", "--value", "the brief", env=env)
+        run(TRUNK, "run", "claim", "--bundle", b, n, "--via", "orq", "--command", f"orq start impl_review {n}",
+            env=env)
+        run(TRUNK, "run", "dispatch", "--bundle", b, n, "--via", "orq", "--command", f"orq start impl_review {n}",
+            env=env)
+
+    run(TRUNK, "run", "new", "--bundle", b, "--topic", "not yet", "--name", "w-open", env=env)
+    r = wset("w-open", "--on", "team")
+    record("a run not dispatched yet does not wait",
+           r.returncode != 0 and "dispatch" in r.stderr and show("w-open").get("status") == "open"
+           and "wait" not in show("w-open"), r.stderr)
+
+    dispatched("w1")
+    r = wset("w1", "--repo", "rafapg/elephant-mem")
+    record("a dispatched run starts waiting only when told what it waits on",
+           r.returncode != 0 and "--on" in r.stderr and show("w1").get("status") == "dispatched", r.stderr)
+    r, out = run_json("wait", "set", "--bundle", b, "w1", "--on", "team", "--repo", "rafapg/elephant-mem",
+                      "--branch", "feat/x", "--team", "trunk-2", "--session", "trunk-2/build", env=env)
+    w = wait("w1")
+    record("run wait set makes a dispatched run waiting, with its structured wait",
+           r.returncode == 0 and out and out["status"] == "waiting" and show("w1").get("status") == "waiting"
+           and w.get("on") == "team" and w.get("repo") == "rafapg/elephant-mem" and w.get("branch") == "feat/x"
+           and w.get("team") == "trunk-2" and w.get("session") == "trunk-2/build"
+           and w.get("since") and w.get("state") == {} and w.get("reminded") is None
+           and w.get("ended") is None, r.stderr or w)
+    record("the wait carries every field the follow reads",
+           set(w) >= {"on", "repo", "branch", "team", "pr", "approved_sha", "session", "deploy",
+                      "health_rule", "health_window", "hold_until", "since", "state", "reminded", "ended"}, w)
+
+    # ── a waiting run is past its start ─────────────────────────────────────
+    r = run(TRUNK, "run", "claim", "--bundle", b, "w1", "--via", "orq", "--command", "orq start x", env=env)
+    record("a waiting run is never claimed again",
+           r.returncode != 0 and "never dispatched again" in r.stderr and show("w1").get("status") == "waiting",
+           r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "w1", "brief", "--value", "another", env=env)
+    record("what was dispatched stays as dispatched while the run waits",
+           r.returncode != 0 and show("w1").get("brief") == "the brief", r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "w1", "note", "--value", "the team is reviewing", env=env)
+    record("a note is still added while the run waits", r.returncode == 0, r.stderr)
+    _, out = run_json("list", "--bundle", b, "--open", env=env)
+    record("run list --open leaves out a waiting run",
+           out is not None and "w1" not in [x["name"] for x in out["runs"]], out)
+    r = run(TRUNK, "run", "ingested", "--bundle", b, "w1", env=env)
+    record("a waiting run's record can be marked ingested",
+           r.returncode == 0 and len(show("w1").get("ingests", [])) == 1, r.stderr)
+
+    # ── the fields, validated ────────────────────────────────────────────────
+    since = wait("w1").get("since")
+    r = wset("w1", "--pr", "https://github.com/rafapg/elephant-mem/pull/28", "--sha", "ABCDEF1234567")
+    w = wait("w1")
+    record("a pull request URL gives its number; the approved SHA is kept lowercased",
+           r.returncode == 0 and w.get("pr") == 28 and w.get("approved_sha") == "abcdef1234567", r.stderr or w)
+    record("a field that is not what it waits on nor what was seen leaves since alone",
+           w.get("since") == since, w)
+    for args, why in ((("--pr", "https://github.com/other/repo/pull/3"), "a pull request of another repo"),
+                      (("--pr", "twelve"), "a pull request that is no number"),
+                      (("--sha", "not-a-sha"), "a SHA that is not hex"),
+                      (("--repo", "just-a-name"), "a repo that is neither owner/name nor a path"),
+                      (("--deploy", "rocket"), "a deploy kind it does not know"),
+                      (("--health-window", "soon"), "a health window that is no number of minutes"),
+                      (("--hold-until", "2026-11-10T09:00:00"), "a hold-until with no offset"),
+                      (("--session", "two words"), "a session name with a space"),
+                      (("--state", "[1, 2]"), "a state that is no JSON object")):
+        before = wait("w1")
+        r = wset("w1", *args)
+        record(f"run wait set refuses {why}, the wait unchanged",
+               r.returncode != 0 and wait("w1") == before, r.stderr)
+    r = wset("w1", "--repo", "rafapg/elephant-mem", "--pr", "#29")
+    record("a pull request number is taken bare or after a #", r.returncode == 0 and wait("w1").get("pr") == 29,
+           r.stderr)
+    r = wset("w1", "--deploy", "release", "--health-rule", "no service to check", "--health-window", "30",
+             "--hold-until", "2026-11-10T12:00:00Z")
+    w = wait("w1")
+    record("the deploy kind, the health rule and window and the hold-until are recorded",
+           r.returncode == 0 and w.get("deploy") == "release" and w.get("health_rule") == "no service to check"
+           and w.get("health_window") == 30 and w.get("hold_until") == "2026-11-10T12:00:00+00:00", r.stderr or w)
+    r = wset("w1", "--hold-until", "", "--branch", "")
+    w = wait("w1")
+    record("an empty value clears a field",
+           r.returncode == 0 and w.get("hold_until") is None and w.get("branch") is None, r.stderr or w)
+
+    # ── since, the state and the reminder ────────────────────────────────────
+    since = wait("w1").get("since")
+    wset("w1", "--reminded")
+    reminded = wait("w1").get("reminded")
+    record("--reminded records when the reminder went, since unchanged",
+           bool(reminded) and wait("w1").get("since") == since, wait("w1"))
+    wset("w1", "--state", json.dumps({"team": {"approved": True}}))
+    w = wait("w1")
+    record("a new state moves since and clears the reminder",
+           w.get("state") == {"team": {"approved": True}} and w.get("since") > since
+           and w.get("reminded") is None, w)
+    since = w.get("since")
+    wset("w1", "--state", json.dumps({"team": {"approved": True}}))
+    record("the same state seen again leaves since alone", wait("w1").get("since") == since, wait("w1"))
+    wset("w1", "--state", json.dumps({"pr": {"state": "OPEN", "review": "APPROVED"}}))
+    record("the state is merged key by key: one source never drops another's",
+           wait("w1").get("state") == {"team": {"approved": True}, "pr": {"state": "OPEN", "review": "APPROVED"}},
+           wait("w1"))
+    wset("w1", "--state", json.dumps({"team": None}))
+    record("a null drops a source's key",
+           wait("w1").get("state") == {"pr": {"state": "OPEN", "review": "APPROVED"}}, wait("w1"))
+    since = wait("w1").get("since")
+    wset("w1", "--on", "approval")
+    record("a change of what it waits on moves since",
+           wait("w1").get("on") == "approval" and wait("w1").get("since") > since, wait("w1"))
+    r = wset("w1", "--on", "lunch")
+    record("what it waits on is one of the known steps",
+           r.returncode != 0 and wait("w1").get("on") == "approval", r.stderr)
+
+    # ── the hold ─────────────────────────────────────────────────────────────
+    r, out = run_json("wait", "show", "--bundle", b, "w1", env=env)
+    record("run wait show --json gives the run, its wait and no hold",
+           out is not None and out.get("status") == "waiting" and out.get("wait", {}).get("pr") == 29
+           and out.get("hold") is None, r.stderr or out)
+    r, out = run_json("hold", "--bundle", b, "w1", "--why", "the owner reviews it first", env=env)
+    record("run hold records a hold: decision and the run reads as held",
+           r.returncode == 0 and out and (out.get("hold") or {}).get("text") == "hold: the owner reviews it first"
+           and show("w1")["decisions"][-1]["text"] == "hold: the owner reviews it first", r.stderr or out)
+    n = len(show("w1").get("decisions", []))
+    r = run(TRUNK, "run", "hold", "--bundle", b, "w1", "--why", "again", env=env)
+    record("a hold on a held run records nothing new",
+           r.returncode == 0 and "already held" in r.stderr and len(show("w1")["decisions"]) == n, r.stderr)
+    r = run(TRUNK, "run", "wait", "show", "--bundle", b, "w1", env=env)
+    record("the plain wait show names what it waits on and the hold",
+           "waiting on approval" in r.stdout and "held since" in r.stdout and "rafapg/elephant-mem#29" in r.stdout,
+           r.stdout)
+    r = run(TRUNK, "run", "show", "--bundle", b, "w1", env=env)
+    record("the plain run show carries the wait", "## waiting" in r.stdout and "waiting on approval" in r.stdout,
+           r.stdout)
+    r, out = run_json("hold", "--bundle", b, "w1", "--lift", "--why", "the owner approved it", env=env)
+    record("run hold --lift records a hold lifted: decision and the run is no longer held",
+           r.returncode == 0 and out and out.get("hold") is None
+           and show("w1")["decisions"][-1]["text"] == "hold lifted: the owner approved it", r.stderr or out)
+    r = run(TRUNK, "run", "hold", "--bundle", b, "w1", "--lift", "--why", "twice", env=env)
+    record("a lift with no hold is refused", r.returncode != 0 and "no hold" in r.stderr, r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "w1", "decision", "--value", "hold:  ", env=env)
+    record("a hold: decision with no why is refused",
+           r.returncode != 0 and run_json("wait", "show", "--bundle", b, "w1", env=env)[1].get("hold") is None,
+           r.stderr)
+    run(TRUNK, "run", "set", "--bundle", b, "w1", "decision", "--value", "hold: said in the session", env=env)
+    record("a hold: decision recorded with run set holds the run too",
+           (run_json("wait", "show", "--bundle", b, "w1", env=env)[1].get("hold") or {}).get("text")
+           == "hold: said in the session")
+    run(TRUNK, "run", "new", "--bundle", b, "--topic", "held early", "--name", "w-early", env=env)
+    r = run(TRUNK, "run", "hold", "--bundle", b, "w-early", "--why", "do not merge before I approve", env=env)
+    record("a run is held before its dispatch too", r.returncode == 0
+           and run_json("wait", "show", "--bundle", b, "w-early", env=env)[1].get("hold"), r.stderr)
+
+    # ── the list, and the end of the wait ────────────────────────────────────
+    dispatched("w-old")
+    dispatched("w2")
+    local = str((root / "local-tool").resolve())
+    wset("w2", "--on", "deploy", "--repo", local)
+    _, out = run_json("wait", "list", "--bundle", b, env=env)
+    names = [x["name"] for x in (out or {}).get("runs", [])]
+    record("run wait list names the waiting runs only, never a run dispatched with no wait",
+           sorted(names) == ["w1", "w2"] and all(x.get("wait") for x in out["runs"]), out)
+    r = run(TRUNK, "run", "wait", "end", "--bundle", b, "w-old", "--outcome", "live", "--why", "x", env=env)
+    record("a run that is not waiting has no wait to end", r.returncode != 0 and "not waiting" in r.stderr,
+           r.stderr)
+    r, out = run_json("wait", "end", "--bundle", b, "w2", "--outcome", "live", "--why", "the merge is the deploy",
+                      env=env)
+    w = wait("w2")
+    record("run wait end makes the run dispatched again, the wait kept with how it ended",
+           r.returncode == 0 and show("w2").get("status") == "dispatched"
+           and (w.get("ended") or {}).get("outcome") == "live"
+           and w["ended"].get("why") == "the merge is the deploy" and w.get("repo") == local,
+           r.stderr or w)
+    _, out = run_json("wait", "list", "--bundle", b, env=env)
+    record("a run whose wait ended leaves the list",
+           [x["name"] for x in (out or {}).get("runs", [])] == ["w1"], out)
+    wset("w2", "--on", "owner")
+    rec = show("w2")
+    record("a new wait after one ended starts fresh, the ended one kept",
+           rec.get("status") == "waiting" and rec["wait"].get("on") == "owner" and rec["wait"].get("ended") is None
+           and rec["wait"].get("repo") is None and len(rec.get("past_waits", [])) == 1
+           and rec["past_waits"][0]["ended"]["outcome"] == "live", rec)
 
 
 def _recipe_written(root, home):
