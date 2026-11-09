@@ -15,6 +15,10 @@ hash, saved without ever replacing one, and never started unless it passed.
 A learning the owner steers or forgets leaves the facts the trunk reads: its
 fact becomes `superseded` or `deprecated` in its own file, the bundle's real
 build-index.py rebuilds the manifest, and only the trunk's own how is touched.
+`facts --json` says where each fact came from (`owner` only when every source it
+cites is the owner's own Claude Code conversation), and no stored command
+carries a merge parameter, while `run claim` holds one to the run's last
+`merge-level:` decision.
 Past sessions read on first use are estimated without a bundle, and their
 extract keeps the owner's own messages and the names of what ran, never tool
 output, the assistant's text, a command's arguments or a credential.
@@ -499,8 +503,10 @@ def _run(root):
     record("facts resolves the bundle like config: no bundle stops with the same guidance",
            r.returncode != 0 and "no bundle pointer" in r.stderr, r.stderr)
 
+    _fact_origin(root, home)
     _run_record(root, home)
     _claim(root, home)
+    _merge_level(root, home)
     _recipe_written(root, home)
     _steer_and_forget(root, home)
     _past_sessions(root, home)
@@ -1052,6 +1058,183 @@ def _claim(root, home):
     record("a lock left behind stops the write after the wait, naming the file to remove",
            stopped and str(stale) in err.getvalue() and "another trunk.py" in err.getvalue(), err.getvalue())
     stale.unlink()
+
+
+def _fact_origin(root, home):
+    """`facts --json` says where each fact came from, read from the sources it
+    cites: only a fact whose every source is the owner's own Claude Code
+    conversation (as `capture` files it) is `owner`."""
+    env = env_for(home)
+    b = make_bundle(root, "origins", {"trunk": {"tag": "como-trabalhar"}})
+    (b / "knowledge" / "facts").mkdir(parents=True)
+    (b / "knowledge" / "sources" / "2026-11").mkdir(parents=True)
+
+    def source(name, channel):
+        line = "" if channel is None else f"channel: {channel}\n"
+        (b / "knowledge" / "sources" / "2026-11" / f"{name}.md").write_text(
+            f"---\ntype: source\ndescription: \"a source\"\nsource-kind: conversation\n{line}"
+            "occurred: 2026-11-06\n---\n\nA summary.\n", encoding="utf-8")
+        return f"/sources/2026-11/{name}.md"
+
+    def fact(name, sources):
+        (b / "knowledge" / "facts" / f"{name}.md").write_text(
+            "---\ntype: fact\ndescription: \"merge preference\"\n"
+            f"sources: [{', '.join(sources)}]\nstatus: active\n"
+            "tags: [como-trabalhar, trunk-dispatch]\n---\n\nThe owner merges by hand.\n",
+            encoding="utf-8")
+        return fact_row(f"/facts/{name}.md", ["como-trabalhar", "trunk-dispatch"])
+
+    cap = source("2026-11-06-capture-how", '"claude-code:elephant"')
+    bare = source("2026-11-06-capture-bare", "claude-code")
+    slack = source("2026-11-06-slack", '"slack:all-public"')
+    meeting = source("2026-11-06-meeting", "meeting")
+    nochan = source("2026-11-06-nochannel", None)
+    lookalike = source("2026-11-06-lookalike", '"claude-codex:x"')
+    write_manifest(b, [
+        fact("captured", [cap]),
+        fact("captured-bare", [bare]),
+        fact("from-slack", [slack]),
+        fact("mixed", [cap, meeting]),
+        fact("no-source", []),
+        fact("missing-source", ["/sources/2026-11/gone.md"]),
+        fact("no-channel", [nochan]),
+        fact("escapes", ["/sources/../facts/captured.md"]),
+        fact("lookalike", [lookalike]),
+        fact_row("/facts/no-file.md", ["como-trabalhar", "trunk-dispatch"]),
+    ])
+    r, out = facts_json("--bundle", b, env=env)
+    got = {f["link"].split("/")[-1][:-3]: f.get("origin") for f in (out or {}).get("facts", [])}
+    record("facts --json carries each fact's origin", r.returncode == 0 and len(got) == 10, r.stderr or got)
+    record("a fact captured in a Claude Code conversation is the owner's, with or without a workspace",
+           got.get("captured") == "owner" and got.get("captured-bare") == "owner", got)
+    record("a fact a feed brought in (Slack, a meeting) is other, even mixed with a capture",
+           got.get("from-slack") == "other" and got.get("mixed") == "other"
+           and got.get("lookalike") == "other", got)
+    record("a fact with no source, a source that cannot be read, no channel or a link out of "
+           "sources/ is unknown, never the owner's",
+           all(got.get(k) == "unknown" for k in ("no-source", "missing-source", "no-channel",
+                                                 "escapes", "no-file")), got)
+    chans = {f["link"]: f.get("channels") for f in (out or {}).get("facts", [])}
+    record("facts --json names the channels it read",
+           chans.get("/facts/mixed.md") == ["claude-code:elephant", "meeting"], chans)
+
+
+def _merge_level(root, home):
+    """A stored command never carries a merge parameter, and the claim holds
+    the start command's merge parameter to the run's last merge-level:
+    decision."""
+    env = env_for(home)
+    b = make_bundle(root, "merges", {"trunk": {"tag": "como-trabalhar"}})
+    show = lambda n: run_json("show", "--bundle", b, n, env=env)[1] or {}
+
+    def new(n, *decisions):
+        run(TRUNK, "run", "new", "--bundle", b, "--topic", n, "--name", n, env=env)
+        for d in decisions:
+            run(TRUNK, "run", "set", "--bundle", b, n, "decision", "--value", d, env=env)
+
+    def claim(n, command, via="orq"):
+        return run(TRUNK, "run", "claim", "--bundle", b, n, "--via", via, "--command", command, env=env)
+
+    src = root / "merge_recipe.py"
+    src.write_text("def run(t):\n    return 'done'\n", encoding="utf-8")
+    new("m-draft")
+    for cmd in ("orq start x K --set merge=on-approve", "orq start x K --set=merge=pr",
+                "orq start x K -s 'MERGE:pr'", "orq start x K --merge"):
+        r = run(TRUNK, "recipe", "draft", "--bundle", b, "m-draft", "--name", "x", "--roles", "build",
+                "--file", src, "--command", cmd, env=env)
+        record(f"recipe draft refuses a command carrying a merge parameter: {cmd.split(' K ')[1]}",
+               r.returncode != 0 and "merge parameter" in r.stderr and not show("m-draft").get("recipe"),
+               r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "recipe", "--value",
+            json.dumps({"name": "impl_review", "fact": None, "command": "orq start impl_review K --set merge=on-approve",
+                        "roles": "x"}), env=env)
+    record("run set recipe refuses a command carrying a merge parameter",
+           r.returncode != 0 and "merge parameter" in r.stderr and not show("m-draft").get("recipe"), r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "recipe", "--value",
+            json.dumps({"name": "impl_review", "fact": None, "command": "orq start impl_review K --brief 'merge bug'",
+                        "roles": "x"}), env=env)
+    record("a command whose only merge is a word inside a quoted argument is kept",
+           r.returncode == 0 and show("m-draft").get("recipe", {}).get("name") == "impl_review", r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "decision", "--value", "merge-level: sometimes", env=env)
+    record("a merge-level: decision not in its form is refused",
+           r.returncode != 0 and "merge-level: manual|automatic" in r.stderr
+           and not show("m-draft").get("decisions"), r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "decision", "--value",
+            "approaches merged: the two are one", env=env)
+    record("a decision about approaches that merged is not a merge level", r.returncode == 0, r.stderr)
+
+    on, pr = "orq start impl_review K --set merge=on-approve", "orq start impl_review K --set merge=pr"
+    new("m-none")
+    r = claim("m-none", on)
+    record("with no merge-level: decision, a claim carrying a merge parameter is refused, the run still open",
+           r.returncode != 0 and "no merge-level" in r.stderr and show("m-none").get("status") == "open", r.stderr)
+    r = claim("m-none", "this session: build, review, then merge per the level", via="claude-code")
+    record("via claude-code the plan line is prose, never read for a merge parameter",
+           r.returncode == 0 and show("m-none").get("status") == "starting", r.stderr)
+    new("m-manual", "merge-level: manual (fact)")
+    r = claim("m-manual", on)
+    record("at manual, a claim with merge=on-approve is refused",
+           r.returncode != 0 and "manual" in r.stderr and show("m-manual").get("status") == "open", r.stderr)
+    r = claim("m-manual", "orq start impl_review K")
+    record("at manual, a claim with no merge parameter starts", r.returncode == 0, r.stderr)
+    new("m-auto", "merge-level: automatic (fact)")
+    for cmd, why in (("orq start impl_review K", "no merge parameter"), (pr, "merge=pr"),
+                     ("orq start impl_review K --merge", "a bare --merge"),
+                     (on + " --set merge=pr", "two that disagree")):
+        r = claim("m-auto", cmd)
+        record(f"at automatic, a claim with {why} is refused",
+               r.returncode != 0 and show("m-auto").get("status") == "open", r.stderr)
+    r = claim("m-auto", "orq start impl_review K --set=merge=on-approve")
+    record("at automatic, a claim with merge=on-approve, in any spelling, starts", r.returncode == 0, r.stderr)
+    new("m-last", "merge-level: automatic (fact)", "merge-level: manual (session override)")
+    r = claim("m-last", on)
+    record("the last merge-level: decision is the one held: a session override refuses on-approve",
+           r.returncode != 0 and show("m-last").get("status") == "open", r.stderr)
+
+    # A level stated before a failed start, or before a newer dispatch word, is
+    # another session's: it never passes a claim, and the refusal never says to
+    # add the merge parameter.
+    new("m-stale", "dispatch: the approach", "merge-level: automatic (fact)")
+    claim("m-stale", on)
+    run(TRUNK, "run", "dispatch", "--bundle", b, "m-stale", "--via", "orq", "--command", on,
+        "--error", "orq: no such team", env=env)
+    r = claim("m-stale", on)
+    record("a merge-level: decision recorded before the run's last failed start no longer passes a claim",
+           r.returncode != 0 and "this session" in r.stderr and show("m-stale").get("status") == "open", r.stderr)
+    record("the refusal says the owner states the level in this session, never to add the parameter",
+           "--set merge" not in r.stderr and "add the" not in r.stderr, r.stderr)
+    run(TRUNK, "run", "set", "--bundle", b, "m-stale", "decision", "--value", "dispatch: the approach, again", env=env)
+    run(TRUNK, "run", "set", "--bundle", b, "m-stale", "decision", "--value",
+        "merge-level: automatic (fact)", env=env)
+    r = claim("m-stale", on)
+    record("a merge-level: decision recorded after the retry's dispatch word passes the claim",
+           r.returncode == 0 and show("m-stale").get("status") == "starting", r.stderr)
+    new("m-redispatch", "merge-level: automatic (fact)", "dispatch: a newer word")
+    r = claim("m-redispatch", on)
+    record("a merge-level: decision older than the last dispatch: decision does not pass a claim",
+           r.returncode != 0 and show("m-redispatch").get("status") == "open", r.stderr)
+    new("m-auto-hint", "dispatch: go", "merge-level: automatic (fact)")
+    r = claim("m-auto-hint", "orq start impl_review K")
+    record("at automatic with no parameter, the refusal does not tell how to add one",
+           r.returncode != 0 and "--set merge" not in r.stderr, r.stderr)
+
+    # A bare `merge` word as another option's value is not a merge parameter;
+    # pending learnings and learnings never store one.
+    r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "recipe", "--value",
+            json.dumps({"name": "impl_review", "fact": None, "command": "orq start impl_review K --branch merge",
+                        "roles": "x"}), env=env)
+    record("a command with `--branch merge` carries no merge parameter", r.returncode == 0, r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "pending", "--value",
+            "trunk-dispatch: starts with orq start impl_review <KEY> --set merge=on-approve", env=env)
+    record("a pending learning carrying a merge parameter is refused",
+           r.returncode != 0 and "merge parameter" in r.stderr and not show("m-draft").get("pending"), r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "learning", "--value",
+            "/facts/x.md: starts with orq start impl_review <KEY> -s merge=pr", env=env)
+    record("a learning carrying a merge parameter is refused",
+           r.returncode != 0 and "merge parameter" in r.stderr and not show("m-draft").get("learnings"), r.stderr)
+    r = run(TRUNK, "run", "set", "--bundle", b, "m-draft", "pending", "--value",
+            "trunk-dispatch: the owner does not want to merge by hand", env=env)
+    record("a pending learning that only talks about merging is kept", r.returncode == 0, r.stderr)
 
 
 def _recipe_written(root, home):

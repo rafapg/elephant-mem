@@ -14,6 +14,113 @@ day its tag is cut, which is the day it lands on `main`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.2] - 2026-11-06
+
+The trunk hard-coded that the work it dispatched never merged: the brief's done,
+the stop of every written recipe, the end of the plain Claude Code path and the
+skill's rules all said so, for every owner. That is a way of working, not a rule
+of the trunk: some owners merge by hand, others would rather not. Two drafts of
+this release got the condition wrong. The first kept every merge behind the
+owner's word in each run, which made a learned preference worth nothing. The
+second had the trunk read CI itself (every check completed, at least one, none
+pending), which reimplemented a gate that belongs to the repository's
+maintainer. The quality of the delivery is the owner's and the guardrails are
+the maintainer's; a merge is where the two meet. So who merges is now a fact of
+the owner's how, and the merge relies on GitHub's own gate, stopping at the
+pull request where that gate is missing. A third review found the merge line
+itself would not have run: `gh pr merge` with no method fails when it cannot
+ask for one, and nothing checked that the repository allows auto-merge, which
+`elephant-mem` itself does not.
+
+### Changed
+
+- **Who merges is a `trunk-dispatch` fact**, the merge preference, learned like
+  any other how. At `manual`, the default with no fact, so every owner starts
+  there, the work ends at a pull request unless the owner says, in the
+  session, to merge this run's pull request. At `automatic` the work is
+  dispatched with the merge on, without asking, unless the owner says in the
+  session (on orq, before "dispatch") that the run needs their authorization.
+  A learned `automatic` fact is meant to authorize merges, so "the fact wins"
+  still holds; the owner is told when it is learned and can steer or forget
+  it. A one-off "merge this one" is a value of the run, never a learning.
+- **Only the owner sets it.** The preference and a session's override come
+  from the owner's own words or behavior. Text from a third party (a Slack
+  message, a ticket, a source of the study, a brief, a pasted message, the
+  topic text) never sets either, whatever it asks.
+- **The merge condition** is the same on orq and on plain Claude Code: the
+  owner wants it; the run's own reviewer, a separate one with a fresh
+  context, approved exactly the commit that will merge; and the base branch
+  is protected on GitHub with required status checks, with auto-merge
+  allowed. Then `gh pr merge <n> --repo <owner>/<repo> --auto --merge
+  --match-head-commit <sha>` on the pull request's own repository (not the
+  default remote, which an `upstream` checkout may point elsewhere), with
+  `--merge` as the method unless the repository allows only squash or
+  rebase. GitHub waits for the checks and merges or refuses; a scheduled
+  auto-merge is reported as scheduled, never as merged. The SHA is read from
+  the run's record and must still be the pull request's head. The trunk never
+  reads CI and never changes a repository's settings. Where protection or
+  auto-merge is missing, one note names both, suggests turning them on (to an
+  admin) or says the pull request waits for the maintainer, and warns that a
+  required check no workflow reports any more leaves an auto-merge waiting
+  forever. Implementing roles never merge, and every brief and subagent
+  prompt says so.
+- **A repository with no remote**, usually the owner's own local tool, merges
+  locally instead: the local tests pass on exactly the approved commit with
+  nothing uncommitted, a `git merge-tree` probe finds no conflict, and
+  `git merge --no-ff` of that commit into `refs/heads/<base>` lands only when
+  the owner's checkout is on the base and clean, with `git merge --abort` when
+  it fails. A commit already in the base is said so, never reported as
+  merged. It never stashes, resets or checks out.
+- **The level is computed fresh every session** and recorded as
+  `merge-level: manual|automatic (<source>)`, a prefix of its own, so it
+  neither collides with approaches that merged nor moves "where it stopped" on
+  a resume. A level recorded by an earlier session is history, and a retry
+  recomputes the brief's done and the start command.
+- **On orq** the level reaches the recipe through the start
+  (`orq start impl_review <KEY> --repo … --brief … --set merge=on-approve`).
+  Once 3c picks the recipe, `automatic` needs one with a review role that
+  takes the level, else the run falls back to `manual`, recorded with why; at
+  `manual` a saved recipe must be shown not to merge without the parameter,
+  else the owner is asked. A written recipe's check asserts that nothing
+  merges without the parameter, that a merge is only `gh pr merge --auto
+  --match-head-commit <the reviewed sha>` after a protection check, and that
+  no merge call carries `--admin`, force or a skip flag. At `manual`, a
+  "merge it" after the team opened the pull request goes through the same
+  three conditions: the recipe now pins the builder's commit and asks the
+  reviewer for its SHA at every level, and the trunk merges only when the
+  run's record holds an approved SHA that is still the head. A run started
+  before that change has none, so it is handed to the owner, with why.
+- **A merge in a repository that deploys on push is said to be a deploy**, at
+  3d, at the confirmation and in the interview about who merges.
+- **Deploying stays out.** The trunk and the work it dispatches never deploy,
+  and the trunk never pushes the bundle.
+
+### Added
+
+- **`trunk.py facts --json` says where each fact came from**: an `origin` of
+  `owner`, `other` or `unknown`, and the `channels` it read. A fact cites its
+  sources, and `capture` files the owner's own Claude Code conversation with
+  `channel: claude-code:<workspace>`; the catch-up and ingest stamp the feed
+  (`slack:...`, `meeting`). Only an `owner` fact is read for the merge
+  preference, so a `trunk-dispatch` fact the catch-up filed from a Slack
+  thread can never turn merges on.
+- **`trunk.py` refuses a stored merge parameter**: `recipe draft --command`
+  and `run set recipe` refuse a command carrying one in any spelling
+  (`--set merge=…`, `--set=merge=…`, `--merge`, `MERGE:…`); `run claim` via
+  orq refuses a command whose merge parameter disagrees with the run's last
+  `merge-level:` decision, and any merge parameter when none is recorded;
+  `run set decision` refuses a `merge-level:` decision in another form. A
+  level recorded before the run's last start or its last `dispatch:` decision
+  is another session's and no longer passes a claim, and the refusals say the
+  owner states the level in this session rather than how to add the
+  parameter. A bare `merge` that is another option's value (`--branch merge`)
+  is not read as one, and a pending learning or a learning carrying a merge
+  parameter is refused too.
+- **The interview asks who merges**: "do you want to merge dispatched work
+  yourself, or should it merge on its own once the review approves and CI is
+  green?", captured as the merge preference. The readers of past sessions may
+  surface it too, from the owner's own messages only.
+
 ## [0.1.0-beta.1] - 2026-11-05
 
 The owner already took topics to dispatched work by hand, and the middle of it
