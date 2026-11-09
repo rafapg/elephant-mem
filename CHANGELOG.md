@@ -4,6 +4,56 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.3] - 2026-11-09
+
+`elephant-trunk` 0.1.0-beta.2 shipped on its own, and `/elephant-mem:update` did
+not bring it along: the owner had to run `claude plugin marketplace update
+elephant-mem` and `claude plugin update elephant-trunk@elephant-mem` by hand. The
+run itself was never the problem. `elephant-update` takes the family from the
+registry's `@elephant-mem` key suffix, so it always called `claude plugin update`
+for an installed trunk, and a run against the old code installs a trunk-only
+release, reports `Installed elephant-trunk 0.1.0-beta.2 (was 0.1.0-beta.1)` and
+asks for a restart. The plan it prints before asking was the problem. It had a
+line for `elephant-mem` and `elephant-wiki` only, so on that release it read
+"already current" twice and "the bundle's copies match", and the trunk, which
+copies nothing into the bundle, left no trace in it. A plan with nothing in it
+reads as nothing to do, and the update the run would have made was never
+approved.
+
+### Fixed
+
+- **The plan names the trunk** (`plugin/bin/elephant-update`). The delta has a
+  line for each plugin of the family, `elephant-mem`, `elephant-wiki` and
+  `elephant-trunk`, in that order, each moving (`<installed> → <available>`),
+  already current, or not installed, plus a line for any other installed
+  `@elephant-mem` plugin, so the plan can no longer name fewer plugins than the
+  run updates. A new line says which plugins the run installs, or that no
+  installed plugin has a newer version in the clone, because a version delta
+  with no file behind it is a change too. A trunk that is not installed is shown
+  as not installed and the run still never installs it, as with the wiki.
+
+### Changed
+
+- **The trunk is a named member of the family** (`TRUNK_PLUGIN`, `FAMILY`). It
+  has no published set: its `trunk.py` runs from the plugin and is never copied,
+  so the comparison, the copy, the index rebuild and the commit never read its
+  directory, although the trunk ships `assets/scripts/trunk.py` at a path the
+  required set's pattern would match. `--check` is unchanged for it.
+- **`skills/update/SKILL.md`** names the three plugins, says a version line with
+  no file behind it is still something to ask about, and that the trunk's move
+  appears in the recap's versions and nowhere else. `README.md`,
+  `docs/updating.md` and `CLAUDE.md` drop the note that the plan does not show
+  the trunk. The weekly nudge still compares `elephant-mem`'s version alone, so a
+  release that moves only the wiki or the trunk prompts no one; `CLAUDE.md` now
+  says so, and no longer calls a forgotten wiki or trunk bump cosmetic, since
+  `update` then reports that plugin current and the change reaches nobody.
+- `tests/test_update.py` grew to 352 checks. A trunk-only release in a fake
+  world is planned as a move, updated by its own `claude plugin update` call,
+  and leaves the bundle untouched, with no `trunk.py` copied and no commit; an
+  uninstalled trunk is planned as not installed and never installed; and the
+  comparison against the real `elephant-trunk/` directory reads none of its
+  files.
+
 ## [1.0.0-rc.2] - 2026-10-09
 
 The scheduled routines stopped running on Claude Code 2.1.293, and nothing in
