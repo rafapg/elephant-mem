@@ -250,10 +250,15 @@ a pull request unless you say in the session to merge it), or `automatic` (it
 merges without asking, unless you say a session needs your authorization).
 Only a fact you captured yourself counts; one a feed brought in never does. A
 merge needs the run's own reviewer to approve the exact commit and the base
-branch to be protected with required checks: the trunk runs `gh pr merge
---auto --match-head-commit` and lets GitHub's gate decide, never reading CI
-itself. A repository with no remote merges locally instead, once its tests pass
-on that commit and your checkout of the base is clean.
+branch to be protected with required checks, with auto-merge allowed: the
+trunk runs `gh pr merge --auto --merge --match-head-commit` and lets GitHub's
+gate decide, never reading CI itself. A repository with no remote merges
+locally instead, once its tests pass on that commit and your checkout of the
+base is clean. In a repository that deploys on a push to the base, an
+automatic merge is a deploy. Two limits are known: a fact counts as yours when
+its source says `claude-code`, which content pasted into a session can carry
+too, and whether GitHub re-checks the approved commit against a push made
+after the auto-merge was scheduled is unconfirmed.
 
 `elephant-update` updates **every installed plugin of the family**, the wiki
 and the trunk included, so neither of them needs a command of its own. The plan

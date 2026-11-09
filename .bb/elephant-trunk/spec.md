@@ -138,36 +138,53 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
   A level recorded by an earlier session is history. Stored commands (facts, recipe facts,
   pending learnings) never carry the merge parameter; 3c adds it from this run's level, and a
   retry recomputes the brief's done and the command. `trunk.py` holds it: `recipe draft` and
-  `run set recipe` refuse a merge parameter in any spelling, `run claim` via orq refuses one
-  that disagrees with the last `merge-level:` decision (any, when none is recorded), and a
-  `merge-level:` decision in another form is refused.
+  `run set recipe` refuse a merge parameter in any spelling (and so does `run set` for a
+  pending learning or a learning), `run claim` via orq refuses one that disagrees with the last
+  `merge-level:` decision, counting only a decision recorded after the run's last start (attempt
+  or claim) and its last `dispatch:` decision (any merge parameter when there is none), and a
+  `merge-level:` decision in another form is refused. Its refusals say the owner states the
+  level in this session; they never suggest adding the parameter.
 - The merge condition, the same on orq and on plain Claude Code: the work merges only when all
   three hold, else it stops at the PR with a note. (1) The owner wants it: `automatic` with no
   override, or at `manual` the owner's word in this session. (2) The run's own reviewer, a
   separate one with a fresh context, approved exactly the commit that will merge, a named head
   SHA; an approval from outside the run, an automated reviewer signing as the owner included,
-  never counts. (3) The base branch is protected on GitHub with required status checks
-  (classic protection or a ruleset). Then `gh pr merge <n> --auto --match-head-commit <sha>`:
-  GitHub waits for the required checks and merges or refuses. Never `--admin`, force or a
-  skipped check. Implementing roles never merge: only the recipe's merge step (orq,
+  never counts. The SHA is read from the run's record, never from memory, and must be the PR's
+  current head. (3) The base branch is protected on GitHub with required status checks
+  (classic protection or a ruleset) and the repository allows auto-merge, read on the PR's own
+  repository (from its URL, not the default remote, since an `upstream` remote may differ).
+  Then `gh pr merge <n> --repo <owner>/<repo> --auto --merge --match-head-commit <sha>`: the
+  method is required (gh fails non-interactively without one), `--merge` by default, else the
+  first of `--squash` and `--rebase` the repository allows. GitHub waits for the required
+  checks and merges or refuses. A scheduled auto-merge is reported as scheduled, never as
+  merged. Never `--admin`, force or a skipped check. Implementing roles never merge: only the recipe's merge step (orq,
   `impl_review` at `--set merge=on-approve`) or the maestro (plain Claude Code) merges.
 - A repository with no remote is usually the owner's own local tool, and the owner is less
   strict there: condition (3) becomes the local tests passing on exactly the approved commit,
-  with nothing uncommitted, and the merge is a local `git merge --no-ff` of that commit into the
-  base, only when the owner's checkout is on the base and clean at that moment. It never
-  stashes, resets or checks out.
-- When condition (3) fails, the note says what would let a later run merge: to an admin of the
-  repository, turning on branch protection with required checks once; to anyone else, that the
-  PR waits for the maintainer. The trunk never changes repository settings.
+  with nothing uncommitted, and the merge is a local `git merge --no-ff` of that commit into
+  `refs/heads/<base>`, after a `git merge-tree` probe and only when the owner's checkout is on
+  the base and clean at that moment; a failed merge runs `git merge --abort`. A commit already
+  in the base is reported as that, never as merged. It never stashes, resets or checks out.
+- When condition (3) fails, one note says everything missing (protection with required checks,
+  auto-merge allowed, or both), so the owner learns it at once: to an admin of the repository,
+  turning it on once; to anyone else, that the PR waits for the maintainer. It also says that a
+  required check no workflow reports any more leaves an auto-merge waiting forever. The trunk
+  never changes repository settings.
 - On orq at `manual`, a "merge it" after the team opened the PR goes through the same three
-  conditions: the trunk takes the reviewer's approved SHA from the team's verdict in the orq
-  topic, checks protection and runs `--auto --match-head-commit`, or says why not.
+  conditions, and the owner's word never stands in for the review: the recipe pins the
+  builder's commit and asks the reviewer for `--meta sha=<sha>` at every level, and the trunk
+  merges only when the run's record holds a reviewer's approved SHA that is the PR's current
+  head. With none (a run started before that change) or a head that moved, it merges nothing,
+  says why and hands the owner the merge.
+- In a repository where a push to the base deploys, an automatic merge is in effect a deploy:
+  the skill says so at 3d, at the confirmation and in the interview about who merges.
 - After 3c picks the recipe, `automatic` needs a recipe with a review role that takes the merge
   level; with none, the run falls back to `manual`, recorded with why. At `manual`, a saved
   recipe must be shown not to merge without the parameter, or the owner is asked before it
   starts. A written recipe's check asserts three things: nothing merges without the parameter;
-  a merge is only `gh pr merge --auto --match-head-commit <the reviewed SHA>` after a
-  protection check; and no merge call carries `--admin`, force or a skip flag.
+  a merge is only `gh pr merge --auto <method> --match-head-commit <the reviewed SHA>` after a
+  check of protection and of auto-merge being allowed; and no merge call carries `--admin`,
+  force or a skip flag.
 - A run can be continued in a new session from its record.
 - The owner's "dispatch" in the conversation is the authorization to start sessions;
   the trunk shows the brief and the dispatch command before running them.
@@ -229,6 +246,10 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
 | a merge-preference fact came from a feed, not the owner  | set aside for the merge preference; the level is `manual`          |
 | the reviewer did not approve the head that would merge   | nothing merges; the PR stays open for the owner, with a note       |
 | the base branch has no required status checks            | nothing merges; the note suggests protection (admin) or waits      |
+| the repository does not allow auto-merge                 | nothing merges; the same note names it with the protection         |
+| the run's record holds no reviewer SHA, or the head moved | nothing merges; says why and hands the owner the merge             |
+| a `merge-level:` decision predates the last start or dispatch word | `run claim` ignores it; the owner states the level again   |
+| the approved commit is already in the base (no remote)   | reported as already in the base, never as merged                   |
 | the repository has no remote                             | merges locally only if tests pass on that commit, all clean        |
 | the owner's checkout is off the base or dirty (no remote) | nothing merges; never stashes, resets or checks out               |
 | at `manual` on orq, the owner says "merge it" after the PR | the same three conditions, with the team's approved SHA            |
@@ -283,6 +304,12 @@ Either way, what is confirmed is saved as tagged facts through `capture`.
   file by hand (`.github/workflows/ci.yml`).
 - In a repository where a push to the base branch deploys, an automatic merge is in effect a
   deploy.
+- `origin: owner` trusts a source's `channel: claude-code*`, and the bundle already holds
+  content pasted or fetched into a Claude Code session, and autonomous sessions, stamped that
+  way. A fact that looks like the owner's may not be. The fix belongs to elephant-mem's
+  `capture` (a marker only `capture` writes), another plugin.
+- Unconfirmed: whether GitHub checks `--match-head-commit` (`expectedHeadOid`) again against a
+  push made after the auto-merge was scheduled.
 
 ## Tasks
 
