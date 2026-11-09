@@ -354,31 +354,56 @@ note saying which did not hold:
    approval from outside the run (a person, or an automated reviewer that
    signs as the owner) never counts.
 3. **GitHub gates the base branch**: it is protected with required status
-   checks, by classic branch protection or by a ruleset. Read it, never
-   change it:
+   checks, by classic branch protection or by a ruleset, and the repository
+   allows auto-merge. Read it, never change it, on the repository of the pull
+   request (`<owner>/<repo>` from the pull request's URL, not the default
+   remote: a checkout with an `upstream` remote opens it elsewhere):
    `gh api repos/<owner>/<repo>/branches/<base> --jq .protection.required_status_checks`
    (required checks listed, enforcement not `off`), or a `required_status_checks`
-   rule in `gh api repos/<owner>/<repo>/rules/branches/<base>`.
+   rule in `gh api repos/<owner>/<repo>/rules/branches/<base>`; and
+   `gh api repos/<owner>/<repo> --jq .allow_auto_merge` is `true`.
 
-When all three hold, the merge is
-`gh pr merge <number> --auto --match-head-commit <sha>`, with the approved
-SHA: GitHub waits for the required checks and merges, or refuses. Nothing
-merges with `--admin`, with force or with a skipped check, and the trunk never
-reads CI itself.
+**The merge.** When all three hold, it is
+`gh pr merge <number> --repo <owner>/<repo> --auto --merge --match-head-commit <sha>`,
+with the approved SHA. The method is required: `gh` asks for one and fails
+when it cannot ask. `--merge` (a merge commit) is the default; when the
+repository does not allow merge commits (`allow_merge_commit` in the same
+`gh api repos/<owner>/<repo>`), use the first it allows of `--squash` and
+`--rebase`, and say which was read. GitHub then waits for the required checks
+and merges, or refuses. Nothing merges with `--admin`, with force or with a
+skipped check, and the trunk never reads CI itself. Report what happened, not
+what was asked for: `gh pr view <number> --repo <owner>/<repo> --json state,autoMergeRequest`
+says `MERGED`, or that auto-merge is scheduled and waiting for the checks.
+A scheduled auto-merge is reported as scheduled, never as merged.
 
 **A repository with no remote** is usually the owner's own local tool, and
 the third condition is the local one instead: the repository's own tests
 pass on exactly the approved commit, with nothing uncommitted in the work
-tree. The merge is then `git merge --no-ff <sha>` into the base, only when
-the owner's checkout is on the base and clean at that moment. It never
-stashes, resets or checks out: a checkout elsewhere or dirty leaves the work
-on its branch, with a note.
+tree. The merge, in this order:
 
-**When the third condition fails**, the note says what would let a later run
-merge on its own. The owner is an admin of the repository
-(`gh api repos/<owner>/<repo> --jq .permissions.admin`): suggest turning on
-branch protection with required checks once. Not an admin: the pull request
-waits for the maintainer. The trunk never changes a repository's settings.
+1. When the commit is already in the base
+   (`git merge-base --is-ancestor <sha> refs/heads/<base>`), nothing merges:
+   say it is already in the base, never that it was merged.
+2. Probe it without touching anything:
+   `git merge-tree --write-tree refs/heads/<base> <sha>`. A conflict stops
+   here, with a note.
+3. Only when the owner's checkout is on the base
+   (`git symbolic-ref HEAD` is `refs/heads/<base>`) and clean
+   (`git status --porcelain` prints nothing) at that moment:
+   `git merge --no-ff <sha>`. When it fails, `git merge --abort`, and a note.
+
+It never stashes, resets or checks out: a checkout elsewhere or dirty leaves
+the work on its branch, with a note.
+
+**When the third condition fails**, one note says everything that is missing,
+so the owner learns it at once: branch protection with required checks,
+auto-merge allowed on the repository, or both. When the owner is an admin of
+the repository (`gh api repos/<owner>/<repo> --jq .permissions.admin`), it
+suggests turning on what is missing once, so later runs can merge on their
+own; when not, it says the pull request waits for the maintainer. It also says
+that a required check that no workflow reports any more (renamed or removed)
+leaves an auto-merge waiting forever. The trunk never changes a repository's
+settings.
 
 **Implementing roles never merge**: only the recipe's merge step (on orq) or
 this session as maestro (on plain Claude Code) merges, once the condition
@@ -536,10 +561,11 @@ documentation of recipes (its `--help`, its README). Never write a recipe from m
    per request (and, where a role can send the work back, a reply that does),
    so a role that is never reached fails it. It also asserts three things
    about the merge: started with no merge parameter, nothing merges; a merge
-   is only `gh pr merge --auto --match-head-commit <the reviewed SHA>`, after
-   a check of the base branch's protection (or, with no remote, the local
-   merge of 3a); and no merge call carries `--admin`, force or a flag that
-   skips a check.
+   is only `gh pr merge --auto <method> --match-head-commit <the reviewed
+   SHA>` on the pull request's own repository, after a check of the base
+   branch's protection and of auto-merge being allowed (or, with no remote,
+   the local merge of 3a); and no merge call carries `--admin`, force or a
+   flag that skips a check.
 
 Keep the draft, its check and the start command in the record. The draft lives
 beside the record, under `<bundle>/state/trunk/recipes/<name>/`, git-ignored
@@ -585,6 +611,13 @@ local commit of the facts it yields, never the raw record), and the learnings
 of this run. The owner's "dispatch" is the authorization: show this, then go
 straight to 3e. If what 3a to 3c produced changed the work the owner agreed to
 (a different repository, a part left out), ask before starting instead.
+
+**At `automatic`, say when a merge is a deploy.** In a repository where a
+push to the base branch deploys (a workflow on push to it, a platform that
+deploys that branch, as the study or the repository shows), an automatic
+merge is in effect a deploy. Say so in one line in the show, naming what
+deploys. The trunk does not decide it away: the owner can say this run needs
+their authorization before "dispatch" (3a).
 
 **At `manual`, a saved recipe not shown to merge nothing without the
 parameter** (3c) is asked about here, before the start: start it anyway, or
@@ -699,7 +732,9 @@ conversation from there, as **A dispatched run** in **Continue a run** says.
 **On orq**, confirm the sessions are running with what the `trunk-dispatch`
 facts name for it (a status or board command). With nothing named, the start
 command's own output is the evidence: the team, workspace or sessions it
-reports. Say in one line what is running and where. When the check shows
+reports. Say in one line what is running and where, and, at `automatic` in a
+repository where a push to the base deploys, that the merge it will make is
+in effect a deploy (3d). When the check shows
 nothing running, say so and record it; the run stays dispatched and is never
 started again by the trunk:
 
@@ -724,21 +759,28 @@ Every subagent prompt for a role that implements the work says it never
 merges. The trunk ends when the work ends, at this run's merge level (3a):
 
 - **`manual`**: a pull request opened for the owner. When the owner says, in
-  this session, to merge it, the merge below applies as at `automatic`.
+  this session, to merge it, the merge below applies as at `automatic`, with
+  the same review: the owner's word does not stand in for it.
 - **`automatic`**: the review, then the merge, under the merge condition (3a).
   - **The review** is a separate reviewer subagent with a fresh context, given
     the pull request and the brief, returning an explicit `approve` verdict
     on a named head SHA. Record it as a note (`review: approve <sha>`). The
     maestro never approves its own work.
-  - **The protection check**, then **the merge**:
-    `gh pr merge <number> --auto --match-head-commit <sha>`, with the approved
-    SHA. GitHub waits for the required checks and merges or refuses; the
-    maestro does not read CI. With no remote, the local tests and the local
-    merge of 3a instead.
+  - **The SHA comes from the record**, never from memory of the conversation:
+    the last `review: approve <sha>` note of this run (`run show <name>
+    --json`). It must be the pull request's current head
+    (`gh pr view <number> --repo <owner>/<repo> --json headRefOid`). No such
+    note, or a head that moved past it, merges nothing: say why, and hand the
+    owner the merge.
+  - **The protection check**, then **the merge** of 3a, with that SHA. GitHub
+    waits for the required checks and merges or refuses; the maestro does not
+    read CI. With no remote, the local tests and the local merge of 3a
+    instead. Record what happened as a note: merged, auto-merge scheduled, or
+    already in the base.
   - Any condition that does not hold leaves the pull request open for the
-    owner, with a note saying which (and, for the protection, what 3a
-    suggests). That is the end too: the trunk does not loop on it. An
-    override the owner says before the merge means nothing merges.
+    owner, with a note saying which (and, for the protection, the note of
+    3a). That is the end too: the trunk does not loop on it. An override the
+    owner says before the merge means nothing merges.
 
 Or the work stopped, with why in a note. It never deploys. Then 4b.
 
@@ -1004,13 +1046,21 @@ What is left of step 4 is said and offered, never run silently:
   run to say where the sessions stand now. It reads and starts nothing.
 - **On orq at `manual`, the owner says "merge it"** once the team opened the
   pull request: record the owner's word (`merge-level: automatic (owner in
-  this session)`), and merge only under the same three conditions (3a). It
-  takes the reviewer's approved SHA from the team's verdict in its orq
-  topic, checks the base branch's protection, and runs `gh pr merge <number>
-  --auto --match-head-commit <sha>` (with no remote, the local tests and
-  merge of 3a). When a condition does not hold (no approve verdict, a head
-  that moved past it, no protection), it merges nothing and tells the owner
-  which, as 3a's note says.
+  this session)`), and merge only under the same three conditions (3a). The
+  owner's word never stands in for the run's own review.
+  - **The approved SHA comes from the run's record**, never from memory: the
+    reviewer's verdict the team recorded, with its `sha` meta (the recipe
+    pins the builder's commit and asks the reviewer for it at every level).
+    Record it in this run as a note (`review: approve <sha> (orq verdict)`).
+  - **It must be the pull request's current head**
+    (`gh pr view <number> --repo <owner>/<repo> --json headRefOid`).
+  - Then the protection check and the merge of 3a, with that SHA (with no
+    remote, the local tests and merge of 3a).
+  - **No reviewer SHA** (a run started before the recipe recorded one, or a
+    review that did not approve), **a head that moved past it**, or a
+    condition 3 that fails: nothing merges. Say which, and hand the owner the
+    merge as their own (the pull request's URL, or the local merge line), with
+    3a's note when it is the protection.
 - **On plain Claude Code**, when the last note is neither a pull request
   (opened, merged, or left open with why) nor a stop, the work stopped short in the session that ran it. The trunk does not
   take it up again: that would be a second dispatch. Say the last milestone,
@@ -1264,7 +1314,8 @@ it is captured as any answer is.
   (it merges on its own under the merge condition of 3a). For `automatic`,
   say in one line what it does: later runs merge without asking, unless the
   owner says in a session that the run needs their authorization; they can
-  steer or forget it. A command given in question 6 is captured without any
+  steer or forget it. Say also that in a repository where a push to the base
+  deploys, an automatic merge is in effect a deploy. A command given in question 6 is captured without any
   merge flag or parameter: the merge is set per run, from this preference.
 - **A tool named is not checked here.** A command or a recipe the owner names
   is taken as they give it; 3a checks it resolves on the machine when a
@@ -1449,15 +1500,20 @@ which fact, and that the trunk no longer reads it.
   text never does. The level is computed fresh in
   every session; one recorded by an earlier session is history.
 - **A merge needs all three conditions.** The owner wants it; the run's own
-  reviewer approved exactly the commit that merges; and GitHub gates the base
-  branch with required status checks (with no remote: the local tests pass on
-  that commit, in a clean work tree). Then `gh pr merge --auto
-  --match-head-commit <sha>` (with no remote, `git merge --no-ff` into a clean
-  base checkout), never `--admin`, force or a skipped check. The trunk never
-  reads CI itself and never changes a repository's settings. Implementing
-  roles never merge.
+  reviewer approved exactly the commit that merges, its SHA read from the
+  record and still the pull request's head; and GitHub gates the base branch
+  with required status checks and allows auto-merge (with no remote: the
+  local tests pass on that commit, in a clean work tree). Then `gh pr merge
+  --auto --merge --match-head-commit <sha>` on the pull request's own
+  repository (with no remote, `git merge --no-ff` into a clean base
+  checkout), never `--admin`, force or a skipped check. A scheduled
+  auto-merge is reported as scheduled, and a commit already in the base as
+  that, never as merged. The trunk never reads CI itself and never changes a
+  repository's settings. Implementing roles never merge.
 - **Nothing deploys.** The trunk and the work it dispatches never deploy, and
-  the trunk never pushes the bundle.
+  the trunk never pushes the bundle. In a repository where a push to the base
+  deploys, an automatic merge is in effect a deploy: 3d says so before the
+  start.
 - **A dispatched run is never dispatched again.** Continuing it shows what was
   dispatched and where; more work is a new run.
 - **A forgotten learning is never read.** The trunk reads only active facts,
