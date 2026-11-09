@@ -257,11 +257,11 @@ skipped: a personal tool with a handful of runs a week; the owner reads the outc
 
 ### Phase 2 (tasks run together)
 
-- [ ] **2. The queue and the sources**: `trunk.py follow poll` runs the sources,
+- [x] **2. The queue and the sources**: `trunk.py follow poll` runs the sources,
       enqueues typed events with dedupe, and ships the orq team source, the pull
       request source, the deploy source and the time source (hold-until, health window, 3-day
       reminder, 7-day give-back). · verify: `tests/test_trunk.py` with a fake `gh`
-- [ ] **3. The trunk decides from events**: SKILL.md replaces the merge
+- [x] **3. The trunk decides from events**: SKILL.md replaces the merge
       preference with the judgment from the owner's facts, adds business hours,
       the per-repo deploy and health discernment, records the wait at dispatch,
       dispatches `impl_review` without a merge parameter, and adds "continue
