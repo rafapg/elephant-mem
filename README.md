@@ -7,7 +7,7 @@
 ![license](https://img.shields.io/badge/license-MIT-black?style=flat-square)
 ![elephant-mem](https://img.shields.io/badge/elephant--mem-v1.0.0--rc.3-black?style=flat-square)
 ![elephant-wiki](https://img.shields.io/badge/elephant--wiki-v0.1.0--beta.4-black?style=flat-square)
-![elephant-trunk](https://img.shields.io/badge/elephant--trunk-v0.1.0--beta.2-black?style=flat-square)
+![elephant-trunk](https://img.shields.io/badge/elephant--trunk-v0.1.0--beta.3-black?style=flat-square)
 ![claude code](https://img.shields.io/badge/claude--code-plugin-black?style=flat-square)
 ![ci](https://img.shields.io/github/actions/workflow/status/rafapg/elephant-mem/ci.yml?branch=main&style=flat-square&label=ci)
 
@@ -233,7 +233,8 @@ links back to it.
 
 `/elephant-trunk:trunk <topic>` studies a topic with your memory, converges on an
 approach with you in a short conversation, and dispatches the work to Claude Code
-sessions (on orq, or in the same session) that carry it to a pull request. The
+sessions (on orq, or in the same session) that carry it to a pull request, and
+then follows the work to the merge, the deploy and a health check (below). The
 skill is a skeleton: how you like a topic studied, how you dispatch and which
 recipes fit are read from your facts, tagged with your how-I-work tag plus one of
 `trunk-study`, `trunk-dispatch` or `trunk-recipe`. With no such facts it offers to
@@ -244,21 +245,32 @@ defaults to `how-i-work` (see [configuration](docs/configuration.md#trunk)). Its
 mechanics run from the plugin (`trunk.py`, stdlib only), find the bundle the way
 `elephant-wiki` does (`--bundle`, then `ELEPHANT_BUNDLE`, then the pointer file),
 and keep each run's raw record under `<bundle>/state/trunk/`, git-ignored.
-`trunk.py sessions` needs no bundle. The trunk never deploys. Who merges is
-part of your how, a `trunk-dispatch` fact: `manual` by default (the work ends at
-a pull request unless you say in the session to merge it), or `automatic` (it
-merges without asking, unless you say a session needs your authorization).
-Only a fact you captured yourself counts; one a feed brought in never does. A
-merge needs the run's own reviewer to approve the exact commit and the base
-branch to be protected with required checks, with auto-merge allowed: the
-trunk runs `gh pr merge --auto --merge --match-head-commit` and lets GitHub's
-gate decide, never reading CI itself. A repository with no remote merges
-locally instead, once its tests pass on that commit and your checkout of the
-base is clean. In a repository that deploys on a push to the base, an
-automatic merge is a deploy. Two limits are known: a fact counts as yours when
-its source says `claude-code`, which content pasted into a session can carry
-too, and whether GitHub re-checks the approved commit against a push made
-after the auto-merge was scheduled is unconfirmed.
+`trunk.py sessions` needs no bundle.
+
+**Who merges and who deploys.** There is no `manual` or `automatic` setting.
+Past the pull request the trunk decides each merge the way you would, from your
+own facts in the area `trunk-follow` (tagged with your how-I-work tag): whether
+the approvals that arrived are enough for this change, given who it asked to
+review and how critical the change is; whether this is the hour for it; and
+whether you said anything for this run. Only a fact you captured yourself counts
+toward a merge; one a feed brought in never does. A floor stays under that
+judgment: the run's own reviewer approved exactly the commit that merges and it
+is still the head, GitHub gates the base (required checks, auto-merge allowed:
+the trunk runs `gh pr merge --auto --merge --match-head-commit` and never reads
+CI itself), and the run has no hold. "Don't merge before I approve" said for a
+run is a hold, and only you lift it. A repository with no remote merges locally
+instead, once its tests pass on that commit and your checkout of the base is
+clean. A critical change in a repository where the merge deploys waits for
+business hours (below). After the merge the trunk follows the deploy as the
+repository defines it: a web service's own deploy, an `elephant-mem` tag and
+release (under the prefix of the plugin whose version the change bumped; none
+when it bumped none), or `lexflow deploy` with its dry run first (it stops and
+hands over to you if the deploy would ask for a secret, and never supplies or
+records one). Where it cannot tell what the deploy is, it stops at the merge.
+Health checks only read. Two limits are known: a fact counts as yours when its
+source says `claude-code`, which content pasted into a session can carry too,
+and whether GitHub re-checks the approved commit against a push made after the
+auto-merge was scheduled is unconfirmed.
 
 **The follow.** A dispatched run waits on what comes next (its team, the
 approval, the hour, the merge, the deploy, the health check), and

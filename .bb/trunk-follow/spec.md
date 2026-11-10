@@ -278,7 +278,7 @@ skipped: a personal tool with a handful of runs a week; the owner reads the outc
 
 ### Phase 4: the release
 
-- [ ] **5. Docs and version**: the trunk's spec, README and CHANGELOG
+- [x] **5. Docs and version**: the trunk's spec, README and CHANGELOG
       describe the follow; `elephant-trunk` bumps to 0.1.0-beta.3. · verify:
       `for t in tests/*.py; do python3 "$t" || echo "FAIL $t"; done`
 
