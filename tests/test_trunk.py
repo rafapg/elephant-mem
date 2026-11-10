@@ -22,7 +22,10 @@ run waits with a structured wait (`run wait set|show|list|end`), and the
 owner's hold (`run hold`) is a decision of its own prefix. `follow poll` runs
 the sources over the waiting runs against a fake `gh` and a fake orq store:
 only a change enqueues, every event typed and carrying structured fields only,
-and `follow take|mark` deliver each event once.
+and `follow take|mark` deliver each event once. A dry run writes nothing,
+`follow wake` prints the one line that wakes a session, `follow checkout`
+finds where a new one opens, and the Slack notes a session could not send are
+listed by `follow unsent` until relayed.
 Past sessions read on first use are estimated without a bundle, and their
 extract keeps the owner's own messages and the names of what ran, never tool
 output, the assistant's text, a command's arguments or a credential.
@@ -1814,6 +1817,126 @@ def _follow(root, home):
            and out["new"][-1]["fields"] == {"sha": SHA4, "signal": "workflow"}
            and wait_of(bm, "d1").get("on") == "owner", r.stderr or out)
 
+    # ── the open window of a scheduled merge closing ─────────────────────────
+    bh = bundle("follow-hours")
+    dispatched(bh, "w1", "--on", "merge", "--repo", "o/r", "--pr", "31",
+               "--state", json.dumps({"closes": at(hours=1)}))
+    gh_plan(plan, (["pr", "view", "31"], pr_view(), {}))
+    r, out = poll(bh)
+    record("a scheduled merge inside its open window enqueues nothing", r.returncode == 0 and out["new"] == [],
+           r.stderr or out)
+    r, out = poll(bh, "--now", at(hours=2))
+    closes = wait_of(bh, "w1")["state"]["closes"]
+    record("a run still waiting on its merge when the open window closes enqueues hour-closed, to decide",
+           types(out, "w1") == [("hour-closed", "decide")]
+           and out["new"][0]["fields"] == {"closes": dt.datetime.fromisoformat(closes).astimezone(utc)
+                                           .isoformat(timespec="seconds")}, r.stderr or out)
+    r, out = poll(bh, "--now", at(hours=3))
+    record("the window closes once", out["new"] == [], out)
+
+    # ── a dry run writes nothing ─────────────────────────────────────────────
+    bd = bundle("follow-dry")
+    dispatched(bd, "y1", "--on", "hour", "--hold-until", at(hours=1))
+    rec_file = bd / "state" / "trunk" / "runs" / "y1.json"
+    before = rec_file.read_bytes()
+    r, out = poll(bd, "--dry-run", "--now", at(hours=2))
+    follow_d = bd / "state" / "trunk" / "follow"
+    record("a dry run says what would be enqueued and writes nothing: no queue, no log, the record untouched",
+           r.returncode == 0 and out.get("dry_run") is True and types(out) == [("hour-open", "decide")]
+           and rec_file.read_bytes() == before and not follow_d.exists()
+           and not any(f.name.startswith(".") for f in rec_file.parent.iterdir()), r.stderr or out)
+    dry_id = out["new"][0]["id"] if out["new"] else None
+    r, out = poll(bd, "--now", at(hours=2))
+    record("the tick after a dry run enqueues the very event the dry run named",
+           [e["id"] for e in out["new"]] == [dry_id] and rec_file.read_bytes() != before, r.stderr or out)
+    r, out = poll(bd, "--dry-run", "--now", at(hours=2))
+    record("a dry run names no event already queued as new", out["new"] == [] and len(out["pending"]) == 1, out)
+
+    # ── the line that wakes a session ────────────────────────────────────────
+    r = run(TRUNK, "follow", "wake", "--bundle", bd, dry_id, env=env)
+    line = r.stdout.strip()
+    prefix = "/elephant-trunk:trunk continue y1 from event "
+    try:
+        woken = json.loads(line[len(prefix):]) if line.startswith(prefix) else None
+    except ValueError:
+        woken = None
+    record("follow wake prints one line: the trunk's skill, the run and the event's structured part",
+           r.returncode == 0 and "\n" not in line and woken is not None and woken["id"] == dry_id
+           and woken["type"] == "hour-open" and set(woken) == {"version", "id", "run", "source", "type", "act",
+                                                                "at", "fields"} and "'" not in line,
+           r.stderr or line)
+    run(TRUNK, "follow", "mark", "--bundle", bd, dry_id, "--as", "failed", "--why", "orq is down", env=env)
+    r = run(TRUNK, "follow", "wake", "--bundle", bd, dry_id, env=env)
+    record("the wake line never carries a delivery attempt's reason", r.returncode == 0 and "orq is down" not in r.stdout
+           and "attempts" not in r.stdout, r.stdout)
+    r = run(TRUNK, "follow", "wake", "--bundle", bd, "0" * 16, env=env)
+    record("follow wake refuses an event that is not queued", r.returncode != 0 and "no event" in r.stderr, r.stderr)
+
+    # ── Slack notes a session could not send ─────────────────────────────────
+    run(TRUNK, "run", "set", "--bundle", bd, "y1", "note", "--value", "decide: merge: enough approvals", env=env)
+    run(TRUNK, "run", "set", "--bundle", bd, "y1", "note", "--value",
+        "slack not sent (no Slack tool here): y1 merged #31, waits on the deploy", env=env)
+    run(TRUNK, "run", "set", "--bundle", bd, "y1", "note", "--value",
+        "slack not sent (send failed): y1 is live", env=env)
+    r = run(TRUNK, "follow", "unsent", "--bundle", bd, "--json", env=env)
+    un = json.loads(r.stdout or "{}").get("unsent", [])
+    record("follow unsent lists the notes a session could not send, oldest first, each with its why and an id",
+           r.returncode == 0 and [(n["run"], n["why"], n["note"]) for n in un]
+           == [("y1", "no Slack tool here", "y1 merged #31, waits on the deploy"), ("y1", "send failed", "y1 is live")]
+           and all(re.fullmatch(r"[0-9a-f]{12}", n["id"]) for n in un), r.stderr or un)
+    r, out = poll(bd, "--now", at(hours=2))
+    record("the tick's JSON carries the unsent notes too", [n["id"] for n in out.get("unsent", [])]
+           == [n["id"] for n in un], out)
+    r = run(TRUNK, "follow", "relayed", "--bundle", bd, "y1", "f" * 12, env=env)
+    record("relaying a note that is not unsent is refused", r.returncode != 0 and "no unsent" in r.stderr, r.stderr)
+    r = run(TRUNK, "follow", "relayed", "--bundle", bd, "y1", un[0]["id"] if un else "x", env=env)
+    left = json.loads(run(TRUNK, "follow", "unsent", "--bundle", bd, "--json", env=env).stdout)["unsent"]
+    record("a relayed note leaves follow unsent, and the run says it was relayed",
+           r.returncode == 0 and [n["note"] for n in left] == ["y1 is live"]
+           and rec_of(bd, "y1")["log"][-1]["text"] == f"slack relayed: {un[0]['id'] if un else ''}", r.stderr or left)
+    r = run(TRUNK, "follow", "relayed", "--bundle", bd, "y1", un[0]["id"] if un else "x", env=env)
+    record("a note is relayed once", r.returncode != 0, r.stdout)
+
+    # ── where a new session for the run opens ────────────────────────────────
+    def checkout(n):
+        r = run(TRUNK, "follow", "checkout", "--bundle", bd, n, "--json", env=env)
+        try:
+            return r, json.loads(r.stdout)
+        except ValueError:
+            return r, {}
+
+    main = root / "o-r-checkout"
+    main.mkdir()
+    git(main, "init", "-q")
+    git(main, "remote", "add", "origin", "git@github.com:o/r.git")
+    (main / "f").write_text("x", encoding="utf-8")
+    git(main, "add", "f")
+    git(main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x")
+    worktree = root / "o-r-checkout.worktrees" / "orq-k9"
+    git(main, "worktree", "add", "-q", "-b", "feat/k9", str(worktree))
+    bus_topic(store, "orq/k9", [{"kind": "start", "repo": str(worktree), "worktree": str(worktree)},
+                                {"kind": "agent", "cwd": str(worktree)}], status="closed")
+    dispatched(bd, "k1", "--on", "approval", "--repo", "o/r", "--pr", "41", "--team", "k9")
+    r, out = checkout("k1")
+    record("follow checkout finds the run's repository through its team's folder in orq's store, closed or not, "
+           "and takes its main checkout",
+           r.returncode == 0 and out.get("checkout") and Path(out["checkout"]).resolve() == main.resolve(),
+           r.stderr or out)
+    dispatched(bd, "k2", "--on", "approval", "--repo", "o/other", "--pr", "42", "--team", "k9")
+    r, out = checkout("k2")
+    record("a folder whose origin is not the wait's repo is no checkout",
+           r.returncode == 1 and out.get("checkout") is None and "origin" in (out.get("problem") or ""), out)
+    dispatched(bd, "k3", "--on", "team", "--repo", str(main.resolve()), "--team", "k-none")
+    r, out = checkout("k3")
+    record("a repo with no remote is its own checkout", r.returncode == 0 and out.get("checkout") == str(main.resolve()),
+           r.stderr or out)
+    dispatched(bd, "k4", "--on", "approval", "--repo", "o/r", "--pr", "43", "--team", "k-none")
+    r, out = checkout("k4")
+    r2 = run(TRUNK, "follow", "checkout", "--bundle", bd, "k4", env=env)
+    record("a team orq never recorded leaves no checkout, and says so",
+           r.returncode == 1 and out.get("checkout") is None and "k-none" in (out.get("problem") or "")
+           and r2.returncode == 1 and "no checkout" in r2.stderr, (r.stderr, out, r2.stderr))
+
     # ── the queue: taken once, marked once ───────────────────────────────────
     r = run(TRUNK, "follow", "queue", "--bundle", bc, "--json", env=env)
     q = json.loads(r.stdout or "{}")
@@ -1851,7 +1974,7 @@ def _follow(root, home):
     shapes = (re.compile(r"[0-9a-f]{7,40}"), re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}"),
               re.compile(r"[a-z0-9-]+"), re.compile(r"\d{4}-\d{2}-\d{2}T[\d:.]+[+-]\d{2}:\d{2}"))
     bad = []
-    files = [f for bb in (b, bt, bs, bc, bm) for f in (bb / "state" / "trunk" / "follow" / "queue").glob("*.json")]
+    files = [f for bb in (b, bt, bs, bc, bm, bh, bd) for f in (bb / "state" / "trunk" / "follow" / "queue").glob("*.json")]
     for f in files:
         text = f.read_text(encoding="utf-8")
         ev = json.loads(text)

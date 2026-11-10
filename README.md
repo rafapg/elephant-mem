@@ -260,6 +260,41 @@ its source says `claude-code`, which content pasted into a session can carry
 too, and whether GitHub re-checks the approved commit against a push made
 after the auto-merge was scheduled is unconfirmed.
 
+**The follow.** A dispatched run waits on what comes next (its team, the
+approval, the hour, the merge, the deploy, the health check), and
+`/elephant-trunk:follow` is the routine that watches it: each tick polls the
+waiting runs, wakes an orq session for each change that needs a decision, and
+sends you a Slack note for each one that does not. Schedule it **once**, as a
+Claude Desktop scheduled task whose prompt is `/elephant-trunk:follow`, hourly,
+**Local**, pointed at your bundle folder, with worktree off and a permissive
+permission mode. Before creating it, look in `~/.claude/scheduled-tasks/` for a
+task that already carries that prompt: a second copy makes every tick run
+twice (the queue's locks still deliver each event once, but you pay for both).
+Then use the task's "Run once" to approve the `gh`, `orq` and Slack prompts,
+so the unattended ticks do not stall; to see first what a tick would do,
+`/elephant-trunk:follow --dry-run` in any session reads everything and changes
+nothing. It needs `gh` logged in, `orq` on your
+`PATH`, and the Slack connector in the app; the notes go to the channel a
+`trunk-follow` fact names, else to your self-DM (`delivery.start_day.channel_id`
+when it goes `via: "slack"`). Like `catch-up`, it runs only while the app is
+open: a missed tick is not replayed, and the next one reads the state as it is
+then (an hour a held run waited for, passed meanwhile, opens it at once).
+
+**Business hours** hold a critical change's merge, in a repository where the
+merge deploys, until they open. They are set in `elephant.json` as
+`trunk.business_hours`, read in the bundle's top-level `timezone`:
+
+```json
+{ "timezone": "America/Sao_Paulo",
+  "trunk": { "business_hours": { "days": ["mon", "tue", "wed", "thu", "fri"],
+                                 "start": "09:00", "end": "18:00" } } }
+```
+
+With none set, they are Monday to Friday, 09:00 to 18:00. Prefer an IANA zone
+name: a fixed offset such as `-03:00` follows no daylight saving.
+`trunk.py hours` prints whether they are open now, when they close and when they
+open next.
+
 `elephant-update` updates **every installed plugin of the family**, the wiki
 and the trunk included, so neither of them needs a command of its own. The plan
 it shows before asking has a line for each of the three, and a release that

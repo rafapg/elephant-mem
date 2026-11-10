@@ -1089,9 +1089,9 @@ when the next one `opens`.
   it.
 - **An auto-merge still pending when the hours close**, on a critical change,
   is cancelled (`--disable-auto`, after its `decide:` note), and the run holds
-  `--on hour --hold-until '<opens>'`; the next opening runs 5d again. Any
-  event on a run waiting `--on merge` whose `closes` has passed checks this
-  first. Once the merge landed or the auto-merge was cancelled, `closes` is
+  `--on hour --hold-until '<opens>'`; the next opening runs 5d again. The
+  routine wakes the run with `hour-closed` when `closes` passes and it still
+  waits `--on merge`, and any other event on such a run checks this first. Once the merge landed or the auto-merge was cancelled, `closes` is
   dropped (`--state '{"closes": null}'`).
 
 ### 5f. What deploying means here

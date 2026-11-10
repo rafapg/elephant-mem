@@ -110,24 +110,41 @@ Commands:
                         commit. Only that commit is read: an earlier or later
                         one, or a partial copy (the study pasted into a
                         source), is not checked
-  follow poll [--now <time>]
+  follow poll [--now <time>] [--dry-run]
                         one tick of the follow: for each waiting run, the
                         sources in order (its orq team, read from orq's
                         store; its pull request, its merge commit's deploy
                         and time, read with gh), each compared with what the
                         run last saw; only a difference enqueues a typed event
                         under state/trunk/follow/queue/ and moves the wait.
-                        Time is the held hour arriving, the health window
-                        ending, a reminder after 3 days with no change and
-                        the give-back after 7. A source that cannot read
+                        Time is the held hour arriving, the open window of a
+                        scheduled merge closing, the health window ending, a
+                        reminder after 3 days with no change and the
+                        give-back after 7. A source that cannot read
                         enqueues nothing and says why in the tick's log
                         (state/trunk/follow/poll.log); with no waiting run
-                        and nothing queued it writes nothing
+                        and nothing queued it writes nothing. --dry-run reads
+                        the same sources and says what would be enqueued,
+                        writing nothing at all. The JSON also lists the Slack
+                        notes a session could not send (`unsent`)
   follow queue [--all]  the events not delivered yet, oldest first
   follow take <id>      take a pending event for delivery: of two routines,
                         one does; an event whose run is gone is dropped
+  follow wake <id>      the line that wakes a session for the event:
+                        /elephant-trunk:trunk continue <run> from event <JSON>,
+                        the event's structured part on one line
   follow mark <id> --as <delivered|failed|dropped> [--why <w>]
                         how the delivery went; failed keeps it queued
+  follow checkout <run> the run's repository on this machine, where a new
+                        session for it opens: the wait's repo when it is a
+                        path, else the main checkout of the folder orq's store
+                        records for the run's team, whose origin must be the
+                        wait's repo
+  follow unsent         the `slack not sent (<why>): <note>` notes of every
+                        run that the routine has not relayed yet, each with
+                        an id
+  follow relayed <run> <note-id>
+                        record that the routine sent that note to Slack
   recipe draft <run> --name <n> --roles <r> --file <path|->
                         [--test <path>] [--command <c>]
                         a new recipe written for this run: kept as a draft under
@@ -1631,7 +1648,8 @@ def cmd_run_hold(args):
 #
 # `act` says what an event asks of the routine. `decide` wakes a session that
 # continues the run from it: an approval, a local approval, the hour arriving,
-# the health window ending, a merge whose deploy is a step the trunk runs.
+# the open window of a scheduled merge closing, the health window ending, a
+# merge whose deploy is a step the trunk runs.
 # `notify` is a note the routine sends itself: a change request, failing
 # checks, a head that moved, a broken deploy, a merge or a close, a team done
 # with no approval, the reminder, the give-back. The poll moves the wait only
@@ -2013,7 +2031,8 @@ def step_deploy(wait, obs):
 
 
 def step_time(wait, t):
-    """The hour a held run waits for arriving, and the health window ending."""
+    """The hour a held run waits for arriving, the open window of a scheduled
+    merge closing, and the health window ending."""
     seen = (wait.get("state") or {}).get("time") or {}
     new, step = dict(seen), Step()
     until = wait.get("hold_until")
@@ -2022,6 +2041,13 @@ def step_time(wait, t):
     if wait.get("on") in PR_ON and until and _when(until) and t >= _when(until) and seen.get("hour") != until:
         step.event("hour-open", "decide", hold_until=until)
         new["hour"] = until
+    # A critical change's merge was scheduled inside the business hours and
+    # recorded when they close (`state.closes`); still waiting on the merge
+    # once they closed, the session cancels the auto-merge and holds.
+    closes = _stamp((wait.get("state") or {}).get("closes"))
+    if wait.get("on") == "merge" and closes and t >= _when(closes) and seen.get("closed") != closes:
+        step.event("hour-closed", "decide", closes=closes)
+        new["closed"] = closes
     if wait.get("on") == "health":
         # The window counts from the deploy's end when a source saw it, else
         # from when the run started waiting on health, kept so it never slides.
@@ -2145,12 +2171,14 @@ def _drop(bundle, ev, why, t_iso):
 
 # ── the tick ─────────────────────────────────────────────────────────────────
 
-def _apply(bundle, name, wait_n, source, step_of, t, new, log):
+def _apply(bundle, name, wait_n, source, step_of, t, new, log, dry=None):
     """Under the run's lock, read the record fresh and let `step_of(wait)` say
     what changed; enqueue its events, then write the wait. Returns the record
     as written (or as read, when nothing changed), or None when the run is no
-    longer this wait."""
-    t_iso = t.isoformat()
+    longer this wait. A dry run hands in the record as the sources before it
+    left it, in memory, and nothing is locked, enqueued or written."""
+    if dry is not None:
+        return _step(bundle, json.loads(json.dumps(dry)), name, wait_n, source, step_of, t, new, log, False)
     with held(lock_path(bundle, name)) as ok:
         if not ok:
             log(f"{name}: its record is being changed by another trunk.py; the next tick retries")
@@ -2160,49 +2188,57 @@ def _apply(bundle, name, wait_n, source, step_of, t, new, log):
         except RecordError as exc:
             log(f"{name}: {exc}")
             return None
-        wait = rec.get("wait")
-        if rec["status"] != STATUS_WAITING or not isinstance(wait, dict) \
-                or len(rec.get("past_waits") or []) != wait_n:
-            return None
-        try:
-            step = step_of(wait)
-        except SourceError as exc:
-            log(f"{name}: {source}: {exc}")
-            return rec
-        if not step:
-            return rec
-        for etype, act, fields in step.events:
-            ev = {"version": EVENT_VERSION, "id": _event_id(name, wait_n, source, etype, fields, wait),
-                  "run": name, "source": source, "type": etype, "act": act, "at": t_iso, "fields": fields,
-                  "status": EVENT_PENDING, "taken": None, "attempts": [], "done": None}
-            if enqueue(bundle, ev):
-                new.append(ev)
-        state = dict(wait.get("state") or {})
-        state.update(step.state)
-        moved = state != (wait.get("state") or {}) or step.changes.get("on", wait.get("on")) != wait.get("on")
-        wait.update(step.changes)
-        wait["state"] = state
-        if moved:
-            wait["since"], wait["reminded"] = t_iso, None
-        if step.reminded:
-            wait["reminded"] = t_iso
-        if step.end:
-            outcome, why = step.end
-            wait["ended"] = {"at": t_iso, "outcome": outcome, "why": why}
-            rec["status"] = STATUS_DISPATCHED
-        rec["wait"], rec["updated"] = wait, t_iso
-        write_record(bundle, rec)
+        return _step(bundle, rec, name, wait_n, source, step_of, t, new, log, True)
+
+
+def _step(bundle, rec, name, wait_n, source, step_of, t, new, log, write):
+    t_iso = t.isoformat()
+    wait = rec.get("wait")
+    if rec["status"] != STATUS_WAITING or not isinstance(wait, dict) \
+            or len(rec.get("past_waits") or []) != wait_n:
+        return None
+    try:
+        step = step_of(wait)
+    except SourceError as exc:
+        log(f"{name}: {source}: {exc}")
         return rec
+    if not step:
+        return rec
+    for etype, act, fields in step.events:
+        ev = {"version": EVENT_VERSION, "id": _event_id(name, wait_n, source, etype, fields, wait),
+              "run": name, "source": source, "type": etype, "act": act, "at": t_iso, "fields": fields,
+              "status": EVENT_PENDING, "taken": None, "attempts": [], "done": None}
+        if write and enqueue(bundle, ev):
+            new.append(ev)
+        elif not write and not os.path.isfile(event_path(bundle, ev["id"])):
+            new.append(ev)
+    state = dict(wait.get("state") or {})
+    state.update(step.state)
+    moved = state != (wait.get("state") or {}) or step.changes.get("on", wait.get("on")) != wait.get("on")
+    wait.update(step.changes)
+    wait["state"] = state
+    if moved:
+        wait["since"], wait["reminded"] = t_iso, None
+    if step.reminded:
+        wait["reminded"] = t_iso
+    if step.end:
+        outcome, why = step.end
+        wait["ended"] = {"at": t_iso, "outcome": outcome, "why": why}
+        rec["status"] = STATUS_DISPATCHED
+    rec["wait"], rec["updated"] = wait, t_iso
+    if write:
+        write_record(bundle, rec)
+    return rec
 
 
-def follow_run(bundle, rec, t, gh, new, log):
+def follow_run(bundle, rec, t, gh, new, log, dry=False):
     """One waiting run through the sources, in order; each sees the wait as
     the one before it left it."""
     name, wait_n = rec["name"], len(rec.get("past_waits") or [])
 
     def go(source, step_of):
         nonlocal rec
-        got = _apply(bundle, name, wait_n, source, step_of, t, new, log)
+        got = _apply(bundle, name, wait_n, source, step_of, t, new, log, rec if dry else None)
         if got is not None:
             rec = got
         return got is not None and rec["status"] == STATUS_WAITING
@@ -2265,8 +2301,37 @@ def _poll_lock(bundle):
     return None
 
 
+SLACK_NOT_SENT, SLACK_RELAYED = "slack not sent (", "slack relayed: "
+
+
+def _note_id(entry):
+    return hashlib.sha256(f"{entry.get('at')}\n{entry.get('text')}".encode("utf-8")).hexdigest()[:12]
+
+
+def unsent_notes(recs):
+    """The `slack not sent (<why>): <note>` notes a session left in its run,
+    with no `slack relayed: <id>` note of the routine after them, oldest
+    first: what the routine still owes the owner's Slack."""
+    out = []
+    for rec in recs:
+        log = [e for e in rec.get("log") or [] if isinstance(e, dict) and isinstance(e.get("text"), str)]
+        relayed = {e["text"][len(SLACK_RELAYED):].strip() for e in log if e["text"].startswith(SLACK_RELAYED)}
+        for e in log:
+            text = e["text"]
+            if not text.startswith(SLACK_NOT_SENT) or "): " not in text:
+                continue
+            nid = _note_id(e)
+            if nid in relayed:
+                continue
+            why, _, body = text[len(SLACK_NOT_SENT):].partition("): ")
+            out.append({"run": rec["name"], "id": nid, "at": e.get("at"), "why": why.strip(), "note": body.strip()})
+    out.sort(key=lambda n: (str(n["at"]), n["run"]))
+    return out
+
+
 def cmd_follow_poll(args):
     bundle = resolve_bundle(args.bundle)
+    dry = bool(args.dry_run)
     t = (datetime.datetime.fromisoformat(parse_when(args.now, "--now")) if args.now
          else datetime.datetime.now(datetime.timezone.utc))
     t_iso = t.isoformat()
@@ -2282,7 +2347,14 @@ def cmd_follow_poll(args):
     events, unreadable = list_events(bundle)
     opened = [e for e in events if e["status"] in EVENT_OPEN]
     busy = False
-    if recs or opened:
+    if dry and (recs or opened):
+        for ev in opened:
+            if not os.path.isfile(record_path(bundle, ev["run"])):
+                log(f"would drop event {ev['id']} ({ev['type']}): run {ev['run']} no longer exists")
+        gh = shutil.which("gh")
+        for rec in sorted(recs, key=lambda r: r["name"]):
+            follow_run(bundle, rec, t, gh, new, log, dry=True)
+    elif recs or opened:
         ensure_ignored(bundle)
         lock = _poll_lock(bundle)
         if lock is None:
@@ -2303,18 +2375,20 @@ def cmd_follow_poll(args):
                 _release(lock)
     for path in unreadable:
         log(f"skipped the unreadable event {path}")
-    if lines:
+    if lines and not dry:
         os.makedirs(follow_dir(bundle), mode=0o700, exist_ok=True)
         with open(os.path.join(follow_dir(bundle), "poll.log"), "a", encoding="utf-8") as fh:
             fh.writelines(f"{t_iso} {ln}\n" for ln in lines)
     pending = [e for e in list_events(bundle)[0] if _is_open(e, t)]
+    unsent = unsent_notes(list_records(bundle)[0])
     if args.json:
-        print(json.dumps({"bundle": bundle, "at": t_iso, "waiting": len(recs), "busy": busy, "new": new,
-                          "pending": pending, "log": lines}, ensure_ascii=False))
+        print(json.dumps({"bundle": bundle, "at": t_iso, "dry_run": dry, "waiting": len(recs), "busy": busy,
+                          "new": new, "pending": pending, "unsent": unsent, "log": lines}, ensure_ascii=False))
         return 0
     for ln in lines:
         note(ln)
-    print(f"follow: {len(recs)} waiting, {len(new)} new, {len(pending)} pending")
+    print(f"follow{' (dry run, nothing written)' if dry else ''}: {len(recs)} waiting, "
+          f"{len(new)} {'would be new' if dry else 'new'}, {len(pending)} pending, {len(unsent)} Slack notes unsent")
     for e in new:
         print(f"{e['id']}\t{e['run']}\t{e['type']}\t{e['act']}")
     return 0
@@ -2388,6 +2462,151 @@ def cmd_follow_mark(args):
         ev["done"] = {"at": t_iso, "as": args.mark, "why": why or None}
     _write_event(bundle, ev)
     print(json.dumps(ev, ensure_ascii=False) if args.json else f"event {ev['id']}: {ev['status']}")
+    return 0
+
+
+WAKE_KEYS = ("version", "id", "run", "source", "type", "act", "at", "fields")
+WAKE_SKILL = "/elephant-trunk:trunk"
+
+
+def wake_line(ev):
+    """The one line that wakes a session for an event: the trunk's skill, the
+    run and the event's structured part (never its delivery attempts, whose
+    reasons the routine wrote), as one line of JSON."""
+    part = {k: ev.get(k) for k in WAKE_KEYS}
+    return f"{WAKE_SKILL} continue {ev['run']} from event {json.dumps(part, ensure_ascii=True, separators=(',', ':'))}"
+
+
+def cmd_follow_wake(args):
+    bundle = resolve_bundle(args.bundle)
+    if not EVENT_ID_RE.fullmatch(args.id or ""):
+        die(f'"{args.id}" is not an event id (16 hex digits, as `follow queue` names it)')
+    try:
+        ev = read_event(bundle, args.id)
+    except RecordError as exc:
+        die(str(exc))
+    print(wake_line(ev))
+    return 0
+
+
+ORIGIN_RE = re.compile(r"(?:^|[@/:])github\.com[:/]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$", re.I)
+
+
+def team_folder(team):
+    """The folder an orq team was started in, from the `repo` of its topic's
+    first `start` message in orq's store (metadata only): orq records the
+    main checkout there, and keeps it after the team closed. None when the
+    store has no such team or no folder for it."""
+    try:
+        import sqlite3
+    except ImportError:
+        raise SourceError("this Python has no sqlite3 to read orq's store")
+    path = bus_db()
+    if not os.path.isfile(path):
+        raise SourceError(f"no orq store at {path}")
+    try:
+        uri = "file:" + urllib.request.pathname2url(path) + "?mode=ro"
+        with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=10)) as db:
+            topic = db.execute("SELECT topic_id FROM topics WHERE name = ? ORDER BY created_at DESC LIMIT 1",
+                               (f"orq/{team}",)).fetchone()
+            rows = db.execute("SELECT metadata_json FROM messages WHERE topic_id = ? ORDER BY seq",
+                              (topic[0],)).fetchall() if topic else []
+    except sqlite3.Error as exc:
+        raise SourceError(f"orq's store at {path} cannot be read ({exc})")
+    for (raw,) in rows:
+        try:
+            meta = json.loads(raw) if raw else {}
+        except ValueError:
+            continue
+        if isinstance(meta, dict) and meta.get("kind") == "start":
+            folder = meta.get("repo")
+            return folder if isinstance(folder, str) and os.path.isabs(folder) else None
+    return None
+
+
+def _git_out(folder, *args):
+    try:
+        r = subprocess.run(["git", "-C", folder, *args], capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def main_checkout(folder):
+    """The main checkout of the repository `folder` is in: the first worktree
+    git lists (a team's worktree holds the team's branch, and may be gone)."""
+    out = _git_out(folder, "worktree", "list", "--porcelain")
+    first = next((ln[len("worktree "):] for ln in (out or "").splitlines() if ln.startswith("worktree ")), None)
+    return os.path.normpath(first) if first and os.path.isdir(first) else None
+
+
+def checkout_of(wait):
+    """Where a new session for the run opens: (path, how it was found), or
+    (None, why not)."""
+    repo = wait.get("repo") or ""
+    if os.path.isabs(repo):
+        return (repo, "the wait's repo") if os.path.isdir(repo) else (None, f"{repo} is not a folder")
+    if not wait.get("team"):
+        return None, "the wait names no orq team to find its folder by"
+    try:
+        folder = team_folder(wait["team"])
+    except SourceError as exc:
+        return None, str(exc)
+    if not folder or not os.path.isdir(folder):
+        return None, f"orq's store records no folder for team {wait['team']}" + (f" ({folder} is gone)" if folder else "")
+    path = main_checkout(folder)
+    if not path:
+        return None, f"{folder} is not a git checkout"
+    origin = (_git_out(path, "remote", "get-url", "origin") or "").strip()
+    m = ORIGIN_RE.search(origin)
+    if REPO_RE.fullmatch(repo) and not (m and m.group(1).lower() == repo.lower()):
+        return None, f"the origin of {path} is not {repo}"
+    return path, f"the folder of team {wait['team']}"
+
+
+def cmd_follow_checkout(args):
+    bundle = resolve_bundle(args.bundle)
+    rec = load_or_die(bundle, check_name(args.run))
+    wait = rec.get("wait") if isinstance(rec.get("wait"), dict) else {}
+    path, how = checkout_of(wait)
+    if args.json:
+        print(json.dumps({"run": rec["name"], "checkout": path, "from": how if path else None,
+                          "problem": None if path else how}, ensure_ascii=False))
+        return 0 if path else 1
+    if not path:
+        die(f"run {rec['name']}: no checkout found: {how}")
+    print(path)
+    return 0
+
+
+def cmd_follow_unsent(args):
+    bundle = resolve_bundle(args.bundle)
+    recs, bad = list_records(bundle)
+    for n in bad:
+        note(f"skipped the unreadable run record {record_path(bundle, n)}")
+    notes = unsent_notes(recs)
+    if args.json:
+        print(json.dumps({"bundle": bundle, "unsent": notes}, ensure_ascii=False))
+        return 0
+    for n in notes:
+        print(f"{n['run']}\t{n['id']}\t{n['at']}\t{n['why']}\t{n['note']}")
+    return 0
+
+
+def cmd_follow_relayed(args):
+    """The routine sent a note a session could not: the run says so, and the
+    note leaves `follow unsent`."""
+    bundle = resolve_bundle(args.bundle)
+    rec = load_for_update(bundle, check_name(args.run))
+    if not any(n["id"] == args.note for n in unsent_notes([rec])):
+        die(f"run {rec['name']} has no unsent Slack note {args.note} (`follow unsent` lists them); "
+            f"nothing was recorded")
+    t = now()
+    rec.setdefault("log", []).append({"at": t, "text": f"{SLACK_RELAYED}{args.note}"})
+    rec["updated"] = t
+    write_record(bundle, rec)
+    print(f"run {rec['name']}: Slack note {args.note} relayed")
     return 0
 
 
@@ -3659,12 +3878,15 @@ def main(argv):
     p.add_argument("--json", action="store_true", help="print the run's summary, wait and hold as JSON")
     p.set_defaults(func=cmd_run_hold)
 
-    follow = sub.add_parser("follow", help="the waiting runs' sources and the queue: poll, queue, take, mark")
+    follow = sub.add_parser("follow", help="the waiting runs' sources and the queue: poll, queue, take, wake, "
+                                           "mark, checkout, unsent, relayed")
     fsub = follow.add_subparsers(dest="follow_command", required=True)
     p = fsub.add_parser("poll", parents=[common],
                         help="one tick: run the sources over the waiting runs, enqueue what changed")
     p.add_argument("--now", default="", metavar="TIME",
                    help="the time the tick reads (ISO 8601 with its offset; default: now), for a dry run or a test")
+    p.add_argument("--dry-run", action="store_true",
+                   help="read the sources and say what would be enqueued; write nothing")
     p.add_argument("--json", action="store_true", help="print the tick as one JSON object")
     p.set_defaults(func=cmd_follow_poll)
     p = fsub.add_parser("queue", parents=[common], help="the events not delivered yet, oldest first")
@@ -3682,6 +3904,22 @@ def main(argv):
     p.add_argument("--why", default="", help="why, in one line (required with failed)")
     p.add_argument("--json", action="store_true", help="print the event")
     p.set_defaults(func=cmd_follow_mark)
+    p = fsub.add_parser("wake", parents=[common], help="the line that wakes a session for an event")
+    p.add_argument("id", help="the event's id, as follow queue names it")
+    p.set_defaults(func=cmd_follow_wake)
+    p = fsub.add_parser("checkout", parents=[common],
+                        help="the run's repository on this machine, where a new session for it opens")
+    p.add_argument("run", help="the run's name")
+    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.set_defaults(func=cmd_follow_checkout)
+    p = fsub.add_parser("unsent", parents=[common],
+                        help="the Slack notes sessions could not send, not relayed yet")
+    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.set_defaults(func=cmd_follow_unsent)
+    p = fsub.add_parser("relayed", parents=[common], help="record that the routine sent an unsent Slack note")
+    p.add_argument("run", help="the run's name")
+    p.add_argument("note", help="the note's id, as follow unsent names it")
+    p.set_defaults(func=cmd_follow_relayed)
 
     recipe = sub.add_parser("recipe", help="a recipe written for a run: draft, checked, save, fact")
     csub = recipe.add_subparsers(dest="recipe_command_name", required=True)

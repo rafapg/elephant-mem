@@ -270,7 +270,7 @@ skipped: a personal tool with a handful of runs a week; the owner reads the outc
 
 ### Phase 3: the routine
 
-- [ ] **4. The follow routine**: a `follow` skill for the scheduled task polls,
+- [x] **4. The follow routine**: a `follow` skill for the scheduled task polls,
       routes each event (owning session, `/orq master` reading, `orq new`),
       marks it delivered, and sends the Slack notes; the README says how to
       schedule it once and where business hours are configured. · verify: a dry
