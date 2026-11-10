@@ -158,6 +158,9 @@ def replay(bundle, search=None):
     catalog_bytes = file_size(knowledge / "entities" / "index.md")
     hub_max = hub_max_facts(bundle)
     log, log_bad = read_log(bundle)
+    # The same owner `search.py`'s main() hands its Result: it trims the entity
+    # facet, so it changes the footer, the page room and every byte measured.
+    owner = search.owner_slug(bundle)
 
     counts = {
         "log_lines": len(log),
@@ -237,7 +240,7 @@ def replay(bundle, search=None):
         # The search path, per page size.
         query = search.Query(entities=ents, any_mode=True, until=day, as_of=day)
         for kb in CURVE_KB:
-            result = search.Result(rows, query, budget=kb * search.KB)
+            result = search.Result(rows, query, budget=kb * search.KB, owner=owner)
             last = min(MAX_PAGES, len(result.pages)) or 1
             shown, stop, spent = set(), None, 0
             for page in range(1, MAX_PAGES + 1):

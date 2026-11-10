@@ -27,30 +27,38 @@ body you open, and the size of any fallback output.
 
 ## Levels, cheapest first, each with its ceiling
 
-1. **Names.** Pass every person, project or thing named in the question through
-   the search, as written:
+1. **Names, all in one call.** Pass every person, project or thing named in
+   the question to a **single** search, each as written, with `--any` when
+   there is more than one:
 
    ```bash
-   python3 scripts/search.py --entity "<name as written>"
+   python3 scripts/search.py --entity "<name 1>" --entity "<name 2>" … --any
    ```
 
-   The script resolves it against `knowledge/entities/roster.tsv` (slug, title,
-   aliases), case- and accent-folded: exact, then a whole word of a name, then
-   similarity. Branch on the exit code:
+   (one name: `python3 scripts/search.py --entity "<name as written>"`). Never
+   one call per name: each call that resolves prints a page, and one page per
+   name would spend the query's page ceiling (level 3) before the first real
+   look. The script resolves every name against
+   `knowledge/entities/roster.tsv` (slug, title, aliases), case- and
+   accent-folded: exact, then a whole word of a name, then similarity. It
+   prints rows only when **every** name resolved, so branch on the exit code:
 
-   - **`0`** — resolved; the output is already page 1 (level 3). When the
-     header says `by similarity`, check the resolved entity against the
+   - **`0`** — all resolved, and the output is already the first look of level
+     3 (page 1 of the union), counting as one page. When the header's
+     `resolved:` lines say `by similarity`, check that entity against the
      question before you trust it; a fuzzy match on the wrong person answers
-     about someone else. When it says `also matches: …`, make sure the exact
+     about someone else. When one says `also matches: …`, make sure the exact
      match is the one the question means.
-   - **`3`** — ambiguous: the deciding tier held several entities, listed with
-     slug, kind and title, and no rows were printed. Settle it from the
-     question's context and search again with the slug; when the context does
-     not settle it, ask the user rather than pick.
-   - **`4`** — not found, or no roster. Read `knowledge/entities/roster.tsv`
-     whole, once, and resolve there (`../_shared/entity-resolution.md`); when
-     the roster is absent, `knowledge/entities/index.md` instead, as that file
-     prescribes. Log `roster` as a level.
+   - **`3`** — at least one name is ambiguous: each such name's deciding tier
+     is listed with slug, kind and title, and no rows were printed, so no page
+     was spent. Settle each from the question's context and run the same
+     single call again with the slugs; when the context does not settle it,
+     ask the user rather than pick.
+   - **`4`** — a name was not found, or there is no roster; no page was spent.
+     Read `knowledge/entities/roster.tsv` whole, once, and resolve there
+     (`../_shared/entity-resolution.md`); when the roster is absent,
+     `knowledge/entities/index.md` instead, as that file prescribes. Log
+     `roster` as a level, then run the single call again with the slugs.
 
 2. **Themes with no entity.** When the question names a topic rather than an
    entity, find entities by description with `rg -i '<term>'
@@ -58,10 +66,10 @@ body you open, and the size of any fallback output.
    log `catalog-rg`), and/or search the manifest's descriptions directly with
    `python3 scripts/search.py --text "<words>"`.
 
-3. **Search.** With the resolved entities, `--entity <slug>` once per entity;
-   add `--any` when there is more than one, for the first look (a union,
-   interleaved so each entity gets its share of the page). Then refine by what
-   the footer offers instead of descending the same list:
+3. **Search.** The first look is the page level 1 already printed: the
+   resolved entities, `--any` when there is more than one (a union, interleaved
+   so each entity gets its share of the page). Do not repeat it. Then refine by
+   what the footer offers instead of descending the same list:
    - both entities on one row matter (the answer turns on the pair): the same
      `--entity` flags without `--any`, an intersection;
    - a co-occurring entity from the `entities:` facet: add it as `--entity`;
@@ -69,13 +77,15 @@ body you open, and the size of any fallback output.
    - a period the question implies, or a month from the `months:` facet:
      `--since YYYY-MM-DD` / `--until YYYY-MM-DD`. **When the question points to
      the past, refine by date rather than paging toward it**: the footer's
-     `cut at <date>` and `N more behind the cut` say how much older material
-     the page did not reach;
+     `cut at <date>: N more behind it, none newer than <date>` says how many
+     matches the page did not reach and that every one of them is dated on or
+     before `<date>` (the newest row left behind, in either ordering);
    - words the answer must contain: `--text "<words>"`.
 
    The next page of the same list is `--page N`, the exact suffix the footer's
    `next:` line prints. **At most 4 search pages per query, across every
-   `search.py` call** (each call prints one page). After the fourth, do not
+   `search.py` call**, level 1's included (each call that prints rows prints
+   one page; a call that exits 3 or 4 prints none). After the fourth, do not
    read a fifth: answer from what you have, or fall back (level 5) and record
    it.
 

@@ -17,9 +17,11 @@ can refine instead of descending further.
     python3 scripts/search.py --entity acme --page 2
 
 **The budget is the window.** There is no default date cutoff: rows are ordered
-newest first and the budget cuts. The footer always says where the cut fell and
-how many matches lie behind it, so nothing leaves an answer without the output
-saying how many and from when. `--since`/`--until` narrow explicitly.
+newest first and the budget cuts. The footer always says where the cut fell
+(`cut at <date>`, the newest date among the rows left behind, so nothing newer
+was left out, in either ordering) and how many matches lie behind it, so
+nothing leaves an answer without the output saying how many and from when.
+`--since`/`--until` narrow explicitly.
 
 **Filters.** `--entity` repeated is an intersection; with `--any` it is a union,
 interleaved round-robin across the named entities so each gets its share of
@@ -536,7 +538,8 @@ class Result:
         lines = []
         if worst:
             lines.append(f"page {total} of {total} · showed {total} of {total} · "
-                         f"cut at 0000-00-00 · {total} more behind the cut")
+                         f"cut at 0000-00-00: {total} more behind it, none newer "
+                         f"than 0000-00-00")
             lines.append(f"next: --page {total + 1}")
         elif total == 0:
             lines.append("page 1 of 1 · showed 0 of 0")
@@ -547,11 +550,20 @@ class Result:
                          f"past the last page, which is --page {last}")
         else:
             start, end = self.pages[page - 1]
-            when = occurred(self.ordered[end - 1]) or "undated"
             remain = total - end
-            line = f"page {page} of {last} · showed {end} of {total} · cut at {when}"
+            line = f"page {page} of {last} · showed {end} of {total}"
             if remain:
-                line += f" · {remain} more behind the cut"
+                # The newest row still behind the cut, not the last row
+                # printed: under `--any` the order is a round-robin of
+                # per-entity lists led by multi-entity rows, so the last row
+                # printed can be older than rows the page never reached. The
+                # newest date behind is the one claim true in both modes:
+                # nothing newer than it was left out.
+                when = max((effective(r, q.as_of) for r in self.ordered[end:]),
+                           default="") or "undated"
+                line += f" · cut at {when}: {remain} more behind it, none newer than {when}"
+            else:
+                line += " · nothing behind the cut"
             lines.append(line)
             if remain:
                 lines.append(f"next: --page {page + 1}")

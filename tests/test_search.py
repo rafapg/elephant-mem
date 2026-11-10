@@ -200,10 +200,12 @@ def page_and_order(tmp):
     record("rows on the same date break the tie on path, ascending",
            same_day == sorted(same_day) and len(same_day) == 2, same_day)
     foot = footer(r1.stdout)
+    behind = entries(run(bundle, ["--entity", "dayane", "--as-of", TODAY,
+                                  "--page", "2"]).stdout)[0][0]
     record("E1 the footer gives the page, the count shown, the cut date and what is behind",
            f"page 1 of " in foot and f"showed {len(rows1)} of 300" in foot
-           and f"cut at {dates[-1]}" in foot and f"{300 - len(rows1)} more behind the cut" in foot,
-           foot)
+           and f"cut at {behind}: {300 - len(rows1)} more behind it, none newer than {behind}"
+           in foot, foot)
     record("E1 …and the exact next command", "next: --page 2" in foot, foot)
 
     # H3: the pages tile the ordered set, no gap and no overlap.
@@ -220,6 +222,10 @@ def page_and_order(tmp):
             break
     record("H3 pages tile the matched set: every row once, in order",
            len(seen) == 300 and len(set(seen)) == 300, f"{len(seen)} rows, {len(set(seen))} unique")
+    r = run(bundle, ["--entity", "dayane-ferraz", "--as-of", TODAY, "--page", page - 1])
+    record("the last page says nothing is behind the cut, and offers no next page",
+           "nothing behind the cut" in footer(r.stdout) and "next:" not in r.stdout,
+           footer(r.stdout))
     record("E3 a page past the last prints no rows, names the last page, exit 0",
            last_out is not None and last_out.returncode == 0
            and f"which is --page {page - 1}" in footer(last_out.stdout),
@@ -296,6 +302,28 @@ def page_and_order(tmp):
 
     record("E19 a dozen searches wrote nothing into the bundle",
            snapshot(bundle) == before, set(snapshot(bundle)) ^ set(before))
+
+    # Under --any the order is a round-robin led by rows carrying both
+    # entities, so the last row printed is no date bound: here the page opens
+    # on 2024 pair rows and stops among A-only rows while newer B-only rows
+    # wait behind it. The cut must name the newest row left behind.
+    interleaved = [fact(f"/facts/ab-{i}.md", f"2024-01-0{i + 1}",
+                        [("acme", "org"), ("nebulare", "project")]) for i in range(3)]
+    interleaved += [fact(f"/facts/a-{i:02d}.md", f"2026-10-{i % 28 + 1:02d}",
+                         [("acme", "org")]) for i in range(40)]
+    interleaved += [fact(f"/facts/b-{i:02d}.md", f"2026-09-{i % 28 + 1:02d}",
+                         [("nebulare", "project")]) for i in range(40)]
+    mixed = make_bundle(tmp, "interleaved", interleaved, owner=None)
+    r = run(mixed, ["--entity", "acme", "--entity", "nebulare", "--any",
+                    "--as-of", TODAY, "--budget", "2.7"])
+    shown = {p for _, _, p in entries(r.stdout)}
+    left = [row for row in interleaved if row["path"] not in shown]
+    newest_left = max(row["occurred"] for row in left)
+    record("--any: the cut names the newest row left behind, not the last printed",
+           r.returncode == 0 and entries(r.stdout)[0][0].startswith("2024-")
+           and f"cut at {newest_left}:" in footer(r.stdout)
+           and f"none newer than {newest_left}" in footer(r.stdout),
+           f"newest left behind {newest_left}\n{r.stdout}")
 
     # E2: a single row larger than the budget still prints, alone.
     big = make_bundle(tmp, "big", [
