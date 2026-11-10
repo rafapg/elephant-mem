@@ -85,7 +85,8 @@ Commands:
                         orq team, the pull request, the approved SHA, the
                         owning orq session, the deploy kind (service,
                         release, lexflow, local, merge, unknown) and health
-                        rule, no merge before --hold-until, what the sources
+                        rule and window (30 minutes when a rule names none),
+                        no merge before --hold-until, what the sources
                         last saw (--state, merged key by key, null drops a
                         key), the reminder sent; an empty value clears a
                         field; a change of --on or of the state moves
@@ -1554,7 +1555,8 @@ def _wait_lines(rec):
         for label, value in (("where", where.strip()), ("team", wait.get("team")),
                              ("session", wait.get("session")), ("approved", wait.get("approved_sha")),
                              ("deploy", wait.get("deploy")), ("health", wait.get("health_rule")),
-                             ("health window", f"{wait['health_window']} min" if wait.get("health_window") else None),
+                             ("health window", f"{wait['health_window']} min" if wait.get("health_window") is not None
+                              else f"{HEALTH_WINDOW_DEFAULT} min (default)" if wait.get("health_rule") else None),
                              ("hold until", wait.get("hold_until")), ("reminded", wait.get("reminded")),
                              ("last seen", json.dumps(wait["state"], ensure_ascii=False, sort_keys=True)
                               if wait.get("state") else None)):
@@ -1664,6 +1666,10 @@ EVENT_OPEN = (EVENT_PENDING, EVENT_TAKEN)
 MARKS = ("delivered", "failed", "dropped")
 EVENT_VERSION = 1
 REMIND_DAYS, GIVE_BACK_DAYS = 3, 7
+# The health window, in minutes, when a wait names a health rule and no
+# window: the same 30 the trunk's skill gives when no fact names one. A window
+# of 0 would fire `health-window-ended` on the tick that saw the deploy.
+HEALTH_WINDOW_DEFAULT = 30
 # A taken event that no mark followed for this long is taken again: the
 # routine that took it died. The routine runs hourly.
 TAKE_STALE = 3600.0
@@ -1941,12 +1947,23 @@ def step_team(wait, obs):
                 raise SourceError(f"team {team} opened {obs['repo']}#{obs['pr']}, and the wait's repo is {repo}")
             step.changes.update(pr=obs["pr"], approved_sha=obs["sha"], on="approval",
                                 repo=repo if on_github else obs["repo"])
-        else:
+            # With a pull request, what comes next is its approval: a note.
+            step.event("team-approved", "notify", team=team, sha=obs["sha"],
+                       round=obs["round"], pr=obs["pr"], reviewers=obs["reviewers"])
+        elif os.path.isabs(repo):
+            # No pull request in a repo with no remote: the local merge is
+            # decided now.
             step.changes.update(approved_sha=obs["sha"], on="merge")
-        # With a pull request, what comes next is its approval: a note. With
-        # none (a repo with no remote), the local merge is decided now.
-        step.event("team-approved", "notify" if obs["pr"] else "decide", team=team, sha=obs["sha"],
-                   round=obs["round"], pr=obs["pr"], reviewers=obs["reviewers"])
+            step.event("team-approved", "decide", team=team, sha=obs["sha"],
+                       round=obs["round"], pr=obs["pr"], reviewers=obs["reviewers"])
+        else:
+            # No pull request anywhere else means the team could not open one
+            # (the push or `gh pr create` failed, or the brief was no spec):
+            # nothing merges locally on a repo that lives on GitHub, and no
+            # source can see the work move on. The owner takes it.
+            step.changes.update(approved_sha=obs["sha"], on="owner")
+            step.event("team-approved-no-pr", "notify", team=team, sha=obs["sha"],
+                       round=obs["round"])
     elif obs["status"] == "finished":
         step.event("team-finished", "notify", team=team)
         step.changes["on"] = "owner"
@@ -2053,7 +2070,9 @@ def step_time(wait, t):
         # from when the run started waiting on health, kept so it never slides.
         start = _dig(wait, "state", "deploy", "finished_at") or seen.get("health_from") or wait.get("since")
         new["health_from"] = start
-        window = wait.get("health_window") or 0
+        window = wait.get("health_window")
+        if window is None:
+            window = HEALTH_WINDOW_DEFAULT
         began = _when(start)
         if began and t >= began + datetime.timedelta(minutes=window) and seen.get("health") != start:
             step.event("health-window-ended", "decide", deployed_at=_stamp(start), window=window)
@@ -3849,7 +3868,7 @@ def main(argv):
     p.add_argument("--health-rule", dest="health_rule", default=None,
                    help="what healthy means after the deploy, in one line")
     p.add_argument("--health-window", dest="health_window", default=None, metavar="MINUTES",
-                   help="how long after the deploy health is watched")
+                   help=f"how long after the deploy health is watched ({HEALTH_WINDOW_DEFAULT} when a health rule names none)")
     p.add_argument("--hold-until", dest="hold_until", default=None, metavar="TIME",
                    help="no merge before this time (ISO 8601 with its offset)")
     p.add_argument("--state", default=None, metavar="JSON",

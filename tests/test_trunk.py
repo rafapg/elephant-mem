@@ -1712,6 +1712,21 @@ def _follow(root, home):
     r, out = poll(b, "--now", at(minutes=32))
     record("the health window ends once", out["new"] == [], out)
 
+    # ── a health rule with no window ─────────────────────────────────────────
+    bh = bundle("follow-health-default")
+    dispatched(bh, "h1", "--on", "health", "--repo", "o/r", "--deploy", "service",
+               "--health-rule", "no new errors in the service log")
+    hsince = dt.datetime.fromisoformat(wait_of(bh, "h1")["since"])
+    r, out = poll(bh, "--now", (hsince + dt.timedelta(minutes=1)).isoformat())
+    record("a health rule with no window does not end the window on the next tick",
+           r.returncode == 0 and out["new"] == [], r.stderr or out)
+    r, out = poll(bh, "--now", (hsince + dt.timedelta(minutes=31)).isoformat())
+    record("a health rule with no window is watched for the default 30 minutes",
+           types(out) == [("health-window-ended", "decide")] and out["new"][0]["fields"]["window"] == 30,
+           r.stderr or out)
+    r = run(TRUNK, "run", "wait", "show", "--bundle", bh, "h1", env=env)
+    record("run wait show names the default health window", "30 min (default)" in r.stdout, r.stdout or r.stderr)
+
     # ── the time source ──────────────────────────────────────────────────────
     bt = bundle("follow-time")
     dispatched(bt, "h1", "--on", "hour", "--hold-until", at(hours=2))
@@ -1752,8 +1767,12 @@ def _follow(root, home):
     local = str((root / "a-local-tool").resolve())
     dispatched(bc, "c4", "--on", "team", "--repo", local, "--team", "k3")
     dispatched(bc, "c5")
+    dispatched(bc, "c6", "--on", "team", "--repo", "o/r", "--team", "k4")
     bus_topic(store, "orq/k2", [{"kind": "request"}, {"kind": "done", "value": INJECT}], status="closed")
     bus_topic(store, "orq/k3", [{"kind": "approved", "sha": SHA4, "round": 1, "pr": "", "reviewers": ""}])
+    # impl_review posts `approved` with no link when it could not open the
+    # pull request, in a repo that lives on GitHub too.
+    bus_topic(store, "orq/k4", [{"kind": "approved", "sha": SHA4, "round": 2, "pr": "", "reviewers": ""}])
     gh_plan(plan, (["pr", "view", "13"], pr_view(state="CLOSED"), {}),
             (["api", "repos/o/r/issues/13"], {"closed_by": {"login": "erin"}, "body": INJECT}, {}),
             (["pr", "view", "14"], None, {"code": 1, "err": "HTTP 502: Bad Gateway"}))
@@ -1773,6 +1792,11 @@ def _follow(root, home):
     record("a team approved in a repo with no remote enqueues team-approved to decide the local merge",
            types(out, "c4") == [("team-approved", "decide")] and w.get("on") == "merge"
            and w.get("approved_sha") == SHA4 and w.get("pr") is None, out)
+    w = wait_of(bc, "c6")
+    record("a team approved on GitHub with no pull request notifies, merges nothing, and the run waits for the owner",
+           types(out, "c6") == [("team-approved-no-pr", "notify")]
+           and [e["fields"] for e in out["new"] if e["run"] == "c6"] == [{"team": "k4", "sha": SHA4, "round": 2}]
+           and w.get("on") == "owner" and w.get("approved_sha") == SHA4 and w.get("pr") is None, out)
     record("no gh call is made for a repo with no remote, nor for a run dispatched with no wait",
            all("14" in c or "13" in c for c in calls.read_text(encoding="utf-8").splitlines())
            and types(out, "c5") == [], calls.read_text(encoding="utf-8"))

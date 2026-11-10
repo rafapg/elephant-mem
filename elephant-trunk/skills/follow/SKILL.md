@@ -276,6 +276,7 @@ SHA (its first 7 characters), a count, a state, a time and a link are fine.
 | event                  | the note says                                                                                                         |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `team-approved`        | the team's reviewer approved `<sha>` (round `<round>`) and the pull request is open; it waits on the approval of `<reviewers>` |
+| `team-approved-no-pr`  | the team's reviewer approved `<sha>` (round `<round>`), but the team opened no pull request (its push or `gh pr create` failed, or the brief was not a spec); nothing merges; the run waits for the owner |
 | `team-finished`        | the team finished with no approval; the run waits for the owner                                                       |
 | `team-error`           | the team stopped on an error; `orq resume <team>` takes it on; the run still waits on it                              |
 | `pr-changes-requested` | `<reviewer>` requested changes; the trunk pushes no fix; the run waits for the owner                                  |
