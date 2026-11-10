@@ -52,7 +52,8 @@ before the subagent exists.
    follow the procedure at `${CLAUDE_PLUGIN_ROOT}/skills/query/procedure.md`.
    The user's question is: `<the user's verbatim question/topic>`. Do every
    bundle read, and the procedure's closing `scripts/recall.py log` call, in
-   your own context. Return ONLY the final user-facing answer
+   your own context, passing that question verbatim as the log's
+   `--question`. Return ONLY the final user-facing answer
    in the bundle's `conversation_language`, with provenance exactly as the
    procedure requires. The preflight already ran in the main agent — do not run
    `elephant-update --check` yourself."

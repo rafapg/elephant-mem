@@ -416,6 +416,31 @@ def drive_build_index(root):
     )
 
 
+@drives("search.py")
+def drive_search(root):
+    """search.py reads no frontmatter itself: it reads the manifest and the
+    roster build-index.py derives from the templates. So it is driven over
+    that derivation, which is the contract that matters to it: the fields a
+    template ships are the fields a search filters and resolves on."""
+    bundle = mount_bundle(root, "search")
+    run_script(bundle, "build-index.py")
+
+    found = run_script(bundle, "search.py")
+    record(
+        "search.py finds the template fact and the template open loop in the "
+        "manifest build-index.py derived from them",
+        found.returncode == 0 and "· 2 matches" in found.stdout
+        and "/facts/t.md" in found.stdout and "/tracking/loops/t.md" in found.stdout,
+        f"exit={found.returncode}\n{found.stdout}\n{found.stderr}",
+    )
+    named = run_script(bundle, "search.py", ["--entity", "t"])
+    record(
+        "…and resolves the template entity through the roster it derived",
+        named.returncode == 0 and "search: entity t " in named.stdout,
+        f"exit={named.returncode}\n{named.stdout}\n{named.stderr}",
+    )
+
+
 @drives("briefing.py")
 def drive_briefing(root):
     bundle = mount_bundle(root, "briefing")

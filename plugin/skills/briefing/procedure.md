@@ -28,11 +28,13 @@ returns suspiciously little (e.g. one `decision` when a meeting clearly had
 more), say so — it usually means inconsistent tagging upstream, a `maintain`
 fix.
 
-**Sharded hubs:** if you open an entity/source hub while drilling into a
-result and its auto-facts block ends with `→ N older/superseded facts:
-[archive](...)` (build-index.py's hub sharding), follow that link only when
-the user's question needs history beyond the window/inline block — not by
-default.
+**Hubs and archives:** to drill into an entity behind a result, prefer
+`python3 scripts/search.py --entity <slug>` (one 32 KB page of that entity's
+newest manifest rows, with facets) over opening its hub. A hub and its
+`→ N older/superseded facts: [archive](...)` link (build-index.py's hub
+sharding) are for history only: follow them when the user's question
+explicitly asks for what came before the window, superseded facts included —
+not by default.
 
 **Consumption log.** After the digest is finalized, run from `<bundle>`, with
 one `--item` per fact/loop/source file the digest cited and one `--entity` per
