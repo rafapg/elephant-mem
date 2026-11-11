@@ -152,7 +152,7 @@ def snapshot(root):
 # --- (a)-(d): one bundle with a busy entity -----------------------------------
 
 TODAY = "2026-11-10"
-DESC = "Dayane Ferraz said the self-checkout covers offices of up to twenty lawyers " * 3
+DESC = "Ana Lima said the sample widget handles batches of up to twenty small items " * 3
 
 
 def busy_rows():
