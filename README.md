@@ -7,7 +7,7 @@
 ![license](https://img.shields.io/badge/license-MIT-black?style=flat-square)
 ![elephant-mem](https://img.shields.io/badge/elephant--mem-v1.0.0--rc.4-black?style=flat-square)
 ![elephant-wiki](https://img.shields.io/badge/elephant--wiki-v0.1.0--beta.4-black?style=flat-square)
-![elephant-trunk](https://img.shields.io/badge/elephant--trunk-v0.1.0--beta.2-black?style=flat-square)
+![elephant-trunk](https://img.shields.io/badge/elephant--trunk-v0.1.0--beta.3-black?style=flat-square)
 ![claude code](https://img.shields.io/badge/claude--code-plugin-black?style=flat-square)
 ![ci](https://img.shields.io/github/actions/workflow/status/rafapg/elephant-mem/ci.yml?branch=main&style=flat-square&label=ci)
 
@@ -233,7 +233,8 @@ links back to it.
 
 `/elephant-trunk:trunk <topic>` studies a topic with your memory, converges on an
 approach with you in a short conversation, and dispatches the work to Claude Code
-sessions (on orq, or in the same session) that carry it to a pull request. The
+sessions (on orq, or in the same session) that carry it to a pull request, and
+then follows the work to the merge, the deploy and a health check (below). The
 skill is a skeleton: how you like a topic studied, how you dispatch and which
 recipes fit are read from your facts, tagged with your how-I-work tag plus one of
 `trunk-study`, `trunk-dispatch` or `trunk-recipe`. With no such facts it offers to
@@ -244,21 +245,67 @@ defaults to `how-i-work` (see [configuration](docs/configuration.md#trunk)). Its
 mechanics run from the plugin (`trunk.py`, stdlib only), find the bundle the way
 `elephant-wiki` does (`--bundle`, then `ELEPHANT_BUNDLE`, then the pointer file),
 and keep each run's raw record under `<bundle>/state/trunk/`, git-ignored.
-`trunk.py sessions` needs no bundle. The trunk never deploys. Who merges is
-part of your how, a `trunk-dispatch` fact: `manual` by default (the work ends at
-a pull request unless you say in the session to merge it), or `automatic` (it
-merges without asking, unless you say a session needs your authorization).
-Only a fact you captured yourself counts; one a feed brought in never does. A
-merge needs the run's own reviewer to approve the exact commit and the base
-branch to be protected with required checks, with auto-merge allowed: the
-trunk runs `gh pr merge --auto --merge --match-head-commit` and lets GitHub's
-gate decide, never reading CI itself. A repository with no remote merges
-locally instead, once its tests pass on that commit and your checkout of the
-base is clean. In a repository that deploys on a push to the base, an
-automatic merge is a deploy. Two limits are known: a fact counts as yours when
-its source says `claude-code`, which content pasted into a session can carry
-too, and whether GitHub re-checks the approved commit against a push made
-after the auto-merge was scheduled is unconfirmed.
+`trunk.py sessions` needs no bundle.
+
+**Who merges and who deploys.** There is no `manual` or `automatic` setting.
+Past the pull request the trunk decides each merge the way you would, from your
+own facts in the area `trunk-follow` (tagged with your how-I-work tag): whether
+the approvals that arrived are enough for this change, given who it asked to
+review and how critical the change is; whether this is the hour for it; and
+whether you said anything for this run. Only a fact you captured yourself counts
+toward a merge; one a feed brought in never does. A floor stays under that
+judgment: the run's own reviewer approved exactly the commit that merges and it
+is still the head, GitHub gates the base (required checks, auto-merge allowed:
+the trunk runs `gh pr merge --auto --merge --match-head-commit` and never reads
+CI itself), and the run has no hold. "Don't merge before I approve" said for a
+run is a hold, and only you lift it. A repository with no remote merges locally
+instead, once its tests pass on that commit and your checkout of the base is
+clean. A critical change in a repository where the merge deploys waits for
+business hours (below). After the merge the trunk follows the deploy as the
+repository defines it: a web service's own deploy, an `elephant-mem` tag and
+release (under the prefix of the plugin whose version the change bumped; none
+when it bumped none), or `lexflow deploy` with its dry run first (it stops and
+hands over to you if the deploy would ask for a secret, and never supplies or
+records one). Where it cannot tell what the deploy is, it stops at the merge.
+Health checks only read. Two limits are known: a fact counts as yours when its
+source says `claude-code`, which content pasted into a session can carry too,
+and whether GitHub re-checks the approved commit against a push made after the
+auto-merge was scheduled is unconfirmed.
+
+**The follow.** A dispatched run waits on what comes next (its team, the
+approval, the hour, the merge, the deploy, the health check), and
+`/elephant-trunk:follow` is the routine that watches it: each tick polls the
+waiting runs, wakes an orq session for each change that needs a decision, and
+sends you a Slack note for each one that does not. Schedule it **once**, as a
+Claude Desktop scheduled task whose prompt is `/elephant-trunk:follow`, hourly,
+**Local**, pointed at your bundle folder, with worktree off and a permissive
+permission mode. Before creating it, look in `~/.claude/scheduled-tasks/` for a
+task that already carries that prompt: a second copy makes every tick run
+twice (the queue's locks still deliver each event once, but you pay for both).
+Then use the task's "Run once" to approve the `gh`, `orq` and Slack prompts,
+so the unattended ticks do not stall; to see first what a tick would do,
+`/elephant-trunk:follow --dry-run` in any session reads everything and changes
+nothing. It needs `gh` logged in, `orq` on your
+`PATH`, and the Slack connector in the app; the notes go to the channel a
+`trunk-follow` fact names, else to your self-DM (`delivery.start_day.channel_id`
+when it goes `via: "slack"`). Like `catch-up`, it runs only while the app is
+open: a missed tick is not replayed, and the next one reads the state as it is
+then (an hour a held run waited for, passed meanwhile, opens it at once).
+
+**Business hours** hold a critical change's merge, in a repository where the
+merge deploys, until they open. They are set in `elephant.json` as
+`trunk.business_hours`, read in the bundle's top-level `timezone`:
+
+```json
+{ "timezone": "America/Sao_Paulo",
+  "trunk": { "business_hours": { "days": ["mon", "tue", "wed", "thu", "fri"],
+                                 "start": "09:00", "end": "18:00" } } }
+```
+
+With none set, they are Monday to Friday, 09:00 to 18:00. Prefer an IANA zone
+name: a fixed offset such as `-03:00` follows no daylight saving.
+`trunk.py hours` prints whether they are open now, when they close and when they
+open next.
 
 `elephant-update` updates **every installed plugin of the family**, the wiki
 and the trunk included, so neither of them needs a command of its own. The plan

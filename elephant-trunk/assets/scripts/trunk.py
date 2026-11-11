@@ -13,14 +13,23 @@ knows by name, so an in-bundle copy would go stale with no one to refresh it.
 
 Commands:
   config                print the bundle and the how-I-work tag the trunk reads
-    --json              the same, as one JSON object on stdout
+    --json              the same, as one JSON object on stdout, with
+                        `slack_dm`: the channel delivery.start_day posts to
+                        when it is via slack (the owner's self-DM), else null
+  hours [--at <time>]   the owner's business hours: elephant.json's timezone
+                        (IANA name or fixed offset; the machine's when unset)
+                        and trunk.business_hours (days, start, end; Monday to
+                        Friday 09:00 to 18:00 when unset), whether they are
+                        open at --at (default: now), when the open window
+                        closes and when the next one opens
+    --json              the same, as one JSON object
   facts                 list the active facts carrying the how-I-work tag plus a
                         trunk area tag, read from knowledge/manifest.jsonl only;
                         exits 1, with `problem` in --json, when elephant.json is
                         present but its trunk.tag cannot be used; --json
                         also names the near misses, facts that would match
                         under another case or split on commas
-    --area <tag>        only this area tag (repeatable; default: all three)
+    --area <tag>        only this area tag (repeatable; default: all four)
     --forgotten         the learnings forgotten or steered instead
     --json              one JSON object on stdout; each fact also carries
                         its `origin` (owner, other or unknown) and the
@@ -40,8 +49,9 @@ Commands:
                         decision, note, learning, pending (text, appended);
                         pending is a learning surfaced mid-run and not
                         captured yet, kept so an exit before step 4 loses none;
-                        a decision starting merge-level: must read
-                        merge-level: manual|automatic (<source>), and a
+                        a merge-level: decision is refused (the merge level
+                        is retired, one already recorded stays as history),
+                        a hold: or hold lifted: decision says why, and a
                         recipe's command, a pending learning or a learning
                         never carries a merge parameter
     [--pending <n>]     with learning or note: settles pending learning n
@@ -51,11 +61,10 @@ Commands:
                         before the dispatch command runs: flips an open run to
                         starting under the record's lock, so of two sessions
                         claiming it exactly one wins; refuses a run that is
-                        not open (starting or dispatched); via orq, refuses a
-                        command whose merge parameter disagrees with the run's
-                        last merge-level: decision recorded after its last
-                        start and dispatch: decision (any merge parameter
-                        when there is none; on-approve only at automatic)
+                        not open (starting, dispatched or waiting); via orq,
+                        refuses a command carrying a merge parameter: the
+                        start stops at the pull request, and the merge is
+                        decided when the run's wait sees it approved
   run dispatch <name> --via <orq|claude-code> --command <c> [--where <w>]
                         [--error <e>]
                         record how the start went, ending the claim: without
@@ -64,6 +73,33 @@ Commands:
                         starting (claim it first); when --command is not the
                         claimed one, refuses it via orq and warns via
                         claude-code; a dispatched run refuses another
+  run wait set <name> [--on <what>] [--repo <r>] [--branch <b>] [--team <k>]
+                        [--pr <n|url>] [--sha <sha>] [--session <s>]
+                        [--deploy <kind>] [--health-rule <r>]
+                        [--health-window <min>] [--hold-until <time>]
+                        [--state <json>] [--reminded]
+                        a dispatched run starts waiting (--on required) or a
+                        waiting run's wait changes: what it waits on (team,
+                        approval, hour, merge, deploy, health, owner), the
+                        repo (owner/name, or a local path), the branch, the
+                        orq team, the pull request, the approved SHA, the
+                        owning orq session, the deploy kind (service,
+                        release, lexflow, local, merge, unknown) and health
+                        rule and window (30 minutes when a rule names none),
+                        no merge before --hold-until, what the sources
+                        last saw (--state, merged key by key, null drops a
+                        key), the reminder sent; an empty value clears a
+                        field; a change of --on or of the state moves
+                        `since` and clears `reminded`
+  run wait show <name>  the run's wait and hold (--json: one object)
+  run wait list         the waiting runs, most recent first
+  run wait end <name> --outcome <live|merged|closed|given-back> --why <w>
+                        the wait ends; the run is dispatched again, the wait
+                        kept with how it ended
+  run hold <name> --why <w> [--lift]
+                        the owner's hold: a hold: decision that blocks the
+                        run's merge until a hold lifted: decision, recorded
+                        only on the owner's word
   run ingested <name> [--commit <sha>]
                         after `ingest` ran over a dispatched run's record:
                         checks that nothing under state/trunk/ is tracked and
@@ -75,6 +111,41 @@ Commands:
                         commit. Only that commit is read: an earlier or later
                         one, or a partial copy (the study pasted into a
                         source), is not checked
+  follow poll [--now <time>] [--dry-run]
+                        one tick of the follow: for each waiting run, the
+                        sources in order (its orq team, read from orq's
+                        store; its pull request, its merge commit's deploy
+                        and time, read with gh), each compared with what the
+                        run last saw; only a difference enqueues a typed event
+                        under state/trunk/follow/queue/ and moves the wait.
+                        Time is the held hour arriving, the open window of a
+                        scheduled merge closing, the health window ending, a
+                        reminder after 3 days with no change and the
+                        give-back after 7. A source that cannot read
+                        enqueues nothing and says why in the tick's log
+                        (state/trunk/follow/poll.log); with no waiting run
+                        and nothing queued it writes nothing. --dry-run reads
+                        the same sources and says what would be enqueued,
+                        writing nothing at all. The JSON also lists the Slack
+                        notes a session could not send (`unsent`)
+  follow queue [--all]  the events not delivered yet, oldest first
+  follow take <id>      take a pending event for delivery: of two routines,
+                        one does; an event whose run is gone is dropped
+  follow wake <id>      the line that wakes a session for the event:
+                        /elephant-trunk:trunk continue <run> from event <JSON>,
+                        the event's structured part on one line
+  follow mark <id> --as <delivered|failed|dropped> [--why <w>]
+                        how the delivery went; failed keeps it queued
+  follow checkout <run> the run's repository on this machine, where a new
+                        session for it opens: the wait's repo when it is a
+                        path, else the main checkout of the folder orq's store
+                        records for the run's team, whose origin must be the
+                        wait's repo
+  follow unsent         the `slack not sent (<why>): <note>` notes of every
+                        run that the routine has not relayed yet, each with
+                        an id
+  follow relayed <run> <note-id>
+                        record that the routine sent that note to Slack
   recipe draft <run> --name <n> --roles <r> --file <path|->
                         [--test <path>] [--command <c>]
                         a new recipe written for this run: kept as a draft under
@@ -106,7 +177,8 @@ Commands:
   --bundle <path>       override bundle location (default: ELEPHANT_BUNDLE, then
                         the machine pointer ~/.config/elephant-mem/config.json)
 
-Run records live in <bundle>/state/trunk/runs/<name>.json. Before any write the
+Run records live in <bundle>/state/trunk/runs/<name>.json, the follow's queue in
+<bundle>/state/trunk/follow/queue/<id>.json. Before any write the
 script makes sure `state/trunk/` is git-ignored in the bundle (appending it to
 the bundle's .gitignore when needed) and, in a git bundle, asks git whether it
 is: a record git would commit is never written.
@@ -118,6 +190,7 @@ Pure stdlib, Python 3.10+. Cross-platform (explicit UTF-8 I/O).
 """
 import argparse
 import atexit
+import contextlib
 import datetime
 import hashlib
 import json
@@ -130,6 +203,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+import urllib.request
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -141,7 +215,9 @@ POINTER = os.path.expanduser("~/.config/elephant-mem/config.json")
 # The how-I-work tag when elephant.json sets none. The area tags are fixed: the
 # skill reads the owner's how for each step through one of them.
 DEFAULT_TAG = "how-i-work"
-AREA_TAGS = ("trunk-study", "trunk-dispatch", "trunk-recipe")
+# trunk-follow: how the owner merges, deploys, keeps hours, breaks and is told,
+# read by the session an event wakes once the work reached a pull request.
+AREA_TAGS = ("trunk-study", "trunk-dispatch", "trunk-recipe", "trunk-follow")
 # A learning the owner forgot is `deprecated`, one they steered elsewhere is
 # `superseded`: elephant-mem's own fact statuses, so every reader of the
 # bundle, not only the trunk, stops presenting it as current.
@@ -225,10 +301,33 @@ def read_tag(bundle):
     return tag.strip(), "elephant.json", None
 
 
+def read_elephant_json(bundle):
+    """elephant.json as a dict, or {} when it is missing or not an object."""
+    try:
+        with open(os.path.join(bundle, "elephant.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def slack_dm(cfg):
+    """The owner's Slack self-DM as the bundle already names it: the channel
+    `delivery.start_day` posts to when it goes via slack. None otherwise."""
+    d = cfg.get("delivery")
+    d = d.get("start_day") if isinstance(d, dict) else None
+    if isinstance(d, dict) and d.get("via") == "slack":
+        ch = d.get("channel_id")
+        if isinstance(ch, str) and ch.strip():
+            return ch.strip()
+    return None
+
+
 def config(bundle):
     tag, source, problem = read_tag(bundle)
     return {"bundle": bundle, "tag": tag, "tag_source": source,
-            "area_tags": list(AREA_TAGS), "problem": problem}
+            "area_tags": list(AREA_TAGS), "problem": problem,
+            "slack_dm": slack_dm(read_elephant_json(bundle))}
 
 
 def announce_tag(cfg):
@@ -250,6 +349,128 @@ def cmd_config(args):
     print(f"trunk: bundle {cfg['bundle']}")
     print(f"trunk: how-I-work tag {cfg['tag']} (from {cfg['tag_source']})")
     print(f"trunk: area tags {', '.join(cfg['area_tags'])}")
+    if cfg["slack_dm"]:
+        print(f"trunk: Slack self-DM {cfg['slack_dm']}")
+    return 0
+
+
+# ── business hours ───────────────────────────────────────────────────────────
+#
+# A change the trunk judges critical, in a repo where the merge deploys, merges
+# only inside the owner's business hours. The hours are elephant.json's
+# `trunk.business_hours`, read in its top-level `timezone`; with none set,
+# Monday to Friday, 09:00 to 18:00. A value that cannot be used reads the
+# default and says why, so a typo never stops the follow.
+
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+DEFAULT_HOURS = {"days": list(WEEKDAYS[:5]), "start": "09:00", "end": "18:00"}
+HHMM_RE = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
+OFFSET_RE = re.compile(r"([+-])(\d{2}):?(\d{2})")
+
+
+def _zone(value):
+    """(tzinfo, name, problem) for elephant.json's `timezone`: a fixed offset
+    (`-03:00`, `Z`, `UTC`) or an IANA name. Unset, or unusable, is the
+    machine's own zone, the default elephant-mem documents for it."""
+    machine = datetime.datetime.now().astimezone().tzinfo
+    if value is None:
+        return machine, None, None
+    if not isinstance(value, str) or not value.strip():
+        return machine, None, f'"timezone" in elephant.json is not a usable zone ({value!r})'
+    raw = value.strip()
+    if raw.upper() in ("Z", "UTC"):
+        return datetime.timezone.utc, raw, None
+    m = OFFSET_RE.fullmatch(raw)
+    if m:
+        minutes = int(m.group(2)) * 60 + int(m.group(3))
+        if minutes < 24 * 60:
+            sign = -1 if m.group(1) == "-" else 1
+            return datetime.timezone(datetime.timedelta(minutes=sign * minutes)), raw, None
+        return machine, None, f'"timezone" in elephant.json is not a usable offset ({raw!r})'
+    try:
+        import zoneinfo
+        return zoneinfo.ZoneInfo(raw), raw, None
+    except Exception:  # an unknown name, or no tz database on this machine
+        return machine, None, f'"timezone" in elephant.json names no zone this machine knows ({raw!r})'
+
+
+def read_hours(cfg):
+    """(hours, source, problem): the business hours elephant.json sets under
+    `trunk.business_hours`, as {"days": [...], "start": "HH:MM", "end":
+    "HH:MM"}, or the default with source "default"."""
+    trunk = cfg.get("trunk")
+    value = trunk.get("business_hours") if isinstance(trunk, dict) else None
+    if value is None:
+        return dict(DEFAULT_HOURS), "default", None
+    why = None
+    if not isinstance(value, dict):
+        why = "is not an object"
+    else:
+        days = value.get("days", DEFAULT_HOURS["days"])
+        start, end = value.get("start", DEFAULT_HOURS["start"]), value.get("end", DEFAULT_HOURS["end"])
+        if not isinstance(days, list) or not days or \
+                any(not isinstance(d, str) or d.strip().lower()[:3] not in WEEKDAYS for d in days):
+            why = f"has days that are not weekdays ({days!r}; mon to sun)"
+        elif not all(isinstance(v, str) and HHMM_RE.fullmatch(v.strip()) for v in (start, end)):
+            why = f"has a start or end that is not HH:MM ({start!r}, {end!r})"
+        elif start.strip() >= end.strip():
+            why = f"ends before it starts ({start} to {end})"
+    if why:
+        return dict(DEFAULT_HOURS), "default", f'"trunk.business_hours" in elephant.json {why}'
+    days = sorted({d.strip().lower()[:3] for d in value.get("days", DEFAULT_HOURS["days"])},
+                  key=WEEKDAYS.index)
+    return ({"days": days, "start": value.get("start", DEFAULT_HOURS["start"]).strip(),
+             "end": value.get("end", DEFAULT_HOURS["end"]).strip()}, "elephant.json", None)
+
+
+def hours_at(hours, tz, at):
+    """Whether the hours are open at `at` (aware), the end of the open window
+    (or None), and the start of the next window after `at`."""
+    local = at.astimezone(tz)
+
+    def edge(day, hhmm):
+        h, m = (int(x) for x in hhmm.split(":"))
+        return datetime.datetime(day.year, day.month, day.day, h, m, tzinfo=tz)
+
+    open_now, closes, opens = False, None, None
+    for k in range(0, 9):
+        day = local.date() + datetime.timedelta(days=k)
+        if WEEKDAYS[day.weekday()] not in hours["days"]:
+            continue
+        start, end = edge(day, hours["start"]), edge(day, hours["end"])
+        if k == 0 and start <= local < end:
+            open_now, closes = True, end
+        elif start > local:
+            opens = start
+            break
+    return open_now, closes, opens
+
+
+def cmd_hours(args):
+    bundle = resolve_bundle(args.bundle)
+    cfg = read_elephant_json(bundle)
+    tz, zone, zproblem = _zone(cfg.get("timezone"))
+    hours, source, hproblem = read_hours(cfg)
+    problems = [p for p in (zproblem, hproblem) if p]
+    for p in problems:
+        note(f"{p}; reading the default")
+    at = parse_when(args.at, "--at") if args.at else None
+    at = datetime.datetime.fromisoformat(at) if at else datetime.datetime.now(datetime.timezone.utc)
+    open_now, closes, opens = hours_at(hours, tz, at)
+    iso = lambda d: d.isoformat() if d else None
+    out = {"bundle": bundle, "timezone": zone or "machine", "hours": hours, "hours_source": source,
+           "problems": problems, "at": at.astimezone(tz).isoformat(), "open": open_now,
+           "closes": iso(closes), "opens": iso(opens)}
+    if args.json:
+        print(json.dumps(out, ensure_ascii=False))
+        return 0
+    days = ", ".join(hours["days"])
+    print(f"trunk: business hours {days}, {hours['start']} to {hours['end']} "
+          f"({out['timezone']}, from {source})")
+    if open_now:
+        print(f"trunk: open now, closes {out['closes']}")
+    else:
+        print(f"trunk: closed now, opens {out['opens']}")
     return 0
 
 
@@ -403,7 +624,14 @@ STATUS_OPEN, STATUS_DISPATCHED = "open", "dispatched"
 # Between `run claim` and the `run dispatch` that records how the start went:
 # the dispatch command may be running, so nothing else may start it.
 STATUS_STARTING = "starting"
-STATUSES = (STATUS_OPEN, STATUS_STARTING, STATUS_DISPATCHED)
+# A dispatched run whose work ends in a pull request or a branch waits on what
+# comes next (the team, the approval, the hour, the merge, the deploy, the
+# health window, the owner), with a structured `wait`; when the wait ends the
+# run is `dispatched` again, the wait kept with how it ended.
+STATUS_WAITING = "waiting"
+STATUSES = (STATUS_OPEN, STATUS_STARTING, STATUS_DISPATCHED, STATUS_WAITING)
+# Past the start: what was dispatched stays as dispatched, waiting or not.
+STARTED = (STATUS_DISPATCHED, STATUS_WAITING)
 # How long a write waits for another trunk.py holding the same record.
 LOCK_WAIT = 10.0
 DISPATCH_VIAS = ("orq", "claude-code")
@@ -419,20 +647,21 @@ SETTLES_PENDING = ("learning", "note")
 # as it was dispatched.
 FROZEN_AFTER_DISPATCH = ("study", "approaches", "brief", "recipe")
 
-# The merge level of a run. The owner's merge preference is computed fresh in
-# every session and recorded as a decision of its own prefix; a stored command
-# (a recipe's, a fact's) never carries the merge parameter, which the skill
-# adds to the start command from this run's level only. A merge parameter in
-# any spelling: `merge=on-approve` (after `--set` or `-s`), `--set=merge=pr`,
-# `--merge`, `MERGE:pr`. A bare value-less flag is one too, read as unknown. A
-# bare `merge` word is one only after `--set`/`-s` or before an `=`: as the
-# value of another option (`--branch merge`) it is not.
-MERGE_LEVEL_PREFIX = "merge-level:"
-MERGE_LEVEL_RE = re.compile(r"^merge-level:[ \t]*(manual|automatic)[ \t]*\((.+)\)[ \t]*$", re.I | re.S)
+# The merge parameter. The merge used to be a per-run level (`merge-level:
+# manual|automatic`, recorded as a decision) that the start command carried; it
+# is retired. On orq the start stops at the pull request, and the merge is
+# decided when the run's wait sees the pull request approved, from the owner's
+# trunk-follow facts. So no command the trunk stores or starts carries a merge
+# parameter. A `merge-level:` decision already in a record stays as history and
+# is never read. A merge parameter in any spelling: `merge=on-approve` (after
+# `--set` or `-s`), `--set=merge=pr`, `--merge`, `MERGE:pr`. A bare value-less
+# flag is one too. A bare `merge` word is one only after `--set`/`-s` or before
+# an `=`: as the value of another option (`--branch merge`) it is not.
+RETIRED_MERGE_LEVEL = "merge-level:"
 MERGE_TOKEN_RE = re.compile(r"^(?:-{1,2}set[=:])?-{0,2}merge(?:[ \t]*[=:][ \t]*(.*))?$", re.I | re.S)
-MERGE_VALUES = {"manual": "pr", "automatic": "on-approve"}
 SET_FLAGS = ("--set", "-set", "-s")
-DISPATCH_PREFIX = "dispatch:"
+MERGE_IS_THE_FOLLOWS = ("the start stops at the pull request, and the merge is decided when the "
+                        "run's wait sees it approved")
 
 
 def merge_params(command):
@@ -461,59 +690,16 @@ def merge_params(command):
 
 def _refuse_stored_merge(command, what):
     if merge_params(command):
-        die(f"{what} carries a merge parameter ({command!r}): a stored command never does. "
-            f"The merge level is set per run, from the owner's preference and this session; "
-            f"the start command gets it at 3c, and `run claim` checks it against the run's "
-            f"merge-level: decision")
+        die(f"{what} carries a merge parameter ({command!r}): no command the trunk stores or "
+            f"starts carries one; {MERGE_IS_THE_FOLLOWS}")
 
 
-def _at(item):
-    return str(item.get("at") or "") if isinstance(item, dict) else ""
-
-
-def last_merge_level(rec):
-    """`manual` or `automatic` from the run's last merge-level: decision, or
-    None. Only a decision recorded after the run's last start (an attempt or
-    a claim) and after its last `dispatch:` decision counts: the level is
-    stated in the session that starts the run, at 3c, after the owner's word
-    to dispatch, so one recorded before a failed start or before a newer
-    dispatch word is history from another session."""
-    decisions = rec.get("decisions") or []
-    cutoff = max([_at(a) for a in rec.get("attempts") or []] + [_at(rec.get("claim"))]
-                 + [_at(d) for d in decisions
-                    if isinstance(d, dict) and str(d.get("text") or "").strip().lower()
-                    .startswith(DISPATCH_PREFIX)] + [""])
-    for d in reversed(decisions):
-        text = (d.get("text") if isinstance(d, dict) else str(d)) or ""
-        if text.strip().lower().startswith(MERGE_LEVEL_PREFIX):
-            if _at(d) <= cutoff:
-                return None
-            m = MERGE_LEVEL_RE.match(text.strip())
-            return m.group(1).lower() if m else None
-    return None
-
-
-def merge_param_problem(command, level):
-    """Why a dispatch command's merge parameter disagrees with the run's
-    merge level, or None when it agrees."""
-    values = merge_params(command)
-    if not values:
-        if level == "automatic":
-            return ("the run's merge level in this session is automatic and the command "
-                    "carries no merge parameter, so it does not match the level; build the start "
-                    "command again from the level, or record the fallback to manual with why")
-        return None
-    if level is None:
-        return ("the command carries a merge parameter and the run records no merge-level: "
-                "decision of this session (after its last start and its last dispatch: "
-                "decision); the owner states the level in this session, and it is recorded "
-                "before the start (merge-level: manual|automatic (<source>))")
-    if any(v not in MERGE_VALUES.values() for v in values) or len(set(values)) > 1:
-        return (f"the command's merge parameter cannot be read as one of "
-                f"{', '.join(sorted(MERGE_VALUES.values()))} ({', '.join(str(v) for v in values)})")
-    if values[0] != MERGE_VALUES[level]:
-        return (f"the command's merge parameter is {values[0]} and the run's last merge-level: "
-                f"decision is {level}, which takes {MERGE_VALUES[level]}")
+def merge_param_problem(command):
+    """Why an orq start command cannot run as it is, or None: it carries a
+    merge parameter, and the merge is the follow's."""
+    if merge_params(command):
+        return (f"the command carries a merge parameter; on orq {MERGE_IS_THE_FOLLOWS}, so start "
+                f"it with no merge parameter")
     return None
 
 
@@ -665,23 +851,44 @@ def lock_record(bundle, name, wait=LOCK_WAIT):
     path = lock_path(bundle, name)
     if not os.path.isdir(runs_dir(bundle)):
         return  # no record to change: the load that follows says so
+    if not _acquire(path, wait):
+        die(f"run {name} is being changed by another trunk.py (lock {path}); "
+            f"try again, and remove that file only if no trunk.py is running")
+    atexit.register(_release, path)
+
+
+def _acquire(path, wait):
+    """Create the empty lock file `path` with O_EXCL, retrying for `wait`
+    seconds; False when another process still holds it."""
     deadline = time.monotonic() + wait
     while True:
         try:
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
-            break
+            return True
         except FileExistsError:
             if time.monotonic() >= deadline:
-                die(f"run {name} is being changed by another trunk.py (lock {path}); "
-                    f"try again, and remove that file only if no trunk.py is running")
+                return False
             time.sleep(0.02)
 
-    def release():
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
-    atexit.register(release)
+
+def _release(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def held(path, wait=LOCK_WAIT):
+    """A lock held for a block only, not until the process exits: yields
+    whether it was taken. The follow's poll changes many runs in one process
+    and must not keep each locked while it reads GitHub for the next."""
+    ok = _acquire(path, wait)
+    try:
+        yield ok
+    finally:
+        if ok:
+            _release(path)
 
 
 def load_for_update(bundle, name):
@@ -773,6 +980,10 @@ def cmd_run_show(args):
         d = rec["dispatch"]
         print(f"\n## dispatched\nvia {d.get('via')} at {d.get('at')}"
               f"{', ' + d['where'] if d.get('where') else ''}\n{d.get('command')}")
+    wait_lines = _wait_lines(rec)
+    if wait_lines:
+        print("\n## " + ("waiting" if rec["status"] == STATUS_WAITING else "wait"))
+        print("\n".join(wait_lines))
     if rec["status"] == STATUS_STARTING:
         c = rec.get("claim") or {}
         print(f"\n## starting\nclaimed via {c.get('via')} at {c.get('at')}"
@@ -817,7 +1028,7 @@ def cmd_run_list(args):
     for n in bad:
         note(f"skipped the unreadable run record {record_path(bundle, n)}")
     if args.open:
-        recs = [r for r in recs if r["status"] != STATUS_DISPATCHED]
+        recs = [r for r in recs if r["status"] not in STARTED]
     if args.json:
         # The unreadable ones are listed too, by path, so a resume that picks
         # from this list can say which records it could not offer.
@@ -847,7 +1058,7 @@ def cmd_run_set(args):
     bundle = resolve_bundle(args.bundle)
     field, raw = args.field, _value(args)
     rec = load_for_update(bundle, check_name(args.name))
-    if rec["status"] == STATUS_DISPATCHED and field in FROZEN_AFTER_DISPATCH:
+    if rec["status"] in STARTED and field in FROZEN_AFTER_DISPATCH:
         die(f"run {rec['name']} was already dispatched; its {field} stays as dispatched "
             f"(add a decision or a note instead)")
     if rec["status"] == STATUS_STARTING and field in FROZEN_AFTER_DISPATCH:
@@ -889,11 +1100,11 @@ def cmd_run_set(args):
             die(f"an empty {field} adds nothing")
         if field in ("pending", "learning"):
             _refuse_stored_merge(raw, f"the {field}")
-        if field == "decision" and raw.strip().lower().startswith(MERGE_LEVEL_PREFIX) \
-                and not MERGE_LEVEL_RE.match(raw.strip()):
-            die("a merge-level: decision reads merge-level: manual|automatic (<source>), "
-                "the source being fact, owner in this session, session override or a "
-                "fallback with why; nothing was recorded")
+        if field == "decision" and raw.strip().lower().startswith(RETIRED_MERGE_LEVEL):
+            die(f"the merge level is retired: {MERGE_IS_THE_FOLLOWS}, from the owner's facts; "
+                f"to keep this run from merging, `run hold` it; nothing was recorded")
+        if field == "decision":
+            hold_decision_or_die(raw)
         entry = {"at": t, "text": raw.strip()}
         if settles is not None:
             entry["settles"] = settles
@@ -904,7 +1115,7 @@ def cmd_run_set(args):
 
 
 def _refuse_dispatched(rec):
-    if rec["status"] == STATUS_DISPATCHED:
+    if rec["status"] in STARTED:
         d = rec.get("dispatch") or {}
         die(f"run {rec['name']} was already dispatched via {d.get('via')} at {d.get('at')}"
             f"{' (' + d['where'] + ')' if d.get('where') else ''}; it is never dispatched again")
@@ -925,7 +1136,7 @@ def cmd_run_claim(args):
             f"records how that start went (with --error when it did not start)")
     if args.via == "orq":
         problem = written_recipe_problem(rec.get("recipe")) \
-            or merge_param_problem(args.dispatch_command, last_merge_level(rec))
+            or merge_param_problem(args.dispatch_command)
         if problem:
             die(f"nothing is dispatched: {problem}")
     t = now()
@@ -1092,7 +1303,7 @@ def cmd_run_ingested(args):
     pasted into a source), is not found."""
     bundle = resolve_bundle(args.bundle)
     rec = load_for_update(bundle, check_name(args.name))
-    if rec["status"] != STATUS_DISPATCHED:
+    if rec["status"] not in STARTED:
         die(f"run {rec['name']} was not dispatched; its record is ingested after the dispatch")
     commit = args.commit or None
     inside = _git(bundle, "rev-parse", "--is-inside-work-tree")
@@ -1124,6 +1335,1297 @@ def cmd_run_ingested(args):
         print(json.dumps({**summary(rec), "ingests": rec["ingests"]}, ensure_ascii=False))
     else:
         print(f"run {rec['name']}: ingested{' in ' + commit[:12] if commit else ''}")
+    return 0
+
+
+# ── the wait: what a dispatched run waits on next ────────────────────────────
+#
+# A run whose work ends in a pull request or a branch does not end there: it
+# waits, with a structured record the follow reads. Every field is structured
+# (a name, a number, a SHA, a kind, a timestamp); `state` holds what the
+# sources last saw, so the same state never enqueues twice. `since` is when
+# what it waits on, or what was last seen, last changed; `reminded` is when the
+# reminder for the current stretch went, and resets with `since`. Ending the
+# wait makes the run `dispatched` again, the wait kept with how it ended.
+#
+# The owner's hold is a decision of its own prefix: `hold: <why>` blocks the
+# merge until a later `hold lifted: <why>`, recorded only on the owner's word.
+
+WAIT_ON = ("team", "approval", "hour", "merge", "deploy", "health", "owner")
+DEPLOY_KINDS = ("service", "release", "lexflow", "local", "merge", "unknown")
+WAIT_OUTCOMES = ("live", "merged", "closed", "given-back")
+WAIT_TEXT = ("repo", "branch", "team", "session", "deploy", "health_rule")
+HOLD_PREFIX, LIFT_PREFIX = "hold:", "hold lifted:"
+REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+PR_URL_RE = re.compile(r"https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)(?:[/?#].*)?")
+SHA_RE = re.compile(r"[0-9a-f]{7,40}")
+# An orq team key, a session or agent name: one token, no whitespace.
+WAIT_KEY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}")
+BRANCH_RE = re.compile(r"[^\s~^:?*\[\\]{1,255}")
+
+
+def new_wait(t):
+    return {"on": None, "repo": None, "branch": None, "team": None, "pr": None,
+            "approved_sha": None, "session": None, "deploy": None, "health_rule": None,
+            "health_window": None, "hold_until": None, "since": t, "state": {},
+            "reminded": None, "ended": None}
+
+
+def hold_of(rec):
+    """The owner's hold on the run: its last `hold:` decision when no `hold
+    lifted:` decision came after it, else None."""
+    for d in reversed(rec.get("decisions") or []):
+        text = ((d.get("text") if isinstance(d, dict) else str(d)) or "").strip()
+        if text.lower().startswith(LIFT_PREFIX):
+            return None
+        if text.lower().startswith(HOLD_PREFIX):
+            return d if isinstance(d, dict) else {"at": None, "text": text}
+    return None
+
+
+def hold_decision_or_die(raw):
+    """A `hold:` or `hold lifted:` decision says why; one with nothing after
+    its prefix is refused."""
+    text = raw.strip()
+    for prefix in (LIFT_PREFIX, HOLD_PREFIX):
+        if text.lower().startswith(prefix):
+            if not text[len(prefix):].strip():
+                die(f"a {prefix} decision says why after the prefix ({prefix} <why>); "
+                    f"nothing was recorded")
+            return
+
+
+def parse_when(value, what):
+    """An ISO 8601 time carrying its offset (a trailing Z is UTC), as one
+    string; a time without an offset is refused, it would be read in no zone."""
+    raw = value.strip()
+    try:
+        when = datetime.datetime.fromisoformat(raw[:-1] + "+00:00" if raw[-1:] in "Zz" and raw else raw)
+    except ValueError:
+        die(f"{what} must be an ISO 8601 time with its offset, like 2026-11-10T09:00:00-03:00 ({value!r})")
+    if when.tzinfo is None:
+        die(f"{what} must carry its offset (-03:00, +00:00 or Z), or it is read in no zone ({value!r})")
+    return when.isoformat()
+
+
+def _wait_changes(args, wait):
+    """The fields `run wait set` changes, validated, as a dict. An empty value
+    clears a field."""
+    out = {}
+    if args.on is not None:
+        out["on"] = args.on
+    for field in WAIT_TEXT:
+        value = getattr(args, field)
+        if value is None:
+            continue
+        value = value.strip()
+        if value and field == "repo" and not (REPO_RE.fullmatch(value) or os.path.isabs(value)):
+            die(f"--repo is owner/name on GitHub, or the absolute path of a repo with no remote ({value!r})")
+        if value and field in ("team", "session") and not WAIT_KEY_RE.fullmatch(value):
+            die(f"--{field} is one name, without spaces ({value!r})")
+        if value and field == "branch" and not BRANCH_RE.fullmatch(value):
+            die(f"--branch is not a branch name ({value!r})")
+        if value and field == "deploy" and value not in DEPLOY_KINDS:
+            die(f"--deploy is one of {', '.join(DEPLOY_KINDS)} ({value!r})")
+        if field == "health_rule" and "\n" in value:
+            die("--health-rule is one line")
+        out[field] = value or None
+    if args.pr is not None:
+        value = args.pr.strip()
+        m = PR_URL_RE.fullmatch(value)
+        if m:
+            repo = out.get("repo") if "repo" in out else wait.get("repo")
+            if repo and repo.lower() != m.group(1).lower():
+                die(f"--pr {value} is a pull request of {m.group(1)}, and the wait's repo is {repo}")
+            if not repo:
+                out["repo"] = m.group(1)
+            out["pr"] = int(m.group(2))
+        elif value.lstrip("#").isdigit() and int(value.lstrip("#")) > 0:
+            out["pr"] = int(value.lstrip("#"))
+        elif not value:
+            out["pr"] = None
+        else:
+            die(f"--pr is the pull request's number or its GitHub URL ({value!r})")
+    if args.sha is not None:
+        value = args.sha.strip().lower()
+        if value and not SHA_RE.fullmatch(value):
+            die(f"--sha is a commit SHA, 7 to 40 hex digits ({args.sha!r})")
+        out["approved_sha"] = value or None
+    if args.health_window is not None:
+        value = args.health_window.strip()
+        if value and not (value.isdigit() and int(value) > 0):
+            die(f"--health-window is a whole number of minutes ({args.health_window!r})")
+        out["health_window"] = int(value) if value else None
+    if args.hold_until is not None:
+        out["hold_until"] = parse_when(args.hold_until, "--hold-until") if args.hold_until.strip() else None
+    if args.state is not None:
+        try:
+            state = json.loads(args.state)
+        except ValueError as exc:
+            die(f"--state must be a JSON object ({exc})")
+        if not isinstance(state, dict):
+            die("--state must be a JSON object, one key per source")
+        merged = dict(wait.get("state") or {})
+        for k, v in state.items():
+            if v is None:
+                merged.pop(k, None)
+            else:
+                merged[k] = v
+        out["state"] = merged
+    return out
+
+
+def cmd_run_wait_set(args):
+    """Start or update the wait of a dispatched run. A run starts waiting with
+    --on; a waiting run takes any field alone. A change to what it waits on,
+    or to what the sources last saw, moves `since` and clears `reminded`."""
+    bundle = resolve_bundle(args.bundle)
+    rec = load_for_update(bundle, check_name(args.name))
+    if rec["status"] not in STARTED:
+        die(f"run {rec['name']} is {rec['status']}: a run waits once it was dispatched "
+            f"(`run dispatch` records the start first); nothing was recorded")
+    t = now()
+    fresh = rec["status"] != STATUS_WAITING or not isinstance(rec.get("wait"), dict)
+    if fresh and not args.on:
+        die(f"run {rec['name']} is not waiting yet: say what it waits on with --on "
+            f"({', '.join(WAIT_ON)}); nothing was recorded")
+    if fresh:
+        if isinstance(rec.get("wait"), dict):
+            rec.setdefault("past_waits", []).append(rec["wait"])
+        wait = new_wait(t)
+    else:
+        wait = rec["wait"]
+    changes = _wait_changes(args, wait)
+    moved = not fresh and any(k in changes and changes[k] != wait.get(k) for k in ("on", "state"))
+    wait.update(changes)
+    if moved:
+        wait["since"], wait["reminded"] = t, None
+    if args.reminded:
+        wait["reminded"] = t
+    rec["wait"], rec["status"], rec["updated"] = wait, STATUS_WAITING, t
+    write_record(bundle, rec)
+    if args.json:
+        print(json.dumps({**summary(rec), "wait": wait}, ensure_ascii=False))
+    else:
+        print(f"run {rec['name']}: waiting on {wait['on']}")
+    return 0
+
+
+def cmd_run_wait_end(args):
+    """End a run's wait: the run is `dispatched` again, the wait kept with how
+    it ended and why."""
+    bundle = resolve_bundle(args.bundle)
+    rec = load_for_update(bundle, check_name(args.name))
+    if rec["status"] != STATUS_WAITING:
+        die(f"run {rec['name']} is not waiting ({rec['status']}); nothing was recorded")
+    why = (args.why or "").strip()
+    if not why:
+        die("say why the wait ends with --why")
+    t = now()
+    wait = rec["wait"] if isinstance(rec.get("wait"), dict) else new_wait(t)
+    wait["ended"] = {"at": t, "outcome": args.outcome, "why": why}
+    rec["wait"], rec["status"], rec["updated"] = wait, STATUS_DISPATCHED, t
+    write_record(bundle, rec)
+    if args.json:
+        print(json.dumps({**summary(rec), "wait": wait}, ensure_ascii=False))
+    else:
+        print(f"run {rec['name']}: the wait ended, {args.outcome}")
+    return 0
+
+
+def wait_view(rec):
+    """What a reader of the wait needs: the run, its wait and its hold."""
+    return {**summary(rec), "wait": rec.get("wait") if isinstance(rec.get("wait"), dict) else None,
+            "hold": hold_of(rec)}
+
+
+def _wait_lines(rec):
+    wait = rec.get("wait") if isinstance(rec.get("wait"), dict) else None
+    lines = []
+    if wait:
+        ended = wait.get("ended") or None
+        head = (f"ended {ended.get('at')}: {ended.get('outcome')}, {ended.get('why')}" if ended
+                else f"waiting on {wait.get('on')} since {wait.get('since')}")
+        lines.append(head)
+        where = wait.get("repo") or ""
+        if wait.get("pr"):
+            where += f"#{wait['pr']}"
+        if wait.get("branch"):
+            where += f" ({wait['branch']})"
+        for label, value in (("where", where.strip()), ("team", wait.get("team")),
+                             ("session", wait.get("session")), ("approved", wait.get("approved_sha")),
+                             ("deploy", wait.get("deploy")), ("health", wait.get("health_rule")),
+                             ("health window", f"{wait['health_window']} min" if wait.get("health_window") is not None
+                              else f"{HEALTH_WINDOW_DEFAULT} min (default)" if wait.get("health_rule") else None),
+                             ("hold until", wait.get("hold_until")), ("reminded", wait.get("reminded")),
+                             ("last seen", json.dumps(wait["state"], ensure_ascii=False, sort_keys=True)
+                              if wait.get("state") else None)):
+            if value:
+                lines.append(f"{label}: {value}")
+    hold = hold_of(rec)
+    if hold:
+        lines.append(f"held since {hold.get('at')}: {hold.get('text')}")
+    return lines
+
+
+def cmd_run_wait_show(args):
+    bundle = resolve_bundle(args.bundle)
+    rec = load_or_die(bundle, check_name(args.name))
+    if args.json:
+        print(json.dumps(wait_view(rec), ensure_ascii=False))
+        return 0
+    lines = _wait_lines(rec)
+    print(f"run {rec['name']} — {rec['status']}")
+    print("\n".join(lines) if lines else "it has never waited")
+    return 0
+
+
+def waiting_runs(bundle):
+    """The waiting runs, most recently updated first, plus the names of the
+    records that could not be read."""
+    recs, bad = list_records(bundle)
+    return [r for r in recs if r["status"] == STATUS_WAITING], bad
+
+
+def cmd_run_wait_list(args):
+    bundle = resolve_bundle(args.bundle)
+    recs, bad = waiting_runs(bundle)
+    for n in bad:
+        note(f"skipped the unreadable run record {record_path(bundle, n)}")
+    if args.json:
+        print(json.dumps({"bundle": bundle, "runs": [wait_view(r) for r in recs],
+                          "unreadable": [record_path(bundle, n) for n in bad]}, ensure_ascii=False))
+        return 0
+    for r in recs:
+        w = r.get("wait") if isinstance(r.get("wait"), dict) else {}
+        where = (w.get("repo") or "") + (f"#{w['pr']}" if w.get("pr") else "")
+        print(f"{r['name']}\t{w.get('on')}\t{w.get('since', '')}\t{where}"
+              f"{chr(9) + 'held' if hold_of(r) else ''}")
+    return 0
+
+
+def cmd_run_hold(args):
+    """Record the owner's hold on a run, or lift it. A hold blocks the run's
+    merge until the owner lifts it in a session."""
+    bundle = resolve_bundle(args.bundle)
+    rec = load_for_update(bundle, check_name(args.name))
+    why = (args.why or "").strip()
+    if not why or "\n" in why:
+        die("say why in one line with --why")
+    held = hold_of(rec)
+    if args.lift and not held:
+        die(f"run {rec['name']} has no hold to lift; nothing was recorded")
+    if not args.lift and held:
+        note(f"run {rec['name']} is already held since {held.get('at')} ({held.get('text')}); "
+             f"nothing was recorded")
+    else:
+        t = now()
+        prefix = LIFT_PREFIX if args.lift else HOLD_PREFIX
+        rec.setdefault("decisions", []).append({"at": t, "text": f"{prefix} {why}"})
+        rec["updated"] = t
+        write_record(bundle, rec)
+    view = wait_view(rec)
+    if args.json:
+        print(json.dumps(view, ensure_ascii=False))
+    else:
+        print(f"run {rec['name']}: {'held' if view['hold'] else 'not held'}")
+    return 0
+
+
+# ── the follow: the sources and the queue ────────────────────────────────────
+#
+# `follow poll` is one tick of the follow. For each waiting run it runs the
+# sources in order (the run's orq team, its pull request, the deploy of the
+# merge commit, then time), each reading one kind of thing with no model, and
+# compares what it sees with what the run last saw (`wait.state[<source>]`).
+# Only a difference enqueues. An event is one JSON file under
+# state/trunk/follow/queue/, named by a hash of the run, its wait, the source,
+# the event and the wait it moved from, created with O_EXCL: the same state
+# never enqueues twice, even when a tick dies between the queue and the
+# record, and of two ticks only one creates it. An event carries structured
+# fields only (numbers, states, logins, SHAs, kinds, timestamps), each checked
+# against its shape before it is kept: a review body, a comment, a log line or
+# a message's text is never read into one. From orq's store only the
+# messages' metadata is read, never their text.
+#
+# `act` says what an event asks of the routine. `decide` wakes a session that
+# continues the run from it: an approval, a local approval, the hour arriving,
+# the open window of a scheduled merge closing, the health window ending, a
+# merge whose deploy is a step the trunk runs.
+# `notify` is a note the routine sends itself: a change request, failing
+# checks, a head that moved, a broken deploy, a merge or a close, a team done
+# with no approval, the reminder, the give-back. The poll moves the wait only
+# where the next step is a fact (the team approved: wait on the approval; the
+# pull request merged: wait on the deploy; closed: the wait ends) and leaves
+# every judgment to the woken session.
+
+FOLLOW_SOURCES = ("team", "pr", "deploy", "time")
+EVENT_ACTS = ("decide", "notify")
+EVENT_PENDING, EVENT_TAKEN, EVENT_DELIVERED, EVENT_DROPPED = "pending", "taken", "delivered", "dropped"
+EVENT_OPEN = (EVENT_PENDING, EVENT_TAKEN)
+MARKS = ("delivered", "failed", "dropped")
+EVENT_VERSION = 1
+REMIND_DAYS, GIVE_BACK_DAYS = 3, 7
+# The health window, in minutes, when a wait names a health rule and no
+# window: the same 30 the trunk's skill gives when no fact names one. A window
+# of 0 would fire `health-window-ended` on the tick that saw the deploy.
+HEALTH_WINDOW_DEFAULT = 30
+# A taken event that no mark followed for this long is taken again: the
+# routine that took it died. The routine runs hourly.
+TAKE_STALE = 3600.0
+# A poll lock this old was left by a tick that died.
+POLL_STALE = 1800.0
+# orq's own override of where its store is, and its default.
+BUS_DB_ENV = "AGENT_BUS_DB"
+BUS_DB_DEFAULT = os.path.join("~", ".agent_bus", "agent_bus.sqlite")
+LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?")
+EVENT_ID_RE = re.compile(r"[0-9a-f]{16}")
+GH_TIMEOUT = 60
+# The pull request is read while the run waits on what comes before its merge.
+PR_ON = ("approval", "hour", "merge", "owner")
+PR_FIELDS = "state,headRefOid,latestReviews,statusCheckRollup,mergeCommit,mergedBy,mergedAt,autoMergeRequest"
+CHECK_FAILED = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
+CHECK_PENDING = {"PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"}
+DEPLOY_FAILED, DEPLOY_DONE = {"failure", "error"}, {"success", "inactive"}
+RUN_FAILED = {"failure", "timed_out", "cancelled", "startup_failure", "action_required"}
+RUN_DONE = {"success", "skipped", "neutral"}
+DEPLOYMENTS_READ = 10
+
+
+class SourceError(Exception):
+    """A source that could not read what it reads: no event, a line in the
+    tick's log, and the next tick retries."""
+
+
+class Step:
+    """What one source makes of what it saw: the events, the wait's fields that
+    change, the sources' last-seen state that changes, the reminder, and the
+    end of the wait as (outcome, why)."""
+
+    def __init__(self):
+        self.events, self.changes, self.state = [], {}, {}
+        self.reminded, self.end = False, None
+
+    def event(self, etype, act, **fields):
+        self.events.append((etype, act, fields))
+
+
+def follow_dir(bundle):
+    return os.path.join(bundle, "state", "trunk", "follow")
+
+
+def queue_dir(bundle):
+    return os.path.join(follow_dir(bundle), "queue")
+
+
+def event_path(bundle, eid):
+    return os.path.join(queue_dir(bundle), eid + ".json")
+
+
+def _when(value):
+    """A timestamp from a record or from GitHub as an aware datetime, or None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw[-1] in "Zz":
+        raw = raw[:-1] + "+00:00"
+    try:
+        when = datetime.datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return when if when.tzinfo else None
+
+
+def _stamp(value):
+    """A timestamp kept in an event or a state: ISO 8601 in UTC, or None."""
+    when = _when(value)
+    return when.astimezone(datetime.timezone.utc).isoformat(timespec="seconds") if when else None
+
+
+def _sha(value):
+    value = value.strip().lower() if isinstance(value, str) else ""
+    return value if SHA_RE.fullmatch(value) else None
+
+
+def _login(value):
+    value = value.strip() if isinstance(value, str) else ""
+    return value if LOGIN_RE.fullmatch(value) else None
+
+
+def _count(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _dig(data, *keys):
+    for k in keys:
+        data = data.get(k) if isinstance(data, dict) else None
+    return data
+
+
+# ── the sources: what each reads ─────────────────────────────────────────────
+
+def bus_db():
+    return os.path.abspath(os.path.expanduser(os.environ.get(BUS_DB_ENV) or BUS_DB_DEFAULT))
+
+
+def observe_team(team):
+    """What the run's orq team shows in orq's store: `approved` (the SHA, the
+    round, the pull request, the reviewers requested), `finished` (done or
+    closed with no approval), `error` (its last word was an error, and `orq
+    resume` can still take it on), `running`; None when no team of that key
+    ever started."""
+    try:
+        import sqlite3
+    except ImportError:
+        raise SourceError("this Python has no sqlite3 to read orq's store")
+    path = bus_db()
+    if not os.path.isfile(path):
+        raise SourceError(f"no orq store at {path}")
+    try:
+        uri = "file:" + urllib.request.pathname2url(path) + "?mode=ro"
+        with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=10)) as db:
+            topic = db.execute("SELECT topic_id, status FROM topics WHERE name = ? "
+                               "ORDER BY created_at DESC LIMIT 1", (f"orq/{team}",)).fetchone()
+            if not topic:
+                return None
+            rows = db.execute("SELECT metadata_json FROM messages WHERE topic_id = ? ORDER BY seq",
+                              (topic[0],)).fetchall()
+    except sqlite3.Error as exc:
+        raise SourceError(f"orq's store at {path} cannot be read ({exc})")
+    kinds, approved = [], None
+    for (raw,) in rows:
+        try:
+            meta = json.loads(raw) if raw else {}
+        except ValueError:
+            continue
+        kind = meta.get("kind") if isinstance(meta, dict) else None
+        if isinstance(kind, str):
+            kinds.append(kind)
+            if kind == "approved" and _sha(meta.get("sha")):
+                approved = meta
+    if approved is not None:
+        out = {"status": "approved", "sha": _sha(approved.get("sha")), "round": _count(approved.get("round")),
+               "pr": None, "repo": None,
+               "reviewers": sorted({x for x in (_login(p) for p in str(approved.get("reviewers") or "").split(","))
+                                    if x})}
+        m = PR_URL_RE.fullmatch(str(approved.get("pr") or "").strip())
+        if m:
+            out["repo"], out["pr"] = m.group(1), int(m.group(2))
+        return out
+    if "done" in kinds or topic[1] == "closed":
+        return {"status": "finished"}
+    if kinds and kinds[-1] == "error":
+        return {"status": "error"}
+    return {"status": "running"}
+
+
+def gh_json(gh, what, *args):
+    """`gh <args>` as JSON. A failure is a SourceError naming `what` and the
+    first line gh printed; the tick's log keeps it, no event does."""
+    try:
+        r = subprocess.run([gh, *args], capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=GH_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SourceError(f"gh could not read {what} ({type(exc).__name__})")
+    if r.returncode != 0:
+        first = (r.stderr or r.stdout or "").strip().splitlines()
+        raise SourceError(f"gh could not read {what} (exit {r.returncode}"
+                          f"{': ' + first[0][:160] if first else ''})")
+    try:
+        return json.loads(r.stdout or "null")
+    except ValueError:
+        raise SourceError(f"gh printed no JSON for {what}")
+
+
+def _checks(rollup):
+    """The head's checks, from the status check rollup: fail, pending, pass, none."""
+    seen = set()
+    for c in rollup if isinstance(rollup, list) else []:
+        if not isinstance(c, dict):
+            continue
+        status = str(c.get("status") or "").upper()
+        conclusion = str(c.get("conclusion") or "").upper()
+        state = str(c.get("state") or "").upper()
+        if conclusion in CHECK_FAILED or state in CHECK_FAILED:
+            seen.add("fail")
+        elif (status and status != "COMPLETED") or state in CHECK_PENDING:
+            seen.add("pending")
+        else:
+            seen.add("pass")
+    for verdict in ("fail", "pending", "pass"):
+        if verdict in seen:
+            return verdict
+    return "none"
+
+
+def observe_pr(gh, repo, pr):
+    """The pull request as the follow reads it: its state, head, the approvals
+    (login and the commit each approved), who requests changes, the head's
+    checks, whether an auto-merge is scheduled, the merge commit and who merged
+    or closed it."""
+    what = f"pull request {repo}#{pr}"
+    data = gh_json(gh, what, "pr", "view", str(pr), "--repo", repo, "--json", PR_FIELDS)
+    state = data.get("state") if isinstance(data, dict) else None
+    if state not in ("OPEN", "MERGED", "CLOSED"):
+        raise SourceError(f"gh gave {what} no state it knows")
+    approvals, changes = {}, set()
+    for review in data.get("latestReviews") or []:
+        login = _login(_dig(review, "author", "login"))
+        if not login:
+            continue
+        if _dig(review, "state") == "APPROVED":
+            approvals[login] = _sha(_dig(review, "commit", "oid"))
+        elif _dig(review, "state") == "CHANGES_REQUESTED":
+            changes.add(login)
+    out = {"state": state, "head": _sha(data.get("headRefOid")), "approvals": approvals,
+           "changes": sorted(changes), "checks": _checks(data.get("statusCheckRollup")),
+           "auto_merge": bool(data.get("autoMergeRequest")), "merge": None, "merged_at": None, "by": None}
+    if state == "MERGED":
+        out["merge"] = _sha(_dig(data, "mergeCommit", "oid"))
+        out["merged_at"] = _stamp(data.get("mergedAt"))
+        out["by"] = _login(_dig(data, "mergedBy", "login"))
+    elif state == "CLOSED":
+        out["by"] = _login(_dig(gh_json(gh, f"who closed {what}", "api", f"repos/{repo}/issues/{pr}"),
+                                "closed_by", "login"))
+    return out
+
+
+def observe_deploy(gh, repo, sha):
+    """The deploy GitHub records for the merge commit: its deployments when it
+    has any (each one's latest status), else the workflow runs the push of
+    that commit started. `state` is success, failure, pending, or none when
+    GitHub records nothing for it yet."""
+    what = f"the deploy of {repo}@{sha[:12]}"
+    deps = gh_json(gh, what, "api", "-X", "GET", f"repos/{repo}/deployments", "-f", f"sha={sha}")
+    deps = [d for d in deps if _count(_dig(d, "id"))] if isinstance(deps, list) else []
+    states, stamps = [], []
+    if deps:
+        signal = "deployment"
+        for d in deps[:DEPLOYMENTS_READ]:
+            statuses = gh_json(gh, what, "api", f"repos/{repo}/deployments/{d['id']}/statuses")
+            last = statuses[0] if isinstance(statuses, list) and statuses and isinstance(statuses[0], dict) else {}
+            states.append(str(last.get("state") or "pending").lower())
+            stamps.append(_stamp(last.get("created_at")))
+        state = ("failure" if any(s in DEPLOY_FAILED for s in states)
+                 else "success" if all(s in DEPLOY_DONE for s in states) else "pending")
+    else:
+        runs = gh_json(gh, what, "api", "-X", "GET", f"repos/{repo}/actions/runs",
+                       "-f", f"head_sha={sha}", "-f", "event=push")
+        runs = [r for r in (_dig(runs, "workflow_runs") or []) if isinstance(r, dict)]
+        if not runs:
+            return {"sha": sha, "signal": "none", "state": "none", "finished_at": None}
+        signal = "workflow"
+        for r in runs:
+            conclusion = str(r.get("conclusion") or "").lower()
+            states.append("pending" if r.get("status") != "completed" else
+                          "failure" if conclusion in RUN_FAILED else
+                          "success" if conclusion in RUN_DONE else "pending")
+            stamps.append(_stamp(r.get("updated_at")))
+        state = ("failure" if "failure" in states
+                 else "success" if all(s == "success" for s in states) else "pending")
+    finished = max((s for s in stamps if s), default=None) if state == "success" else None
+    return {"sha": sha, "signal": signal, "state": state, "finished_at": finished}
+
+
+# ── the steps: what each source makes of a change ───────────────────────────
+
+def _health(wait):
+    return bool(wait.get("health_window") or wait.get("health_rule"))
+
+
+def step_team(wait, obs):
+    seen = (wait.get("state") or {}).get("team") or {}
+    if wait.get("on") != "team" or obs == seen:
+        return None
+    team, step = wait.get("team"), Step()
+    step.state["team"] = obs
+    if obs["status"] == "approved":
+        repo = wait.get("repo") or ""
+        on_github = bool(REPO_RE.fullmatch(repo))
+        if obs["pr"]:
+            if on_github and repo.lower() != obs["repo"].lower():
+                raise SourceError(f"team {team} opened {obs['repo']}#{obs['pr']}, and the wait's repo is {repo}")
+            step.changes.update(pr=obs["pr"], approved_sha=obs["sha"], on="approval",
+                                repo=repo if on_github else obs["repo"])
+            # With a pull request, what comes next is its approval: a note.
+            step.event("team-approved", "notify", team=team, sha=obs["sha"],
+                       round=obs["round"], pr=obs["pr"], reviewers=obs["reviewers"])
+        elif os.path.isabs(repo):
+            # No pull request in a repo with no remote: the local merge is
+            # decided now.
+            step.changes.update(approved_sha=obs["sha"], on="merge")
+            step.event("team-approved", "decide", team=team, sha=obs["sha"],
+                       round=obs["round"], pr=obs["pr"], reviewers=obs["reviewers"])
+        else:
+            # No pull request anywhere else means the team could not open one
+            # (the push or `gh pr create` failed, or the brief was no spec):
+            # nothing merges locally on a repo that lives on GitHub, and no
+            # source can see the work move on. The owner takes it.
+            step.changes.update(approved_sha=obs["sha"], on="owner")
+            step.event("team-approved-no-pr", "notify", team=team, sha=obs["sha"],
+                       round=obs["round"])
+    elif obs["status"] == "finished":
+        step.event("team-finished", "notify", team=team)
+        step.changes["on"] = "owner"
+    elif obs["status"] == "error":
+        step.event("team-error", "notify", team=team)
+    return step
+
+
+def _merged(wait, obs, step):
+    """The pull request merged, by the trunk or by anyone: the run moves on to
+    the deploy as its repo defines it."""
+    pr, kind = wait.get("pr"), wait.get("deploy")
+    act = "notify"
+    if kind == "unknown":
+        step.end = ("merged", f"pull request #{pr} merged; what deploying means in this repo is the owner's")
+    elif kind in ("merge", "local"):
+        if _health(wait):
+            step.changes["on"] = "health"
+            step.state["deploy"] = {"sha": obs["merge"], "signal": "merge", "state": "success",
+                                    "finished_at": obs["merged_at"]}
+        else:
+            step.end = ("live", f"pull request #{pr} merged, and the merge is the deploy")
+    elif kind == "service":
+        step.changes["on"] = "deploy"
+    else:
+        # A release or a `lexflow deploy` is a step the trunk runs; with no
+        # deploy recorded, the session discerns it now.
+        step.changes["on"], act = "deploy", "decide"
+    step.event("pr-merged", act, pr=pr, merge_sha=obs["merge"], by=obs["by"], deploy=kind)
+
+
+def step_pr(wait, obs):
+    seen = (wait.get("state") or {}).get("pr") or {}
+    if wait.get("on") not in PR_ON or obs == seen:
+        return None
+    pr, step = wait.get("pr"), Step()
+    step.state["pr"] = obs
+    if obs["state"] == "MERGED":
+        if seen.get("state") != "MERGED":
+            _merged(wait, obs, step)
+        return step
+    if obs["state"] == "CLOSED":
+        if seen.get("state") != "CLOSED":
+            step.event("pr-closed", "notify", pr=pr, by=obs["by"])
+            step.end = ("closed", f"pull request #{pr} closed with no merge"
+                                  + (f" by {obs['by']}" if obs["by"] else ""))
+        return step
+    head, before = obs["head"], seen.get("approvals") or {}
+    for login, commit in sorted(obs["approvals"].items()):
+        if login not in before or before[login] != commit:
+            step.event("pr-approved", "decide", pr=pr, reviewer=login, head=head, reviewed=commit)
+    for login in obs["changes"]:
+        if login not in (seen.get("changes") or []):
+            step.event("pr-changes-requested", "notify", pr=pr, reviewer=login, head=head)
+            step.changes["on"] = "owner"
+    if obs["checks"] == "fail" and (seen.get("checks") != "fail" or seen.get("head") != head):
+        step.event("pr-checks-failed", "notify", pr=pr, head=head)
+        step.changes["on"] = "owner"
+    approved = wait.get("approved_sha")
+    if approved and head and not head.startswith(approved) and seen.get("head") != head:
+        step.event("pr-head-moved", "notify", pr=pr, head=head, approved_sha=approved)
+    return step
+
+
+def step_deploy(wait, obs):
+    seen = (wait.get("state") or {}).get("deploy") or {}
+    if wait.get("on") != "deploy" or obs == seen:
+        return None
+    step = Step()
+    step.state["deploy"] = obs
+    if obs["state"] == "success" and seen.get("state") != "success":
+        step.event("deploy-succeeded", "notify", sha=obs["sha"], signal=obs["signal"],
+                   finished_at=obs["finished_at"])
+        if _health(wait):
+            step.changes["on"] = "health"
+        else:
+            step.end = ("live", "the deploy finished well, and the repo has no service to check")
+    elif obs["state"] == "failure" and seen.get("state") != "failure":
+        step.event("deploy-failed", "notify", sha=obs["sha"], signal=obs["signal"])
+        step.changes["on"] = "owner"
+    return step
+
+
+def step_time(wait, t):
+    """The hour a held run waits for arriving, the open window of a scheduled
+    merge closing, and the health window ending."""
+    seen = (wait.get("state") or {}).get("time") or {}
+    new, step = dict(seen), Step()
+    until = wait.get("hold_until")
+    # The hour holds a merge: once the run is past it, a hold-until left
+    # behind wakes no one.
+    if wait.get("on") in PR_ON and until and _when(until) and t >= _when(until) and seen.get("hour") != until:
+        step.event("hour-open", "decide", hold_until=until)
+        new["hour"] = until
+    # A critical change's merge was scheduled inside the business hours and
+    # recorded when they close (`state.closes`); still waiting on the merge
+    # once they closed, the session cancels the auto-merge and holds.
+    closes = _stamp((wait.get("state") or {}).get("closes"))
+    if wait.get("on") == "merge" and closes and t >= _when(closes) and seen.get("closed") != closes:
+        step.event("hour-closed", "decide", closes=closes)
+        new["closed"] = closes
+    if wait.get("on") == "health":
+        # The window counts from the deploy's end when a source saw it, else
+        # from when the run started waiting on health, kept so it never slides.
+        start = _dig(wait, "state", "deploy", "finished_at") or seen.get("health_from") or wait.get("since")
+        new["health_from"] = start
+        window = wait.get("health_window")
+        if window is None:
+            window = HEALTH_WINDOW_DEFAULT
+        began = _when(start)
+        if began and t >= began + datetime.timedelta(minutes=window) and seen.get("health") != start:
+            step.event("health-window-ended", "decide", deployed_at=_stamp(start), window=window)
+            new["health"] = start
+    if new != seen:
+        step.state["time"] = new
+    return step if step.events or step.state else None
+
+
+def step_stale(wait, t):
+    """A wait with no change for 3 days gets one reminder; at 7 it ends, and
+    the work is the owner's."""
+    since = _when(wait.get("since"))
+    if not since:
+        return None
+    age, step = t - since, Step()
+    if age >= datetime.timedelta(days=GIVE_BACK_DAYS):
+        step.event("given-back", "notify", on=wait.get("on"), since=_stamp(wait.get("since")),
+                   days=GIVE_BACK_DAYS)
+        step.end = ("given-back", f"no change for {GIVE_BACK_DAYS} days; the work is the owner's")
+    elif age >= datetime.timedelta(days=REMIND_DAYS) and not wait.get("reminded"):
+        step.event("reminder", "notify", on=wait.get("on"), since=_stamp(wait.get("since")), days=REMIND_DAYS)
+        step.reminded = True
+    else:
+        return None
+    return step
+
+
+# ── the queue ────────────────────────────────────────────────────────────────
+
+def _event_id(run, wait_n, source, etype, fields, wait):
+    """The same event from the same wait is the same file: what makes a tick
+    that died between the queue and the record enqueue nothing twice."""
+    key = json.dumps([run, wait_n, source, etype, fields, wait.get("state") or {}, wait.get("since"),
+                      wait.get("on")], sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
+def read_event(bundle, eid):
+    path = event_path(bundle, eid)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            ev = json.load(fh)
+    except FileNotFoundError:
+        raise RecordError(f"no event {eid} in the queue ({path})")
+    except (OSError, ValueError) as exc:
+        raise RecordError(f"the event {path} is unreadable ({exc})")
+    if not isinstance(ev, dict) or ev.get("id") != eid or ev.get("status") not in \
+            (EVENT_PENDING, EVENT_TAKEN, EVENT_DELIVERED, EVENT_DROPPED):
+        raise RecordError(f"the event {path} is not an event")
+    return ev
+
+
+def _write_event(bundle, ev):
+    d = queue_dir(bundle)
+    fd, tmp = tempfile.mkstemp(prefix=".event-", suffix=".tmp", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(ev, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        os.replace(tmp, event_path(bundle, ev["id"]))
+    except BaseException:
+        _release(tmp)
+        raise
+
+
+def enqueue(bundle, ev):
+    """Create the event's file; False when it is already queued. A file a dead
+    tick left empty is written again."""
+    os.makedirs(queue_dir(bundle), mode=0o700, exist_ok=True)
+    try:
+        os.close(os.open(event_path(bundle, ev["id"]), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        try:
+            read_event(bundle, ev["id"])
+            return False
+        except RecordError:
+            pass
+    _write_event(bundle, ev)
+    return True
+
+
+def list_events(bundle):
+    """Every readable event, oldest first, plus the files that could not be read."""
+    try:
+        ids = sorted(f[:-5] for f in os.listdir(queue_dir(bundle))
+                     if f.endswith(".json") and EVENT_ID_RE.fullmatch(f[:-5]))
+    except FileNotFoundError:
+        return [], []
+    events, bad = [], []
+    for eid in ids:
+        try:
+            events.append(read_event(bundle, eid))
+        except RecordError:
+            bad.append(event_path(bundle, eid))
+    events.sort(key=lambda e: (str(e.get("at", "")), e["id"]))
+    return events, bad
+
+
+def _is_open(ev, t=None):
+    """Pending, or taken by a routine that never marked it."""
+    if ev["status"] == EVENT_PENDING:
+        return True
+    if ev["status"] != EVENT_TAKEN:
+        return False
+    taken = _when(ev.get("taken"))
+    t = t or datetime.datetime.now(datetime.timezone.utc)
+    return not taken or (t - taken).total_seconds() >= TAKE_STALE
+
+
+def _drop(bundle, ev, why, t_iso):
+    ev["status"], ev["done"] = EVENT_DROPPED, {"at": t_iso, "as": "dropped", "why": why}
+    _write_event(bundle, ev)
+
+
+# ── the tick ─────────────────────────────────────────────────────────────────
+
+def _apply(bundle, name, wait_n, source, step_of, t, new, log, dry=None):
+    """Under the run's lock, read the record fresh and let `step_of(wait)` say
+    what changed; enqueue its events, then write the wait. Returns the record
+    as written (or as read, when nothing changed), or None when the run is no
+    longer this wait. A dry run hands in the record as the sources before it
+    left it, in memory, and nothing is locked, enqueued or written."""
+    if dry is not None:
+        return _step(bundle, json.loads(json.dumps(dry)), name, wait_n, source, step_of, t, new, log, False)
+    with held(lock_path(bundle, name)) as ok:
+        if not ok:
+            log(f"{name}: its record is being changed by another trunk.py; the next tick retries")
+            return None
+        try:
+            rec = read_record(bundle, name)
+        except RecordError as exc:
+            log(f"{name}: {exc}")
+            return None
+        return _step(bundle, rec, name, wait_n, source, step_of, t, new, log, True)
+
+
+def _step(bundle, rec, name, wait_n, source, step_of, t, new, log, write):
+    t_iso = t.isoformat()
+    wait = rec.get("wait")
+    if rec["status"] != STATUS_WAITING or not isinstance(wait, dict) \
+            or len(rec.get("past_waits") or []) != wait_n:
+        return None
+    try:
+        step = step_of(wait)
+    except SourceError as exc:
+        log(f"{name}: {source}: {exc}")
+        return rec
+    if not step:
+        return rec
+    for etype, act, fields in step.events:
+        ev = {"version": EVENT_VERSION, "id": _event_id(name, wait_n, source, etype, fields, wait),
+              "run": name, "source": source, "type": etype, "act": act, "at": t_iso, "fields": fields,
+              "status": EVENT_PENDING, "taken": None, "attempts": [], "done": None}
+        if write and enqueue(bundle, ev):
+            new.append(ev)
+        elif not write and not os.path.isfile(event_path(bundle, ev["id"])):
+            new.append(ev)
+    state = dict(wait.get("state") or {})
+    state.update(step.state)
+    moved = state != (wait.get("state") or {}) or step.changes.get("on", wait.get("on")) != wait.get("on")
+    wait.update(step.changes)
+    wait["state"] = state
+    if moved:
+        wait["since"], wait["reminded"] = t_iso, None
+    if step.reminded:
+        wait["reminded"] = t_iso
+    if step.end:
+        outcome, why = step.end
+        wait["ended"] = {"at": t_iso, "outcome": outcome, "why": why}
+        rec["status"] = STATUS_DISPATCHED
+    rec["wait"], rec["updated"] = wait, t_iso
+    if write:
+        write_record(bundle, rec)
+    return rec
+
+
+def follow_run(bundle, rec, t, gh, new, log, dry=False):
+    """One waiting run through the sources, in order; each sees the wait as
+    the one before it left it."""
+    name, wait_n = rec["name"], len(rec.get("past_waits") or [])
+
+    def go(source, step_of):
+        nonlocal rec
+        got = _apply(bundle, name, wait_n, source, step_of, t, new, log, rec if dry else None)
+        if got is not None:
+            rec = got
+        return got is not None and rec["status"] == STATUS_WAITING
+
+    def read(what, observe, *args):
+        try:
+            return observe(*args)
+        except SourceError as exc:
+            log(f"{name}: {what}: {exc}")
+            return None
+
+    wait = rec["wait"]
+    if wait.get("on") == "team":
+        if not wait.get("team"):
+            log(f"{name}: it waits on its team and names none (`run wait set {name} --team <key>`)")
+        else:
+            try:
+                obs = observe_team(wait["team"])
+            except SourceError as exc:
+                log(f"{name}: team: {exc}")
+                obs = False
+            if obs is None:
+                log(f"{name}: team: no orq team {wait['team']} in orq's store yet")
+            elif obs and not go("team", lambda w: step_team(w, obs)):
+                return
+    wait = rec["wait"]
+    github = bool(REPO_RE.fullmatch(wait.get("repo") or ""))
+    if wait.get("on") in PR_ON and wait.get("pr") and github:
+        obs = read("pr", observe_pr, gh, wait["repo"], wait["pr"]) if gh else None
+        if not gh:
+            log(f"{name}: pr: gh is not on PATH, so no pull request is read")
+        if obs is not None and not go("pr", lambda w: step_pr(w, obs)):
+            return
+    wait = rec["wait"]
+    merge = _dig(wait, "state", "pr", "merge")
+    if wait.get("on") == "deploy" and wait.get("deploy") == "service" and merge and github:
+        obs = read("deploy", observe_deploy, gh, wait["repo"], merge) if gh else None
+        if not gh:
+            log(f"{name}: deploy: gh is not on PATH, so no deploy is read")
+        if obs is not None and not go("deploy", lambda w: step_deploy(w, obs)):
+            return
+    if go("time", lambda w: step_time(w, t)):
+        go("time", lambda w: step_stale(w, t))
+
+
+def _poll_lock(bundle):
+    """The tick's own lock: two ticks never run the sources at once. One left
+    by a tick that died is taken over once it is old."""
+    path = os.path.join(follow_dir(bundle), ".poll.lock")
+    os.makedirs(follow_dir(bundle), mode=0o700, exist_ok=True)
+    if _acquire(path, 0):
+        return path
+    try:
+        if time.time() - os.path.getmtime(path) >= POLL_STALE:
+            _release(path)
+            if _acquire(path, 0):
+                return path
+    except OSError:
+        pass
+    return None
+
+
+SLACK_NOT_SENT, SLACK_RELAYED = "slack not sent (", "slack relayed: "
+
+
+def _note_id(entry):
+    return hashlib.sha256(f"{entry.get('at')}\n{entry.get('text')}".encode("utf-8")).hexdigest()[:12]
+
+
+def unsent_notes(recs):
+    """The `slack not sent (<why>): <note>` notes a session left in its run,
+    with no `slack relayed: <id>` note of the routine after them, oldest
+    first: what the routine still owes the owner's Slack."""
+    out = []
+    for rec in recs:
+        log = [e for e in rec.get("log") or [] if isinstance(e, dict) and isinstance(e.get("text"), str)]
+        relayed = {e["text"][len(SLACK_RELAYED):].strip() for e in log if e["text"].startswith(SLACK_RELAYED)}
+        for e in log:
+            text = e["text"]
+            if not text.startswith(SLACK_NOT_SENT) or "): " not in text:
+                continue
+            nid = _note_id(e)
+            if nid in relayed:
+                continue
+            why, _, body = text[len(SLACK_NOT_SENT):].partition("): ")
+            out.append({"run": rec["name"], "id": nid, "at": e.get("at"), "why": why.strip(), "note": body.strip()})
+    out.sort(key=lambda n: (str(n["at"]), n["run"]))
+    return out
+
+
+def cmd_follow_poll(args):
+    bundle = resolve_bundle(args.bundle)
+    dry = bool(args.dry_run)
+    t = (datetime.datetime.fromisoformat(parse_when(args.now, "--now")) if args.now
+         else datetime.datetime.now(datetime.timezone.utc))
+    t_iso = t.isoformat()
+    lines, new = [], []
+
+    def log(line):
+        if line not in lines:
+            lines.append(line)
+
+    recs, bad = waiting_runs(bundle)
+    for n in bad:
+        log(f"skipped the unreadable run record {record_path(bundle, n)}")
+    events, unreadable = list_events(bundle)
+    opened = [e for e in events if e["status"] in EVENT_OPEN]
+    busy = False
+    if dry and (recs or opened):
+        for ev in opened:
+            if not os.path.isfile(record_path(bundle, ev["run"])):
+                log(f"would drop event {ev['id']} ({ev['type']}): run {ev['run']} no longer exists")
+        gh = shutil.which("gh")
+        for rec in sorted(recs, key=lambda r: r["name"]):
+            follow_run(bundle, rec, t, gh, new, log, dry=True)
+    elif recs or opened:
+        ensure_ignored(bundle)
+        lock = _poll_lock(bundle)
+        if lock is None:
+            busy = True
+            log("another poll is running; this tick reads nothing")
+        else:
+            try:
+                for ev in opened:
+                    if not os.path.isfile(record_path(bundle, ev["run"])):
+                        with held(os.path.join(queue_dir(bundle), f".{ev['id']}.lock")) as ok:
+                            if ok:
+                                _drop(bundle, ev, "the run no longer exists", t_iso)
+                                log(f"dropped event {ev['id']} ({ev['type']}): run {ev['run']} no longer exists")
+                gh = shutil.which("gh")
+                for rec in sorted(recs, key=lambda r: r["name"]):
+                    follow_run(bundle, rec, t, gh, new, log)
+            finally:
+                _release(lock)
+    for path in unreadable:
+        log(f"skipped the unreadable event {path}")
+    if lines and not dry:
+        os.makedirs(follow_dir(bundle), mode=0o700, exist_ok=True)
+        with open(os.path.join(follow_dir(bundle), "poll.log"), "a", encoding="utf-8") as fh:
+            fh.writelines(f"{t_iso} {ln}\n" for ln in lines)
+    pending = [e for e in list_events(bundle)[0] if _is_open(e, t)]
+    unsent = unsent_notes(list_records(bundle)[0])
+    if args.json:
+        print(json.dumps({"bundle": bundle, "at": t_iso, "dry_run": dry, "waiting": len(recs), "busy": busy,
+                          "new": new, "pending": pending, "unsent": unsent, "log": lines}, ensure_ascii=False))
+        return 0
+    for ln in lines:
+        note(ln)
+    print(f"follow{' (dry run, nothing written)' if dry else ''}: {len(recs)} waiting, "
+          f"{len(new)} {'would be new' if dry else 'new'}, {len(pending)} pending, {len(unsent)} Slack notes unsent")
+    for e in new:
+        print(f"{e['id']}\t{e['run']}\t{e['type']}\t{e['act']}")
+    return 0
+
+
+def cmd_follow_queue(args):
+    bundle = resolve_bundle(args.bundle)
+    events, bad = list_events(bundle)
+    if not args.all:
+        events = [e for e in events if _is_open(e)]
+    for path in bad:
+        note(f"skipped the unreadable event {path}")
+    if args.json:
+        print(json.dumps({"bundle": bundle, "events": events, "unreadable": bad}, ensure_ascii=False))
+        return 0
+    for e in events:
+        print(f"{e['id']}\t{e['run']}\t{e['type']}\t{e['act']}\t{e['status']}")
+    return 0
+
+
+def _event_for_update(bundle, eid):
+    """The event, read under its own lock, held until this process exits."""
+    if not EVENT_ID_RE.fullmatch(eid or ""):
+        die(f'"{eid}" is not an event id (16 hex digits, as `follow queue` names it)')
+    if os.path.isdir(queue_dir(bundle)):
+        path = os.path.join(queue_dir(bundle), f".{eid}.lock")
+        if not _acquire(path, LOCK_WAIT):
+            die(f"event {eid} is being changed by another trunk.py (lock {path}); try again")
+        atexit.register(_release, path)
+    try:
+        return read_event(bundle, eid)
+    except RecordError as exc:
+        die(str(exc))
+
+
+def cmd_follow_take(args):
+    """Take a pending event for delivery: of two routines taking it, one does."""
+    bundle = resolve_bundle(args.bundle)
+    ev = _event_for_update(bundle, args.id)
+    t_iso = now()
+    if not _is_open(ev):
+        die(f"event {ev['id']} is {ev['status']}: another routine has it, or it was delivered; "
+            f"nothing was taken")
+    if not os.path.isfile(record_path(bundle, ev["run"])):
+        _drop(bundle, ev, "the run no longer exists", t_iso)
+        die(f"event {ev['id']}: run {ev['run']} no longer exists; the event is dropped")
+    ev["status"], ev["taken"] = EVENT_TAKEN, t_iso
+    _write_event(bundle, ev)
+    print(json.dumps(ev, ensure_ascii=False) if args.json else f"event {ev['id']}: taken")
+    return 0
+
+
+def cmd_follow_mark(args):
+    """How a delivery went: delivered and dropped close the event; failed
+    keeps it queued, with the attempt, for the next tick."""
+    bundle = resolve_bundle(args.bundle)
+    ev = _event_for_update(bundle, args.id)
+    why = (args.why or "").strip()
+    if "\n" in why:
+        die("--why is one line")
+    if ev["status"] not in EVENT_OPEN:
+        die(f"event {ev['id']} is already {ev['status']}; nothing was recorded")
+    t_iso = now()
+    if args.mark == "failed":
+        if not why:
+            die("say why the delivery failed with --why")
+        ev["attempts"].append({"at": t_iso, "why": why})
+        ev["status"], ev["taken"] = EVENT_PENDING, None
+    else:
+        ev["status"] = EVENT_DELIVERED if args.mark == "delivered" else EVENT_DROPPED
+        ev["done"] = {"at": t_iso, "as": args.mark, "why": why or None}
+    _write_event(bundle, ev)
+    print(json.dumps(ev, ensure_ascii=False) if args.json else f"event {ev['id']}: {ev['status']}")
+    return 0
+
+
+WAKE_KEYS = ("version", "id", "run", "source", "type", "act", "at", "fields")
+WAKE_SKILL = "/elephant-trunk:trunk"
+
+
+def wake_line(ev):
+    """The one line that wakes a session for an event: the trunk's skill, the
+    run and the event's structured part (never its delivery attempts, whose
+    reasons the routine wrote), as one line of JSON."""
+    part = {k: ev.get(k) for k in WAKE_KEYS}
+    return f"{WAKE_SKILL} continue {ev['run']} from event {json.dumps(part, ensure_ascii=True, separators=(',', ':'))}"
+
+
+def cmd_follow_wake(args):
+    bundle = resolve_bundle(args.bundle)
+    if not EVENT_ID_RE.fullmatch(args.id or ""):
+        die(f'"{args.id}" is not an event id (16 hex digits, as `follow queue` names it)')
+    try:
+        ev = read_event(bundle, args.id)
+    except RecordError as exc:
+        die(str(exc))
+    print(wake_line(ev))
+    return 0
+
+
+ORIGIN_RE = re.compile(r"(?:^|[@/:])github\.com[:/]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$", re.I)
+
+
+def team_folder(team):
+    """The folder an orq team was started in, from the `repo` of its topic's
+    first `start` message in orq's store (metadata only): orq records the
+    main checkout there, and keeps it after the team closed. None when the
+    store has no such team or no folder for it."""
+    try:
+        import sqlite3
+    except ImportError:
+        raise SourceError("this Python has no sqlite3 to read orq's store")
+    path = bus_db()
+    if not os.path.isfile(path):
+        raise SourceError(f"no orq store at {path}")
+    try:
+        uri = "file:" + urllib.request.pathname2url(path) + "?mode=ro"
+        with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=10)) as db:
+            topic = db.execute("SELECT topic_id FROM topics WHERE name = ? ORDER BY created_at DESC LIMIT 1",
+                               (f"orq/{team}",)).fetchone()
+            rows = db.execute("SELECT metadata_json FROM messages WHERE topic_id = ? ORDER BY seq",
+                              (topic[0],)).fetchall() if topic else []
+    except sqlite3.Error as exc:
+        raise SourceError(f"orq's store at {path} cannot be read ({exc})")
+    for (raw,) in rows:
+        try:
+            meta = json.loads(raw) if raw else {}
+        except ValueError:
+            continue
+        if isinstance(meta, dict) and meta.get("kind") == "start":
+            folder = meta.get("repo")
+            return folder if isinstance(folder, str) and os.path.isabs(folder) else None
+    return None
+
+
+def _git_out(folder, *args):
+    try:
+        r = subprocess.run(["git", "-C", folder, *args], capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def main_checkout(folder):
+    """The main checkout of the repository `folder` is in: the first worktree
+    git lists (a team's worktree holds the team's branch, and may be gone)."""
+    out = _git_out(folder, "worktree", "list", "--porcelain")
+    first = next((ln[len("worktree "):] for ln in (out or "").splitlines() if ln.startswith("worktree ")), None)
+    return os.path.normpath(first) if first and os.path.isdir(first) else None
+
+
+def checkout_of(wait):
+    """Where a new session for the run opens: (path, how it was found), or
+    (None, why not)."""
+    repo = wait.get("repo") or ""
+    if os.path.isabs(repo):
+        return (repo, "the wait's repo") if os.path.isdir(repo) else (None, f"{repo} is not a folder")
+    if not wait.get("team"):
+        return None, "the wait names no orq team to find its folder by"
+    try:
+        folder = team_folder(wait["team"])
+    except SourceError as exc:
+        return None, str(exc)
+    if not folder or not os.path.isdir(folder):
+        return None, f"orq's store records no folder for team {wait['team']}" + (f" ({folder} is gone)" if folder else "")
+    path = main_checkout(folder)
+    if not path:
+        return None, f"{folder} is not a git checkout"
+    origin = (_git_out(path, "remote", "get-url", "origin") or "").strip()
+    m = ORIGIN_RE.search(origin)
+    if REPO_RE.fullmatch(repo) and not (m and m.group(1).lower() == repo.lower()):
+        return None, f"the origin of {path} is not {repo}"
+    return path, f"the folder of team {wait['team']}"
+
+
+def cmd_follow_checkout(args):
+    bundle = resolve_bundle(args.bundle)
+    rec = load_or_die(bundle, check_name(args.run))
+    wait = rec.get("wait") if isinstance(rec.get("wait"), dict) else {}
+    path, how = checkout_of(wait)
+    if args.json:
+        print(json.dumps({"run": rec["name"], "checkout": path, "from": how if path else None,
+                          "problem": None if path else how}, ensure_ascii=False))
+        return 0 if path else 1
+    if not path:
+        die(f"run {rec['name']}: no checkout found: {how}")
+    print(path)
+    return 0
+
+
+def cmd_follow_unsent(args):
+    bundle = resolve_bundle(args.bundle)
+    recs, bad = list_records(bundle)
+    for n in bad:
+        note(f"skipped the unreadable run record {record_path(bundle, n)}")
+    notes = unsent_notes(recs)
+    if args.json:
+        print(json.dumps({"bundle": bundle, "unsent": notes}, ensure_ascii=False))
+        return 0
+    for n in notes:
+        print(f"{n['run']}\t{n['id']}\t{n['at']}\t{n['why']}\t{n['note']}")
+    return 0
+
+
+def cmd_follow_relayed(args):
+    """The routine sent a note a session could not: the run says so, and the
+    note leaves `follow unsent`."""
+    bundle = resolve_bundle(args.bundle)
+    rec = load_for_update(bundle, check_name(args.run))
+    if not any(n["id"] == args.note for n in unsent_notes([rec])):
+        die(f"run {rec['name']} has no unsent Slack note {args.note} (`follow unsent` lists them); "
+            f"nothing was recorded")
+    t = now()
+    rec.setdefault("log", []).append({"at": t, "text": f"{SLACK_RELAYED}{args.note}"})
+    rec["updated"] = t
+    write_record(bundle, rec)
+    print(f"run {rec['name']}: Slack note {args.note} relayed")
     return 0
 
 
@@ -1208,7 +2710,7 @@ def _read_bytes(spec, what):
 def _open_for_recipe(args, after_dispatch=False):
     bundle = resolve_bundle(args.bundle)
     rec = load_for_update(bundle, check_name(args.run))
-    if rec["status"] == STATUS_DISPATCHED and not after_dispatch:
+    if rec["status"] in STARTED and not after_dispatch:
         die(f"run {rec['name']} was already dispatched; its recipe stays as dispatched")
     if rec["status"] == STATUS_STARTING and not after_dispatch:
         die(f"run {rec['name']} is being started; its recipe stays as claimed until "
@@ -2282,17 +3784,24 @@ def main(argv):
     p = sub.add_parser("config", parents=[common], help="print the bundle and the how-I-work tag")
     p.add_argument("--json", action="store_true", help="print one JSON object")
     p.set_defaults(func=cmd_config)
+    p = sub.add_parser("hours", parents=[common],
+                       help="the owner's business hours: open now, when they close, when they open next")
+    p.add_argument("--at", default="", metavar="TIME",
+                   help="read them at this time, ISO 8601 with its offset (default: now)")
+    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.set_defaults(func=cmd_hours)
     p = sub.add_parser("facts", parents=[common],
                        help="list the owner's how: facts with the how-I-work tag plus a trunk area tag")
     p.add_argument("--area", action="append", choices=AREA_TAGS,
-                   help="only this area tag (repeatable; default: all three)")
+                   help="only this area tag (repeatable; default: all four)")
     p.add_argument("--forgotten", action="store_true",
                    help="the learnings forgotten or steered instead, never read as the owner's how")
     p.add_argument("--json", action="store_true",
                    help="print one JSON object; each fact carries its origin (owner, other, unknown)")
     p.set_defaults(func=cmd_facts)
 
-    run = sub.add_parser("run", help="the run record: new, show, list, set, claim, dispatch, ingested")
+    run = sub.add_parser("run", help="the run record: new, show, list, set, claim, dispatch, ingested, "
+                                     "wait, hold")
     rsub = run.add_subparsers(dest="run_command", required=True)
     p = rsub.add_parser("new", parents=[common], help="start a run record")
     p.add_argument("--topic", required=True, help="the topic, in one line")
@@ -2320,8 +3829,7 @@ def main(argv):
     p.add_argument("name")
     p.add_argument("--via", required=True, choices=DISPATCH_VIAS)
     p.add_argument("--command", dest="dispatch_command", required=True,
-                   help="the command about to start the work; via orq, its merge parameter must "
-                        "agree with the run's last merge-level: decision")
+                   help="the command about to start the work; via orq, it carries no merge parameter")
     p.add_argument("--where", default="", help="where the work will run (orq team, workspace, session)")
     p.add_argument("--json", action="store_true", help="print the run's summary and claim as JSON")
     p.set_defaults(func=cmd_run_claim)
@@ -2343,6 +3851,94 @@ def main(argv):
     p.add_argument("--commit", default="", help="the ingest commit (default: the bundle's HEAD)")
     p.add_argument("--json", action="store_true", help="print the run's summary and its ingests as JSON")
     p.set_defaults(func=cmd_run_ingested)
+    wait = rsub.add_parser("wait", help="what a dispatched run waits on next: set, show, list, end")
+    wsub = wait.add_subparsers(dest="wait_command", required=True)
+    p = wsub.add_parser("set", parents=[common],
+                        help="start or update the wait of a dispatched run (an empty value clears a field)")
+    p.add_argument("name")
+    p.add_argument("--on", default=None, choices=WAIT_ON, help="what the run waits on now")
+    p.add_argument("--repo", default=None, help="owner/name on GitHub, or the absolute path of a local repo")
+    p.add_argument("--branch", default=None, help="the branch the work is on")
+    p.add_argument("--team", default=None, help="the orq team key the work was dispatched to")
+    p.add_argument("--pr", default=None, help="the pull request: its number or its GitHub URL")
+    p.add_argument("--sha", default=None, help="the commit the run's reviewer approved")
+    p.add_argument("--session", default=None, help="the orq session that owns the run")
+    p.add_argument("--deploy", default=None, metavar="KIND",
+                   help=f"what deploying means in this repo: {', '.join(DEPLOY_KINDS)}")
+    p.add_argument("--health-rule", dest="health_rule", default=None,
+                   help="what healthy means after the deploy, in one line")
+    p.add_argument("--health-window", dest="health_window", default=None, metavar="MINUTES",
+                   help=f"how long after the deploy health is watched ({HEALTH_WINDOW_DEFAULT} when a health rule names none)")
+    p.add_argument("--hold-until", dest="hold_until", default=None, metavar="TIME",
+                   help="no merge before this time (ISO 8601 with its offset)")
+    p.add_argument("--state", default=None, metavar="JSON",
+                   help="what the sources last saw, a JSON object merged key by key (null drops a key)")
+    p.add_argument("--reminded", action="store_true", help="the reminder for this stretch was sent")
+    p.add_argument("--json", action="store_true", help="print the run's summary and its wait as JSON")
+    p.set_defaults(func=cmd_run_wait_set)
+    p = wsub.add_parser("show", parents=[common], help="read a run's wait and hold back")
+    p.add_argument("name")
+    p.add_argument("--json", action="store_true", help="print the run's summary, wait and hold as JSON")
+    p.set_defaults(func=cmd_run_wait_show)
+    p = wsub.add_parser("list", parents=[common], help="the waiting runs, most recent first")
+    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.set_defaults(func=cmd_run_wait_list)
+    p = wsub.add_parser("end", parents=[common], help="end a run's wait: it is dispatched again")
+    p.add_argument("name")
+    p.add_argument("--outcome", required=True, choices=WAIT_OUTCOMES, help="how the wait ended")
+    p.add_argument("--why", required=True, help="why, in one line")
+    p.add_argument("--json", action="store_true", help="print the run's summary and its wait as JSON")
+    p.set_defaults(func=cmd_run_wait_end)
+    p = rsub.add_parser("hold", parents=[common],
+                        help="the owner's hold on a run: no merge until the owner lifts it")
+    p.add_argument("name")
+    p.add_argument("--why", required=True, help="why, in one line")
+    p.add_argument("--lift", action="store_true", help="lift the hold, on the owner's word")
+    p.add_argument("--json", action="store_true", help="print the run's summary, wait and hold as JSON")
+    p.set_defaults(func=cmd_run_hold)
+
+    follow = sub.add_parser("follow", help="the waiting runs' sources and the queue: poll, queue, take, wake, "
+                                           "mark, checkout, unsent, relayed")
+    fsub = follow.add_subparsers(dest="follow_command", required=True)
+    p = fsub.add_parser("poll", parents=[common],
+                        help="one tick: run the sources over the waiting runs, enqueue what changed")
+    p.add_argument("--now", default="", metavar="TIME",
+                   help="the time the tick reads (ISO 8601 with its offset; default: now), for a dry run or a test")
+    p.add_argument("--dry-run", action="store_true",
+                   help="read the sources and say what would be enqueued; write nothing")
+    p.add_argument("--json", action="store_true", help="print the tick as one JSON object")
+    p.set_defaults(func=cmd_follow_poll)
+    p = fsub.add_parser("queue", parents=[common], help="the events not delivered yet, oldest first")
+    p.add_argument("--all", action="store_true", help="every event, delivered and dropped too")
+    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.set_defaults(func=cmd_follow_queue)
+    p = fsub.add_parser("take", parents=[common], help="take a pending event for delivery")
+    p.add_argument("id", help="the event's id, as follow queue names it")
+    p.add_argument("--json", action="store_true", help="print the event")
+    p.set_defaults(func=cmd_follow_take)
+    p = fsub.add_parser("mark", parents=[common], help="how the delivery of an event went")
+    p.add_argument("id", help="the event's id, as follow queue names it")
+    p.add_argument("--as", dest="mark", required=True, choices=MARKS,
+                   help="delivered or dropped close it; failed keeps it queued")
+    p.add_argument("--why", default="", help="why, in one line (required with failed)")
+    p.add_argument("--json", action="store_true", help="print the event")
+    p.set_defaults(func=cmd_follow_mark)
+    p = fsub.add_parser("wake", parents=[common], help="the line that wakes a session for an event")
+    p.add_argument("id", help="the event's id, as follow queue names it")
+    p.set_defaults(func=cmd_follow_wake)
+    p = fsub.add_parser("checkout", parents=[common],
+                        help="the run's repository on this machine, where a new session for it opens")
+    p.add_argument("run", help="the run's name")
+    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.set_defaults(func=cmd_follow_checkout)
+    p = fsub.add_parser("unsent", parents=[common],
+                        help="the Slack notes sessions could not send, not relayed yet")
+    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.set_defaults(func=cmd_follow_unsent)
+    p = fsub.add_parser("relayed", parents=[common], help="record that the routine sent an unsent Slack note")
+    p.add_argument("run", help="the run's name")
+    p.add_argument("note", help="the note's id, as follow unsent names it")
+    p.set_defaults(func=cmd_follow_relayed)
 
     recipe = sub.add_parser("recipe", help="a recipe written for a run: draft, checked, save, fact")
     csub = recipe.add_subparsers(dest="recipe_command_name", required=True)
