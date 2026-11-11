@@ -320,7 +320,7 @@ own key.
 
 - `trunk.tag` (default `"how-i-work"`) — the how-I-work tag the trunk reads. The
   trunk looks for active facts carrying this tag plus one of the fixed area tags
-  `trunk-study`, `trunk-dispatch` or `trunk-recipe`, straight from
+  `trunk-study`, `trunk-dispatch`, `trunk-recipe` or `trunk-follow`, straight from
   `knowledge/manifest.jsonl`. Set it when your facts already carry another tag
   (`como-trabalhar`, say), so they are read as they are. A missing key, or no
   `elephant.json` at all, reads `how-i-work` and the trunk says how to set
@@ -330,6 +330,14 @@ own key.
   with exit 1, and the skill with them, until the file is fixed: reading the default instead would list none of your
   facts and capture new ones under a tag that goes unread once it is fixed.
   `trunk.py config` names the problem and prints what it resolved.
+- `trunk.business_hours` (default Monday to Friday, `09:00` to `18:00`) — the
+  hours inside which the follow merges a change it judges critical, in a
+  repository where the merge deploys: `{"days": ["mon", "tue", "wed", "thu",
+  "fri"], "start": "09:00", "end": "18:00"}`. They are read in the top-level
+  `timezone`; prefer an IANA name over a fixed offset, which follows no daylight
+  saving. A value that cannot be used reads the default and `trunk.py hours`
+  names it. Where the follow's Slack notes go is not set here: it is a
+  `trunk-follow` fact, else the self-DM of `delivery.start_day`.
 - Like every key here, `update` never re-syncs it. The plugin's script runs from
   the plugin and is never copied into the bundle.
 - The raw run records live in `<bundle>/state/trunk/`, which the plugin keeps

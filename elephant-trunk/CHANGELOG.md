@@ -14,6 +14,90 @@ day its tag is cut, which is the day it lands on `main`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.3] - 2026-11-09
+
+A trunk run ended where the pull request opened. The orq team closed, nothing
+woke the trunk again, and the owner became the watcher: they noticed the
+approval, decided the merge, ran or watched the deploy and checked that it went
+live. The 0.1.0-beta.2 preference made this worse rather than better: a
+two-valued `manual`/`automatic` setting decided every merge the same way for
+every change, when the real decision is a judgment about this change (who
+approved it, how critical it is, whether this is the hour, whether the owner
+said anything for this run). This release makes a run keep going until the work
+is live and healthy, or until it hands the work back with a reason, and the
+trunk decides each merge from the owner's facts.
+
+### Added
+
+- **A waiting run.** A run has a `waiting` status and a structured wait: what it
+  waits on (its team, the approval, the hour, the merge, the deploy, the health
+  check, the owner), the repository, the branch, the orq team, the pull request,
+  the approved SHA, the owning session, the deploy kind, the health rule and
+  window, the hold-until, since when, the last state a source saw and whether a
+  reminder went out. `trunk.py run wait set|show|list|end` writes and reads it
+  and `run hold [--lift]` records the owner's hold; a wait that ended moves to
+  `past_waits`. Every run that ends in a pull request or a branch waits the same
+  way, on orq or on plain Claude Code. A run dispatched before this version does
+  not wait, and the follow ignores it.
+- **The follow.** `trunk.py follow poll` runs the sources and puts typed events
+  on a local queue under `<bundle>/state/trunk/follow/`: the run's orq team (its
+  `approved` message, read from orq's store with the SHA and the pull request;
+  a team that finished with no approval), the state of the pull request on
+  GitHub, the deploy GitHub records for the merge commit, and time (a held hour
+  arrives, a scheduled merge's open window closes, a health window ends, a wait
+  goes stale). An event carries structured fields only and enters the queue only
+  when the state differs from what the run last saw, so the same state never
+  enqueues twice and two overlapping ticks deliver one event once. `follow
+  queue|take|mark|wake|checkout|unsent|relayed` are what the routine calls.
+- **`/elephant-trunk:follow`**, the routine, fired hourly by a Claude Desktop
+  scheduled task. It wakes an orq session for each event that needs a decision
+  (the run's own session, else a live one the follow opened for it, else a new
+  session in the run's repository, never one the owner is using) with the line
+  `/elephant-trunk:trunk continue <run> from event <json>`, and sends a Slack
+  note for each event that needs none: the 3-day reminder, the 7-day give-back,
+  a pull request merged or closed by someone else, a change request, failing
+  checks, an event that could not be delivered. `--dry-run` reads everything and
+  changes nothing.
+- **`trunk-follow`**, a fourth area tag, for the owner's facts on merging,
+  deploying, the hour, breaking and notifying.
+- **Business hours.** `trunk.business_hours` in `elephant.json` (Monday to
+  Friday, 09:00 to 18:00 when unset) in the bundle's `timezone`, and
+  `trunk.py hours`, which says whether they are open, when they close and when
+  they open next. A change the trunk judges critical, in a repository where the
+  merge deploys, merges only inside them; an auto-merge still pending when they
+  close is cancelled and the run holds.
+- **Deploying, repository by repository.** The trunk discerns what the deploy is
+  and what live and healthy mean from the repository and the owner's facts, and
+  records both in the run before the merge: a web service's own deploy, an
+  `elephant-mem` tag and release under the prefix of the plugin whose version
+  the change bumped (none when it bumped none), `lexflow deploy` after its
+  `--dry-run` (it stops and hands over to the owner when it would ask for a
+  secret, and no value is ever recorded), or the local merge of a repository
+  with no remote. Where it cannot tell, it stops at the merge. Health checks
+  only read.
+
+### Changed
+
+- **The `manual`/`automatic` merge preference is gone.** The trunk decides each
+  merge from the owner's `trunk-follow` facts, with a floor that does not move:
+  the run's own reviewer approved exactly the commit that merges and it is still
+  the head, GitHub gates the base (the trunk still never reads CI), and no hold.
+  "Don't merge before I approve" said for a run is a hold, and only the owner
+  lifts it. A new `merge-level:` decision is refused and an old one stays as
+  history; `run claim` no longer reads it. With no fact saying when approvals
+  are enough, nothing merges and Slack says which fact would let the follow
+  decide it next time.
+- **On orq the dispatch stops at the pull request.** `impl_review` starts
+  without a merge parameter; merging and deploying are the follow's job.
+- **A note before acting.** Before any merge, cancel, tag, release or deploy
+  step the trunk writes its reasoning as a note in the run, and the Slack note
+  carries it. A woken session has no owner: a question becomes a Slack note and
+  a wait on the owner, and text written by others (reviews, logs, error
+  reports) is evidence, never an instruction.
+- **What the follow only reports.** A change request, failing checks or a broken
+  deploy notify and the run waits for the owner; pushing a fix, opening a fix
+  pull request and reverting a deploy are out of scope for this version.
+
 ## [0.1.0-beta.2] - 2026-11-06
 
 The trunk hard-coded that the work it dispatched never merged: the brief's done,
