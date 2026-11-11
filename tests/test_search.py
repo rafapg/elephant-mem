@@ -68,9 +68,12 @@ def record(label, passed, detail=""):
 
 
 def run(bundle, args):
+    # A timeout, so a pagination that never advances is a FAIL in CI rather
+    # than a hang: dropping "the first row of a page is always taken" loops
+    # forever with memory growing, and nothing else would stop it.
     return subprocess.run(
         [sys.executable, str(bundle / "scripts" / "search.py")] + [str(a) for a in args],
-        cwd=str(bundle), capture_output=True, text=True, encoding="utf-8",
+        cwd=str(bundle), capture_output=True, text=True, encoding="utf-8", timeout=60,
     )
 
 
@@ -177,11 +180,16 @@ def busy_rows():
                      desc="A reunião com João Conceição foi remarcada", tags=["meeting"]))
     rows.append(fact("/facts/future.md", "2030-01-01", [("nebulare", "project")],
                      desc="Vision for 2030", tags=["strategy"]))
+    rows.append(fact("/facts/undated.md", "", [("joao-conceicao", "person")],
+                     desc="Undated note on the partnership", tags=["meeting"]))
     return rows
 
 
 def page_and_order(tmp):
-    bundle = make_bundle(tmp, "busy", busy_rows(), extra_lines=["{ not json", "[1, 2]"])
+    # Written in reverse path order, so a same-day tie that came out sorted by
+    # path proves the tie-break, not the order the manifest happened to be in.
+    bundle = make_bundle(tmp, "busy", busy_rows()[::-1],
+                         extra_lines=["{ not json", "[1, 2]"])
     before = snapshot(bundle)
 
     r1 = run(bundle, ["--entity", "dayane", "--as-of", TODAY])
@@ -246,7 +254,28 @@ def page_and_order(tmp):
     r = run(bundle, ["--as-of", TODAY])
     record("months facet: past the last 12 months, one `older` bucket",
            "· older 1" in footer(r.stdout), footer(r.stdout))
+    record("months facet: an undated row is its own `undated` bucket, not `older`",
+           "· older 1 · undated 1" in footer(r.stdout), footer(r.stdout))
     record("tags facet ranks by count", "tags: pricing 300 · decision 75" in foot, foot)
+    r = run(bundle, ["--tag", "decision", "--as-of", TODAY])
+    tags_line = [ln for ln in footer(r.stdout).splitlines() if ln.startswith("tags:")]
+    record("tags facet leaves out the tags already filtered on",
+           tags_line == ["tags: pricing 75"], tags_line)
+
+    # Undated rows: last in the order, out of reach of any date filter, and
+    # named as such by the cut.
+    r = run(bundle, ["--entity", "joao-conceicao", "--as-of", TODAY])
+    record("an undated row sorts after every dated one",
+           [p for _, _, p in entries(r.stdout)] == ["/facts/accent.md", "/facts/undated.md"],
+           r.stdout)
+    r = run(bundle, ["--entity", "joao-conceicao", "--until", "2026-12-31", "--as-of", TODAY])
+    record("--until leaves undated rows out (no date to bound)",
+           "· 1 match\n" in r.stdout and "/facts/undated.md" not in r.stdout, r.stdout)
+    r = run(bundle, ["--entity", "joao-conceicao", "--budget", "0.1", "--as-of", TODAY])
+    record("a cut that leaves only undated rows behind says so",
+           [p for _, _, p in entries(r.stdout)] == ["/facts/accent.md"]
+           and "cut at undated: 1 more behind it, all undated" in footer(r.stdout),
+           r.stdout)
     record("E10 an unparseable manifest line is skipped and counted",
            "skipped: 2 unparseable manifest line(s)" in foot, foot)
 
@@ -271,6 +300,14 @@ def page_and_order(tmp):
     record("--text matches every word, case- and accent-folded",
            r.stdout.splitlines()[0].endswith("· 1 match")
            and "/facts/accent.md" in r.stdout, r.stdout[:300])
+    r = run(bundle, ["--text", "REUNIÃO Conceição", "--as-of", TODAY])
+    record("--text folds the query's words too, not only the desc",
+           r.stdout.splitlines()[0].endswith("· 1 match")
+           and "/facts/accent.md" in r.stdout, r.stdout[:300])
+    r = run(bundle, ["--entity", "dayane", "--entity", "dayane-ferraz", "--as-of", TODAY])
+    record("two names for one entity count once",
+           r.stdout.startswith("search: entity dayane-ferraz · 300 matches\n"),
+           r.stdout.splitlines()[0])
     r = run(bundle, ["--entity", "dayane", "--since", "2026-10-30",
                      "--until", "2026-10-31", "--as-of", TODAY])
     got = entries(r.stdout)
@@ -282,6 +319,9 @@ def page_and_order(tmp):
     r = run(bundle, ["--entity", "acme", "--status", "open", "--as-of", TODAY])
     record("a loop's owner counts as an entity it is about",
            "/tracking/loops/owed.md" in r.stdout, r.stdout[:300])
+    r = run(bundle, ["--entity", "bruno-alves", "--status", "open", "--as-of", TODAY])
+    record("…and so does its owed_to",
+           [p for _, _, p in entries(r.stdout)] == ["/tracking/loops/owed.md"], r.stdout[:300])
 
     # (d) the edges.
     r = run(bundle, ["--entity", "nebulare", "--as-of", TODAY])
@@ -299,9 +339,28 @@ def page_and_order(tmp):
     r = run(bundle, ["--entity", "joao", "--tag", "nope", "--text", "zzz", "--as-of", TODAY])
     record("E9 …and names none when no single filter did",
            r.returncode == 0 and "emptied by" not in r.stdout, r.stdout)
+    r = run(bundle, ["--tag", "decision", "--tag", "strategy", "--as-of", TODAY])
+    record("E9 …nor when several filters each did (dropping either tag leaves rows)",
+           r.returncode == 0 and "· 0 matches" in r.stdout and "emptied by" not in r.stdout,
+           r.stdout)
 
     record("E19 a dozen searches wrote nothing into the bundle",
            snapshot(bundle) == before, set(snapshot(bundle)) ^ set(before))
+
+    # E8 where the clamp decides: a row dated today and a future row tie on
+    # the date the ordering uses, so the path breaks the tie. Unclamped, the
+    # future row would simply be the newest and lead.
+    clamp = make_bundle(tmp, "clamp", [
+        fact("/facts/z-future.md", "2030-01-01", [("acme", "org")]),
+        fact("/facts/a-today.md", TODAY, [("acme", "org")]),
+        fact("/facts/m-older.md", "2026-01-01", [("acme", "org")]),
+    ])
+    r = run(clamp, ["--entity", "acme", "--as-of", TODAY])
+    record("E8 a future row sorts as today: it ties with today's row and the path decides",
+           entries(r.stdout) == [(TODAY, "fact", "/facts/a-today.md"),
+                                 ("2030-01-01", "fact", "/facts/z-future.md"),
+                                 ("2026-01-01", "fact", "/facts/m-older.md")],
+           entries(r.stdout))
 
     # Under --any the order is a round-robin led by rows carrying both
     # entities, so the last row printed is no date bound: here the page opens
@@ -349,10 +408,23 @@ def page_and_order(tmp):
 # --- (e) names ----------------------------------------------------------------
 
 
+# The names bundle's roster adds the shapes that broke resolution: a slug whose
+# spaced form is another entity's alias (`ana` / `ana-paula` aliased "Ana"), a
+# roster slug written in mixed case, and a look-alike of a slug the manifest
+# carries but the roster does not (`joao-silva`, an inactive entity).
+NAMES_ROSTER = ROSTER + [
+    ("ana", "person", "Ana Lima", ""),
+    ("ana-paula", "person", "Ana Paula", "Ana"),
+    ("Mixed-Case", "org", "Something Else", ""),
+    ("joao-silveira", "person", "Joao Silveira", ""),
+]
+
+
 def names(tmp):
-    rows = [fact(f"/facts/n-{slug}.md", "2026-10-01", [(slug, kind)])
-            for slug, kind, _, _ in ROSTER]
-    bundle = make_bundle(tmp, "names", rows)
+    rows = [fact(f"/facts/n-{slug.lower()}.md", "2026-10-01", [(slug, kind)])
+            for slug, kind, _, _ in NAMES_ROSTER]
+    rows.append(fact("/facts/n-joao-silva.md", "2026-09-01", [("joao-silva", "person")]))
+    bundle = make_bundle(tmp, "names", rows, roster=NAMES_ROSTER)
 
     def header(r):
         return r.stdout.split("\n--\n", 1)[0]
@@ -406,6 +478,51 @@ def names(tmp):
     record("an ambiguous and a missing name together exit 3 and report both",
            r.returncode == 3 and "ambiguous" in r.stdout and "not found" in r.stdout,
            f"exit={r.returncode}\n{r.stdout}")
+    r = run(bundle, ["--entity", "dayane", "--entity", "xyzzy", "--any"])
+    record("one name resolved and one absent: exit 4, no rows, naming only the absent one",
+           r.returncode == 4 and not entries(r.stdout) and 'not found: "xyzzy"' in r.stdout
+           and '"dayane"' not in r.stdout and "search:" not in r.stdout,
+           f"exit={r.returncode}\n{r.stdout}")
+
+    r = run(bundle, ["--entity", "nebxlrz"])
+    record("a name below the similarity cutoff (0.67 to its nearest) is not found, exit 4",
+           r.returncode == 4 and not entries(r.stdout), f"exit={r.returncode}\n{r.stdout}")
+
+    # Every roster slug resolves to its own entity: the candidates list hands
+    # the agent slugs, so a slug that came back ambiguous again would loop.
+    stuck = []
+    for slug, _, _, _ in NAMES_ROSTER:
+        r = run(bundle, ["--entity", slug.lower()])
+        if r.returncode != 0 or not r.stdout.startswith(f"search: entity {slug.lower()} · 1 match\n"):
+            stuck.append((slug, r.returncode, r.stdout.splitlines()[:2]))
+    record("every roster slug, passed as written, resolves to its own entity", not stuck, stuck)
+    r = run(bundle, ["--entity", "ana"])
+    record("a slug that is also another entity's alias resolves, naming the other",
+           r.returncode == 0 and "resolved: ana → ana; also matches: ana-paula" in header(r),
+           f"exit={r.returncode}\n{r.stdout}")
+    r = run(bundle, ["--entity", "Ana"])
+    record("…while the name as written stays ambiguous between the two, exit 3",
+           r.returncode == 3 and "  ana\tperson\tAna Lima" in r.stdout
+           and "  ana-paula\tperson\tAna Paula" in r.stdout, f"exit={r.returncode}\n{r.stdout}")
+    r = run(bundle, ["--entity", "mixed-case"])
+    record("a roster slug written in mixed case resolves as the lowercase slug links use",
+           r.returncode == 0 and r.stdout.startswith("search: entity mixed-case · 1 match\n")
+           and "resolved:" not in header(r), f"exit={r.returncode}\n{r.stdout}")
+    r = run(bundle, ["--entity", "joao-silva"])
+    record("a slug the manifest carries and the roster does not resolves to itself, "
+           "not to a look-alike",
+           r.returncode == 0 and r.stdout.startswith("search: entity joao-silva · 1 match\n")
+           and "joao-silva: in the manifest, not in the roster" in header(r),
+           f"exit={r.returncode}\n{r.stdout}")
+
+    crowd_roster = [(f"silva-{i:02d}", "person", f"Silva {i:02d}", "") for i in range(1, 28)]
+    crowd = make_bundle(tmp, "crowd", [fact("/facts/c.md", "2026-10-01", [("silva-01", "person")])],
+                        roster=crowd_roster, owner=None)
+    r = run(crowd, ["--entity", "silva"])
+    listed = [ln for ln in r.stdout.splitlines() if ln.startswith("  silva-")]
+    record("an ambiguous name lists 25 candidates and counts the rest",
+           r.returncode == 3 and len(listed) == 25 and "  … 2 more" in r.stdout,
+           f"exit={r.returncode}\n{r.stdout}")
 
     rosterless = make_bundle(tmp, "rosterless", rows, roster=None)
     r = run(rosterless, ["--entity", "dayane"])
@@ -414,6 +531,9 @@ def names(tmp):
     r = run(rosterless, ["--entity", "/entities/person/dayane-ferraz.md"])
     record("…while an entity path still needs no roster",
            r.returncode == 0 and "/facts/n-dayane-ferraz.md" in r.stdout, r.stdout)
+    r = run(rosterless, ["--entity", "dayane"])
+    record("…and the exit 4 asks for that same form, the entity's path",
+           "(/entities/<kind>/<slug>.md)" in r.stdout, r.stdout)
 
 
 # --- (f) the checkout guard ----------------------------------------------------
@@ -529,14 +649,75 @@ def replay(tmp):
            and rep["search"]["16"]["recall_at_pages"][0] < s32["recall_at_pages"][0],
            list(rep["search"]))
     record("the acceptance verdicts follow from the numbers",
-           rep["acceptance"] == {"recall_at_least_current": True,
-                                 "oracle_bytes_at_most_half": False}, rep["acceptance"])
+           rep["acceptance"] == {"judged": True,
+                                 "fixed_pages_recall_at_least_current": True,
+                                 "fixed_pages_bytes_at_most_60pct": False}, rep["acceptance"])
+    record("the replay counts the logged entities per line, for the caveats",
+           c["entities_per_line_mean"] == 1 and c["entities_per_line_max"] == 1
+           and c["lines_with_owner"] == 0, c)
 
     r = subprocess.run([sys.executable, str(EVAL_SCRIPT), "--bundle", str(bundle)],
-                       capture_output=True, text=True, encoding="utf-8")
+                       capture_output=True, text=True, encoding="utf-8", timeout=120)
     record("the text report prints the before/after table and the acceptance line",
            r.returncode == 0 and "| current: catalog + inline hubs" in r.stdout
-           and "Acceptance:" in r.stdout and "tokens" in r.stdout, r.stdout + r.stderr)
+           and "Acceptance, at the procedure's ceiling of 4 fixed pages" in r.stdout
+           and "tokens" in r.stdout, r.stdout + r.stderr)
+    record("the oracle stop is labelled a lower bound that decides nothing",
+           "oracle stop (lower bound, reference only" in r.stdout
+           and "is a lower bound, for reference; it decides nothing" in r.stdout, r.stdout)
+    caveats = r.stdout.split("Caveats:", 1)[-1]
+    record("the caveats name today's sizes, the logged entities and the citations "
+           "outside the manifest",
+           "today's catalog and hub sizes" in caveats
+           and "1.00 per line on average, at most 1, and the owner in 0 of 2 lines" in caveats
+           and "2 of 9 logged citations (22%) are no longer in the manifest" in caveats,
+           caveats)
+
+    # The gate reads 4 fixed pages, not the oracle: one citation on page 1 of
+    # a 5-page list stops the oracle at page 1 while the rule reads all 4.
+    gate = replay_bundle(Path(tmp) / "gate")
+    (gate / "state" / "consumption-log.jsonl").write_text(json.dumps(
+        {"ts": "2026-11-05T10:00:00-03:00", "mode": "query", "entities": ["alpha"],
+         "facts_cited": ["/facts/alpha-009.md"]}) + "\n", encoding="utf-8")
+    r = subprocess.run([sys.executable, str(EVAL_SCRIPT), "--bundle", str(gate), "--json"],
+                       capture_output=True, text=True, encoding="utf-8", timeout=120)
+    g = json.loads(r.stdout)
+    g32 = g["search"]["32"]
+    fixed, oracle = g32["pages_bytes_mean"][3], g32["oracle_bytes_mean"]
+    record("the bytes gate is judged on 4 fixed pages, at most 60% of the current path",
+           fixed > 3 * oracle and g["acceptance"]["fixed_pages_bytes_at_most_60pct"]
+           == (fixed <= 0.6 * g["current"]["bytes_mean"]), (fixed, oracle, g["acceptance"]))
+    r = subprocess.run([sys.executable, str(EVAL_SCRIPT), "--bundle", str(gate)],
+                       capture_output=True, text=True, encoding="utf-8", timeout=120)
+    record("…and the report's percentage is the fixed pages', not the oracle's",
+           f"bytes {fixed / g['current']['bytes_mean']:.0%} of current, gate ≤ 60%" in r.stdout,
+           r.stdout)
+
+    # Nothing replayed is nothing to judge, never a PASS.
+    (gate / "state" / "consumption-log.jsonl").unlink()
+    r = subprocess.run([sys.executable, str(EVAL_SCRIPT), "--bundle", str(gate)],
+                       capture_output=True, text=True, encoding="utf-8", timeout=120)
+    record("a missing log is nothing to judge, not a PASS",
+           r.returncode == 0 and "Acceptance: nothing to judge" in r.stdout
+           and "missing or unreadable" in r.stdout and "PASS" not in r.stdout, r.stdout)
+    (gate / "knowledge" / "manifest.jsonl").write_text("", encoding="utf-8")
+    shutil.copy(bundle / "state" / "consumption-log.jsonl",
+                gate / "state" / "consumption-log.jsonl")
+    r = subprocess.run([sys.executable, str(EVAL_SCRIPT), "--bundle", str(gate), "--json"],
+                       capture_output=True, text=True, encoding="utf-8", timeout=120)
+    record("an empty manifest is nothing to judge either: no gate passes",
+           r.returncode == 0 and json.loads(r.stdout)["acceptance"]
+           == {"judged": False, "fixed_pages_recall_at_least_current": None,
+               "fixed_pages_bytes_at_most_60pct": None}, r.stdout[-600:])
+
+    with tempfile.TemporaryDirectory() as prefix:
+        env = dict(os.environ, PYTHONPYCACHEPREFIX=prefix)
+        r = subprocess.run([sys.executable, str(EVAL_SCRIPT), "--bundle", str(bundle)],
+                           capture_output=True, text=True, encoding="utf-8", env=env,
+                           timeout=120)
+        cached = [p.name for p in Path(prefix).rglob("*.pyc") if p.name.startswith("search.")]
+        record("importing search.py writes no bytecode beside it",
+               r.returncode == 0 and not cached, cached)
     record("the report prints aggregates only: no question, path or slug",
            "never printed" not in r.stdout and "/facts/" not in r.stdout
            and "alpha" not in r.stdout and "beta" not in r.stdout, r.stdout)

@@ -806,6 +806,69 @@ def run_env(bundle, args, env_overrides):
     )
 
 
+# The form the three procedures that log a question hand the shell. Copied
+# literally into a double-quoted `--question "…"`, a question with `$500` or
+# backticks was expanded by the shell (`$500` became `00`, a backticked word
+# ran as a command) and a `"` broke the command. A heredoc whose delimiter is
+# quoted expands nothing; reading it from stdin, rather than through
+# `"$(cat <<'Q' … Q)"`, also survives an unbalanced `)`, which bash 3.2 (macOS's
+# /bin/bash and /bin/sh) mis-parses inside a command substitution.
+HEREDOC_OPEN = "--question-file - <<'ELEPHANT_Q'"
+HEREDOC_CLOSE = "\nELEPHANT_Q\n"
+QUESTION_DOCS = (
+    REPO_ROOT / "plugin" / "skills" / "query" / "procedure.md",
+    REPO_ROOT / "plugin" / "skills" / "_shared" / "whole-field-scan.md",
+    REPO_ROOT / "plugin" / "skills" / "_shared" / "core.md",
+)
+
+
+def question_through_heredoc(tmp):
+    """(j) — the question reaches the log as typed, through the documented form."""
+    import os
+    docs = {p.relative_to(REPO_ROOT).as_posix(): p.read_text(encoding="utf-8")
+            for p in QUESTION_DOCS}
+    # A list item indents its code block; the closing line is checked stripped.
+    wrong = [name for name, text in docs.items()
+             if HEREDOC_OPEN not in text
+             or HEREDOC_CLOSE.strip() not in [ln.strip() for ln in text.splitlines()]
+             or '--question "' in text]
+    record("query, the whole-field scan and core.md pass the question through a "
+           "quoted heredoc on stdin, never inside double quotes", not wrong, repr(wrong))
+
+    question = ('Quanto custou o "plano" de $500 e o `whoami` que o $(id) '
+                "citou? 1) primeiro, $HOME e 'aspas' \\n no fim")
+    bundle = make_bundle(tmp, name="heredoc")
+    shell = shutil.which("bash") or shutil.which("sh")
+    if os.name != "nt" and shell:
+        script = ('"$PY" "$RECALL" log --mode query --item /facts/a.md '
+                  f"{HEREDOC_OPEN}\n{question}{HEREDOC_CLOSE}")
+        env = dict(os.environ, PY=sys.executable, RECALL=str(bundle / "scripts" / "recall.py"))
+        result = subprocess.run([shell, "-c", script], cwd=str(bundle), env=env,
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        how = f"run through {Path(shell).name}"
+    else:
+        # No POSIX shell to trust on Windows runners: hand the script the bytes
+        # the heredoc would deliver, so the stdin read is still exercised.
+        result = subprocess.run(
+            [sys.executable, str(bundle / "scripts" / "recall.py"), "log", "--mode", "query",
+             "--item", "/facts/a.md", "--question-file", "-"],
+            cwd=str(bundle), input=question + "\n", capture_output=True, text=True,
+            encoding="utf-8", timeout=60)
+        how = "fed on stdin"
+    lines = log_lines(bundle)
+    row = json.loads(lines[-1]) if lines else {}
+    record(f"a question with \", $, backticks and an unbalanced ) lands in the log "
+           f"exactly as typed ({how})",
+           result.returncode == 0 and row.get("question") == question,
+           f"exit={result.returncode}\n{result.stderr}\n{row.get('question')!r}")
+    result = run(bundle, ["log", "--mode", "query", "--question-file",
+                          str(Path(tmp) / "no-such-question.txt")])
+    record("an unreadable --question-file is dropped, silently, exit 0",
+           result.returncode == 0 and silent(result)
+           and "question" not in json.loads(log_lines(bundle)[-1]),
+           f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+
+
 def read_cost_fields(tmp):
     """(j) — the optional read-cost keys, the caller guess, and their compatibility."""
     bundle = make_bundle(tmp, name="costed")
@@ -906,6 +969,8 @@ def read_cost_fields(tmp):
     record("the question never reaches recall.json, show or score (E15)",
            "angelo?" not in raw and "o que sabemos" not in shown
            and "question" not in raw, raw[:200])
+
+    question_through_heredoc(tmp)
 
     mod = import_copy(bundle, "recall_cost_under_test")
     record("guess_caller is pure over the env it is handed",

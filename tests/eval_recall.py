@@ -17,19 +17,29 @@ facts that line actually cited:
   "+ archives" adds every row of the entity and the size of its archive shard,
   which is the most that following the entities could ever see;
 - **the search path**: `search.py --entity … --any --until <date>`, one page
-  of 32 KB at a time, at most 4 pages, plus a curve over 16, 32, 48 and 64 KB
-  pages. The oracle stop reads pages until every cited fact has been shown,
-  capped at 4 (or the last page), which is the most the procedure lets an agent
-  read down one list.
+  of 32 KB at a time, 1 to 4 fixed pages (or fewer, when the list ends first),
+  plus a curve over 16, 32, 48 and 64 KB pages.
+
+**Acceptance is judged on the rule the agent runs.** `query/procedure.md`
+caps a query at 4 search pages, and an agent cannot know which facts its
+answer will cite before it reads them. So both gates read 4 fixed pages: their
+recall must reach the current path's, and their mean bytes must stay at or
+under 60% of the current path's. The oracle stop (read pages until every cited
+fact has been shown, capped at 4) uses the answer key, so it is reported as a
+lower bound on bytes, for reference, and decides nothing. With no line
+replayed (an empty manifest, a missing or unreadable log) the report says
+"nothing to judge" rather than pass.
 
 Recall is pooled over citations: the cited facts a path showed, over the cited
 facts still in the manifest. A citation no longer in the manifest (superseded,
 deleted, or not a fact or loop at all) leaves the denominator and is counted on
 its own line (E20). Only `query` lines count (E21): `briefing` and `start-day`
-cite from a time window, not from entities.
+cite from a time window, not from entities. What the numbers do not measure is
+listed under the report's Caveats.
 
 **Read-only, and aggregate-only.** This opens the bundle's files for reading
-and writes nothing anywhere. The report prints counts and fractions, never a
+and writes nothing anywhere, not even a `__pycache__/` beside the imported
+`search.py`. The report prints counts and fractions, never a
 question, a path or a slug, so it can be pasted into a pull request. It imports
 `plugin/assets/scripts/search.py` from this checkout, so the code measured is
 the code under review. Pure stdlib, Python 3.10+.
@@ -51,11 +61,18 @@ SEARCH_SCRIPT = REPO_ROOT / "plugin" / "assets" / "scripts" / "search.py"
 PAGE_KB = 32
 MAX_PAGES = 4
 CURVE_KB = (16, 32, 48, 64)
+# The bytes gate: MAX_PAGES fixed pages read at most this share of the current
+# path's mean. The owner set it at 0.60 once the 4-page ceiling, measured as the
+# agent runs it rather than with an oracle stop, came out at about half.
+BYTES_GATE = 0.60
 HUB_MAX_FACTS_DEFAULT = 50
 ARCHIVE_SUFFIX = ".facts-archive.md"
 
 
 def load_search():
+    # Importing would leave a `__pycache__/` next to search.py in the checkout;
+    # "writes nothing anywhere" has to hold there too.
+    sys.dont_write_bytecode = True
     spec = importlib.util.spec_from_file_location("elephant_search", SEARCH_SCRIPT)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -117,11 +134,13 @@ def hub_slugs(row, search):
 
 
 def read_log(bundle):
+    """`(rows, unparseable, readable)`. A missing or unreadable log is not an
+    error here, but it must not read as a log that passed: `readable` says so."""
     path = bundle / "state" / "consumption-log.jsonl"
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return [], 0
+        return [], 0, False
     rows, bad = [], 0
     for line in text.splitlines():
         if not line.strip():
@@ -135,7 +154,7 @@ def read_log(bundle):
             rows.append(row)
         else:
             bad += 1
-    return rows, bad
+    return rows, bad, True
 
 
 def mean(values):
@@ -157,12 +176,14 @@ def replay(bundle, search=None):
     kinds = {e["slug"]: e["kind"] for e in roster}
     catalog_bytes = file_size(knowledge / "entities" / "index.md")
     hub_max = hub_max_facts(bundle)
-    log, log_bad = read_log(bundle)
+    log, log_bad, log_readable = read_log(bundle)
     # The same owner `search.py`'s main() hands its Result: it trims the entity
     # facet, so it changes the footer, the page room and every byte measured.
     owner = search.owner_slug(bundle)
+    ents_per_line = []
 
     counts = {
+        "log_readable": log_readable,
         "log_lines": len(log),
         "log_unparseable": log_bad,
         "manifest_rows": len(rows),
@@ -173,6 +194,7 @@ def replay(bundle, search=None):
         "citations_not_in_manifest": 0,
         "citations_dated_after_line": 0,
         "lines_replayed": 0,
+        "lines_with_owner": 0,
         "citations": 0,
     }
     seen = {
@@ -215,6 +237,9 @@ def replay(bundle, search=None):
             continue
         counts["lines_replayed"] += 1
         counts["citations"] += len(cited)
+        ents_per_line.append(len(ents))
+        if owner and owner in ents:
+            counts["lines_with_owner"] += 1
         counts["citations_dated_after_line"] += sum(
             1 for p in cited if search.occurred(by_path[p]) > day)
         wanted = set(cited)
@@ -257,6 +282,8 @@ def replay(bundle, search=None):
             bytes_["oracle"][kb].append(spent)
 
     n = counts["citations"] or 1
+    counts["entities_per_line_mean"] = mean(ents_per_line)
+    counts["entities_per_line_max"] = max(ents_per_line, default=0)
     report = {
         "counts": counts,
         "hub_max_facts": hub_max,
@@ -286,12 +313,22 @@ def replay(bundle, search=None):
             },
             "pages_bytes_mean": cumulative,
         }
+    # Both gates are measured on the rule the agent can execute: the
+    # procedure's ceiling of MAX_PAGES fixed pages. The oracle stop needs the
+    # answer's citations before reading, which no agent has, so it is reported
+    # as a lower bound and decides nothing. With nothing replayed there is
+    # nothing to judge, and the gates say so rather than pass.
     main = report["search"][PAGE_KB]
+    judged = counts["lines_replayed"] > 0
     report["acceptance"] = {
-        "recall_at_least_current": main["recall_at_pages"][MAX_PAGES - 1]
-        >= report["current"]["recall"],
-        "oracle_bytes_at_most_half": main["oracle_bytes_mean"]
-        <= report["current"]["bytes_mean"] / 2,
+        "judged": judged,
+        "fixed_pages_recall_at_least_current": (
+            main["recall_at_pages"][MAX_PAGES - 1] >= report["current"]["recall"]
+            if judged else None),
+        "fixed_pages_bytes_at_most_60pct": (
+            main["pages_bytes_mean"][MAX_PAGES - 1]
+            <= report["current"]["bytes_mean"] * BYTES_GATE
+            if judged else None),
     }
     return report
 
@@ -331,16 +368,19 @@ def render(report):
     out.append(f"| current + archives | {kb(arc['bytes_mean'])} / {kb(arc['bytes_median'])} "
                f"| {tokens(arc['bytes_mean'])} | {arc['recall']:.2f} |")
     for k in range(MAX_PAGES):
-        out.append(f"| search, `--any`, {k + 1} page(s) of {PAGE_KB} KB "
+        gated = " (the procedure's ceiling: gated)" if k == MAX_PAGES - 1 else ""
+        out.append(f"| search, `--any`, {k + 1} fixed page(s) of {PAGE_KB} KB{gated} "
                    f"| {kb(main['pages_bytes_mean'][k])} | {tokens(main['pages_bytes_mean'][k])} "
                    f"| {main['recall_at_pages'][k]:.2f} |")
-    out.append(f"| search, oracle stop (≤{MAX_PAGES} pages) "
+    out.append(f"| search, oracle stop (lower bound, reference only; ≤{MAX_PAGES} pages) "
                f"| {kb(main['oracle_bytes_mean'])} / {kb(main['oracle_bytes_median'])} "
                f"| {tokens(main['oracle_bytes_mean'])} | {main['recall_at_pages'][-1]:.2f} |")
     out.append("")
     stops = main["oracle_stop_at_page"]
     out.append("Oracle stop, lines per page: "
-               + ", ".join(f"page {p}: {n}" for p, n in stops.items()) + ".")
+               + ", ".join(f"page {p}: {n}" for p, n in stops.items()) + ". The oracle "
+               "stops once every fact the answer cited has been shown, which an agent "
+               "cannot know before it reads: a lower bound on bytes, not a rule anyone runs.")
     out.append("")
     out.append("Budget curve, recall at 1 to 4 pages and oracle-stop bytes (mean):")
     out.append("")
@@ -352,20 +392,46 @@ def render(report):
                    f"| {kb(row['oracle_bytes_mean'])} |")
     out.append("")
     acc = report["acceptance"]
-    ratio = main["oracle_bytes_mean"] / cur["bytes_mean"] if cur["bytes_mean"] else 0
-    out.append(f"Acceptance: recall at {MAX_PAGES} pages "
-               f"{main['recall_at_pages'][-1]:.2f} vs current {cur['recall']:.2f} — "
-               f"{'PASS' if acc['recall_at_least_current'] else 'FAIL'}; oracle bytes "
-               f"{ratio:.0%} of current — "
-               f"{'PASS' if acc['oracle_bytes_at_most_half'] else 'FAIL'}.")
+    if not acc["judged"]:
+        why = ("the consumption log is missing or unreadable" if not c["log_readable"]
+               else "no query line had both an entity and a citation still in the manifest")
+        out.append(f"Acceptance: nothing to judge — 0 query lines replayed ({why}).")
+    else:
+        fixed = main["pages_bytes_mean"][MAX_PAGES - 1]
+        ratio = fixed / cur["bytes_mean"] if cur["bytes_mean"] else 0
+        oracle = main["oracle_bytes_mean"] / cur["bytes_mean"] if cur["bytes_mean"] else 0
+        out.append(f"Acceptance, at the procedure's ceiling of {MAX_PAGES} fixed pages "
+                   f"(the rule the agent runs): recall {main['recall_at_pages'][MAX_PAGES - 1]:.2f} "
+                   f"vs current {cur['recall']:.2f} — "
+                   f"{'PASS' if acc['fixed_pages_recall_at_least_current'] else 'FAIL'}; "
+                   f"bytes {ratio:.0%} of current, gate ≤ {BYTES_GATE:.0%} — "
+                   f"{'PASS' if acc['fixed_pages_bytes_at_most_60pct'] else 'FAIL'}. "
+                   f"The oracle stop ({oracle:.0%} of current) is a lower bound, for "
+                   f"reference; it decides nothing.")
     out.append("")
-    out.append("Caveats: the current path's hubs are rebuilt from today's manifest as of "
-               "each line's date, so they approximate the hubs of that day. The replay "
-               "cannot refine by `--text` or an entity pair (it has no question text), "
-               "which understates the search; today's manifest replayed against past "
-               "dates crowds the past with rows ingested later, which understates it "
-               "too; and the cited facts were chosen from what the current path showed, "
-               "which favours that path.")
+    logged = c["citations"] + c["citations_not_in_manifest"]
+    share = c["citations_not_in_manifest"] / logged if logged else 0
+    out.append("Caveats:")
+    out.append("")
+    out.append("- The current path is costed at today's catalog and hub sizes, not at "
+               "their size on each line's date. Both grow with the bundle, so those bytes "
+               "overstate what the path read then, and the search's share of them "
+               "flatters the search.")
+    out.append("- The current path's hubs are rebuilt from today's manifest as of each "
+               "line's date, so they approximate the hubs of that day.")
+    out.append(f"- The query's entities are the `--entity` values the answer logged, not "
+               f"the names in the question (the procedure's first look uses those): "
+               f"{c['entities_per_line_mean']:.2f} per line on average, at most "
+               f"{c['entities_per_line_max']}, and the owner in {c['lines_with_owner']} "
+               f"of {c['lines_replayed']} lines.")
+    out.append(f"- {c['citations_not_in_manifest']} of {logged} logged citations "
+               f"({share:.0%}) are no longer in the manifest and sit outside every "
+               f"recall's denominator.")
+    out.append("- The replay cannot refine by `--text` or an entity pair (it has no "
+               "question text), which understates the search; today's manifest replayed "
+               "against past dates crowds the past with rows ingested later, which "
+               "understates it too; and the cited facts were chosen from what the "
+               "current path showed, which favours that path.")
     return "\n".join(out) + "\n"
 
 

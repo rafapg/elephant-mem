@@ -268,9 +268,19 @@ python3 scripts/recall.py log --mode query \
 - `--entity` — repeat once per entity the answer was about. A slug or an entity
   file path, either way.
 - **What the read cost, optional and recorded only.** `query` and the
-  whole-field scan also pass `--question "<the user's question, verbatim>"`
-  (cut to 500 characters, kept in the git-ignored raw log only, never in
-  `state/recall.json` nor printed by `show`), `--pages N` (search pages read),
+  whole-field scan also pass the user's question, verbatim, on stdin through
+  a quoted heredoc, the last thing on the command line:
+
+  ```bash
+  … --question-file - <<'ELEPHANT_Q'
+  <the user's question, verbatim>
+  ELEPHANT_Q
+  ```
+
+  Never as a double-quoted argument, where the shell expands `$` and
+  backticks and a `"` breaks the command. The question is cut to 500
+  characters, kept in the git-ignored raw log only, never in
+  `state/recall.json` nor printed by `show`. Then `--pages N` (search pages read),
   `--bytes N` (the sum of every `search.py` `bytes:` line, the fact bodies
   opened and any fallback output), `--level <name>` once per retrieval level
   used (`names`, `roster`, `catalog-rg`, `search`, `body`, `archive`,

@@ -34,11 +34,14 @@ or `open` (loops); both by default. `--as-of` is "today" for the ordering.
 **Names resolve here, and are never guessed between.** `--entity` takes a slug,
 an entity path, or a name as written, matched against `entities/roster.tsv`
 (slug, title, aliases) case- and accent-folded, in tiers: exact, then a whole
-word of a name, then `difflib` similarity. The first tier with any match
-decides. Exactly one entity there resolves (a similarity match says so in the
-header; an exact match that hides other whole-word matches names them). More
-than one prints the candidates and no rows, exit 3. None at all, or no roster,
-exit 4. Usage errors keep argparse's 2.
+word of a name, then `difflib` similarity. A roster slug passed as written
+always resolves to its own entity, so the slug a candidates list prints works
+on the next call. The first tier with any match decides. Exactly one entity
+there resolves (a similarity match says so in the header; an exact match that
+hides other matches names them). More than one prints the candidates and no
+rows, exit 3. None at all, or no roster, exit 4, and an entity path
+(`/entities/<kind>/<slug>.md`) is the form that resolves without the roster.
+Rows print only when every name resolved. Usage errors keep argparse's 2.
 
 **Read-only, and stdout is the product.** Nothing is written, ever. The last
 line is `bytes: <n>`, the exact size of what was printed, which the caller adds
@@ -97,6 +100,8 @@ MONTHS = 12
 SIMILARITY_CUTOFF = 0.72
 # How far below the best similarity a match still counts as the same tier.
 SIMILARITY_MARGIN = 0.15
+# Candidates printed for one ambiguous name; the rest are counted.
+CANDIDATES_SHOWN = 25
 
 EXIT_AMBIGUOUS = 3
 EXIT_NOT_FOUND = 4
@@ -199,8 +204,8 @@ def owner_slug(bundle):
 class Resolution:
     """What one `--entity` value became.
 
-    `slug` is set when it resolved. `how` is `exact`, `path`, `word` or
-    `similarity`. `others` are the whole-word matches an exact match hid.
+    `slug` is set when it resolved. `how` is `exact`, `path`, `manifest`,
+    `word` or `similarity`. `others` are the whole-word matches an exact match hid.
     `candidates` is set, with `slug` None, when the deciding tier held several.
     """
 
@@ -226,6 +231,8 @@ class Resolution:
             return f"{self.raw} → {self.slug}; also matches: {shown}{more}"
         if self.how == "word":
             return f"{self.raw} → {self.slug}"
+        if self.how == "manifest":
+            return f"{self.raw}: in the manifest, not in the roster"
         return None
 
 
@@ -234,11 +241,18 @@ def _names(entry):
     return [entry["slug"].replace("-", " "), entry["title"]] + entry["aliases"]
 
 
-def resolve(raw, roster):
+def resolve(raw, roster, manifest_slugs=()):
     """Resolve one `--entity` value. Never guesses between candidates.
 
     An entity path (`/entities/person/x.md`) is explicit and resolves to its
-    slug without the roster. Anything else needs the roster: exact (the folded
+    slug without the roster. So is a roster slug typed as one: the value equal
+    to a row's `slug` resolves to that row even when another entity's title or
+    alias spells the same words, so the slug the candidates list prints always
+    works on the next call (the others are named in the header, not guessed
+    away). A slug the manifest's rows carry but the roster does not (an
+    inactive entity, a dangling link) resolves to itself when no roster entity
+    matches it exactly, rather than to a look-alike by whole word or
+    similarity. Anything else needs the roster: exact (the folded
     value equals a folded slug, title or alias), then a whole word (the value's
     words appear, contiguous, among a name's words), then difflib similarity
     against each name and each word of it. The first tier with a match decides.
@@ -246,7 +260,11 @@ def resolve(raw, roster):
     value = str(raw or "").strip()
     if value.endswith(".md") and "/" in value.replace("\\", "/"):
         return Resolution(raw, slug=slug_of(value), how="path")
+    dangling = bool(value) and value in manifest_slugs and not any(
+        e["slug"] == value for e in roster or ())
     if roster is None:
+        if dangling:
+            return Resolution(raw, slug=value, how="manifest")
         return Resolution(raw, tier="no-roster")
     target = " ".join(fold(value).split())
     target_words = words(value)
@@ -254,9 +272,11 @@ def resolve(raw, roster):
     if not target_words:
         return Resolution(raw, tier="none")
 
-    exact, word_hits, scored = [], [], []
+    exact, word_hits, scored, as_slug = [], [], [], None
     for entry in roster:
         names = _names(entry)
+        if entry["slug"] == value:
+            as_slug = entry
         if entry["slug"] == target_slugish or any(" ".join(fold(n).split()) == target
                                                   for n in names):
             exact.append(entry)
@@ -281,10 +301,15 @@ def resolve(raw, roster):
         if best >= SIMILARITY_CUTOFF:
             scored.append((best, entry))
 
+    if as_slug is not None:
+        others = [e for e in exact if e is not as_slug] + word_hits
+        return Resolution(raw, slug=as_slug["slug"], how="exact", others=others)
     if len(exact) == 1:
         return Resolution(raw, slug=exact[0]["slug"], how="exact", others=word_hits)
     if len(exact) > 1:
         return Resolution(raw, candidates=exact, tier="exact")
+    if dangling:
+        return Resolution(raw, slug=value, how="manifest")
     if len(word_hits) == 1:
         return Resolution(raw, slug=word_hits[0]["slug"], how="word")
     if len(word_hits) > 1:
@@ -465,8 +490,10 @@ def facets(matched, query, owner=None):
     recent = month_buckets(query.as_of)
     months = Counter()
     for r in matched:
+        # An undated row is not "older": no --since/--until reaches it, so a
+        # bucket that sent the agent after it by date would lead nowhere.
         d = effective(r, query.as_of)
-        months[d[:7] if d[:7] in recent else "older"] += 1
+        months["undated" if not d else d[:7] if d[:7] in recent else "older"] += 1
 
     def top(counter, n):
         return sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:n]
@@ -476,8 +503,9 @@ def facets(matched, query, owner=None):
         lines.append("entities: " + " · ".join(f"{k} {v}" for k, v in top(ents, TOP_ENTITIES)))
     if months:
         shown = [f"{k} {months[k]}" for k in recent if months.get(k)]
-        if months.get("older"):
-            shown.append(f"older {months['older']}")
+        for bucket in ("older", "undated"):
+            if months.get(bucket):
+                shown.append(f"{bucket} {months[bucket]}")
         lines.append("months: " + " · ".join(shown))
     if tags:
         lines.append("tags: " + " · ".join(f"{k} {v}" for k, v in top(tags, TOP_TAGS)))
@@ -560,8 +588,12 @@ class Result:
                 # newest date behind is the one claim true in both modes:
                 # nothing newer than it was left out.
                 when = max((effective(r, q.as_of) for r in self.ordered[end:]),
-                           default="") or "undated"
-                line += f" · cut at {when}: {remain} more behind it, none newer than {when}"
+                           default="")
+                if when:
+                    line += (f" · cut at {when}: {remain} more behind it, "
+                             f"none newer than {when}")
+                else:
+                    line += f" · cut at undated: {remain} more behind it, all undated"
             else:
                 line += " · nothing behind the cut"
             lines.append(line)
@@ -679,18 +711,21 @@ def resolution_report(failed):
         if res.candidates:
             out.append(f'ambiguous: "{res.raw}" matches {len(res.candidates)} entities '
                        f"by {res.tier}; pass the one the question means, as its slug:")
-            for e in res.candidates[:25]:
+            for e in res.candidates[:CANDIDATES_SHOWN]:
                 out.append(f"  {e['slug']}\t{e['kind']}\t{e['title']}")
-            if len(res.candidates) > 25:
-                out.append(f"  … {len(res.candidates) - 25} more")
+            if len(res.candidates) > CANDIDATES_SHOWN:
+                out.append(f"  … {len(res.candidates) - CANDIDATES_SHOWN} more")
         elif res.tier == "no-roster":
             out.append(f'not found: "{res.raw}": knowledge/entities/roster.tsv is absent, '
-                       "so no name can resolve here. Read knowledge/entities/index.md "
-                       "for the entity, then pass its slug's path (/entities/<kind>/<slug>.md).")
+                       "so no name can resolve here. Look the entity up in "
+                       "knowledge/entities/index.md (rg -i, matching lines only), "
+                       "then pass its path (/entities/<kind>/<slug>.md).")
         else:
             out.append(f'not found: "{res.raw}" matches no entity in '
                        "knowledge/entities/roster.tsv (exact, whole word or similar). "
-                       "Read the roster whole, once, to find it.")
+                       "Read the roster whole, once, to find it, then pass its path "
+                       "(/entities/<kind>/<slug>.md). A name the roster does not carry "
+                       "has no entity: drop it, and look for its words with --text.")
     return "\n".join(out) + "\n"
 
 
@@ -704,9 +739,10 @@ def main(argv, bundle=BUNDLE):
               "`python3 scripts/build-index.py` to rebuild it, then search again.")
         return EXIT_NO_MANIFEST
 
-    roster = load_roster(knowledge) if any(
-        not (e.strip().endswith(".md") and "/" in e) for e in args.entity) else None
-    resolutions = [resolve(e, roster) for e in args.entity]
+    by_name = [e for e in args.entity if not (e.strip().endswith(".md") and "/" in e)]
+    roster = load_roster(knowledge) if by_name else None
+    known = {s for r in rows for s in row_slugs(r)} if by_name else set()
+    resolutions = [resolve(e, roster, known) for e in args.entity]
     failed = [r for r in resolutions if not r.ok]
     if failed:
         sys.stdout.write(with_bytes(resolution_report(failed)))

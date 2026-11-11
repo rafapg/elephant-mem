@@ -47,6 +47,9 @@ What is checked, in the order the templates are used:
      something **substantive** about the output. Not `returncode == 0`: a script
      can exit 0 while saying nothing, and silence is precisely what all six of
      those defects looked like.
+  5. The line `query/procedure.md` makes the answer carry when `search.py`
+     cut (how many facts were left unread, up to which date, how to ask for
+     more), word for word, since the user learns of the cut from nothing else.
 
 Each driver gets its **own freshly mounted bundle**. Three of the readers write
 (`build-index.py` emits the derived surfaces, `decay-loops.py --apply` rewrites
@@ -439,6 +442,48 @@ def drive_search(root):
         named.returncode == 0 and "search: entity t " in named.stdout,
         f"exit={named.returncode}\n{named.stdout}\n{named.stderr}",
     )
+    # `--status` takes fixed choices, `active` and `open`. They are only right
+    # if they are the statuses the templates ship, carried into the manifest:
+    # each must select its own template and nothing else.
+    for status, want, other in (("open", "/tracking/loops/t.md", "/facts/t.md"),
+                                ("active", "/facts/t.md", "/tracking/loops/t.md")):
+        got = run_script(bundle, "search.py", ["--status", status])
+        record(
+            f"…and `--status {status}` returns exactly the template "
+            f"{'loop' if status == 'open' else 'fact'}",
+            got.returncode == 0 and "· 1 match\n" in got.stdout
+            and want in got.stdout and other not in got.stdout,
+            f"exit={got.returncode}\n{got.stdout}\n{got.stderr}",
+        )
+
+
+QUERY_PROCEDURE = REPO_ROOT / "plugin" / "skills" / "query" / "procedure.md"
+# The one line the answer carries when the search cut. Pinned word for word: it
+# is the only way the user learns the answer did not cover every match, and
+# with a 4-page ceiling that cuts most multi-entity questions, losing it would
+# hand the user a partial answer that reads as a complete one.
+CUT_LINE = ("> N more facts on this, dated <date> or earlier, were not read; "
+            "ask about the period before <date> to see them.")
+
+
+def test_query_cut_line():
+    text = QUERY_PROCEDURE.read_text(encoding="utf-8")
+    flat = " ".join(text.split())
+    record(
+        "query/procedure.md makes the answer say what the search cut left unread, "
+        "in one pinned line: how many facts, up to which date, how to ask for more",
+        CUT_LINE in text
+        and "When the last page you read still had matches behind it" in flat
+        and "the answer ends with one short line" in flat,
+        "the cut line or its trigger is missing from query/procedure.md",
+    )
+    record(
+        "…and the 4-page ceiling sends the agent to that line, not to a fallback "
+        "whose preconditions cannot hold there",
+        "answer from what you have, with the cut line below" in flat
+        and "or fall back (level 5)" not in flat,
+        "the ceiling paragraph of query/procedure.md",
+    )
 
 
 @drives("briefing.py")
@@ -686,6 +731,7 @@ def main():
         test_open_loop_declares_owed_to()
         test_documented_vocabularies()
         test_reader_coverage()
+        test_query_cut_line()
     except Exception:  # noqa: BLE001 - report as a failed check, not a traceback
         record("test_templates raised an unexpected exception", False,
                traceback.format_exc())

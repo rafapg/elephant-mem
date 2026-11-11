@@ -62,7 +62,10 @@ so recall feeds its expiry; a fact is a claim about the past that silence
 cannot falsify, so recall may only ever feed its ranking.
 
 **What a read cost rides on the same line.** `log` also takes the question as
-asked (`--question`, cut to 500 characters), the search pages read (`--pages`),
+asked (`--question`, cut to 500 characters; or `--question-file -`, read from
+stdin, which is how the procedures pass it: a quoted heredoc keeps `$`,
+backticks and quotes literal, where a double-quoted argument would expand
+them), the search pages read (`--pages`),
 the bytes read (`--bytes`), each retrieval level used (`--level`, repeatable)
 and the fallback taken (`--fallback`, `none` by default once any of these is
 given). It guesses who ran the read, `caller` (`human`, `routine` or
@@ -75,7 +78,8 @@ stays in the git-ignored raw log; it never reaches `state/recall.json`, and
 
 Subcommands:
   log --mode <mode> [--item <bundle path>]... [--entity <slug>]...
-      [--question <text>] [--pages N] [--bytes N] [--level <name>]...
+      [--question <text> | --question-file <path|->] [--pages N] [--bytes N]
+      [--level <name>]...
       [--fallback <name>]
                             append one line to the consumption log. Silent,
                             always exits 0. `--item`, `--entity` and `--level`
@@ -158,7 +162,7 @@ QUESTION_MAX = 500
 # The read-cost keys `log` adds once any of them is given. `fallback` defaults
 # to `none` there, so a line that carries the instrumentation also says that no
 # fallback was taken, rather than leaving it to be inferred from an absence.
-COST_FLAGS = ("question", "pages", "bytes", "level", "fallback")
+COST_FLAGS = ("question", "question_file", "pages", "bytes", "level", "fallback")
 
 # The pyramid's three steps, in days of age. Inside DAY_SPAN a citation keeps
 # its own date; past it the day folds into its ISO week, past WEEK_SPAN the week
@@ -879,12 +883,33 @@ def whole_number(raw):
     return n if n >= 0 else None
 
 
+def read_question_file(source):
+    """The text of `--question-file`: stdin for `-`, else that file. Never raises.
+
+    stdin is the form the procedures use, fed by a heredoc whose delimiter is
+    quoted (`<<'ELEPHANT_Q'`), so the shell expands nothing in the question.
+    A terminal on stdin means nothing was piped, and is not waited on.
+    """
+    try:
+        if source == "-":
+            if sys.stdin is None or sys.stdin.isatty():
+                return ""
+            return sys.stdin.read(QUESTION_MAX * 8)
+        with open(source, encoding="utf-8", errors="replace") as fh:
+            return fh.read(QUESTION_MAX * 8)
+    except (OSError, ValueError):
+        return ""
+
+
 def cost_fields(args):
     """The optional read-cost keys, or {} when the caller passed none of them."""
     if all(getattr(args, flag, None) in (None, []) for flag in COST_FLAGS):
         return {}
     out = {}
-    question = " ".join(str(args.question or "").split())
+    raw = args.question
+    if raw is None and getattr(args, "question_file", None):
+        raw = read_question_file(args.question_file)
+    question = " ".join(str(raw or "").split())
     if question:
         out["question"] = question[:QUESTION_MAX]
     for key in ("pages", "bytes"):
@@ -978,6 +1003,12 @@ def build_parser():
         metavar="TEXT",
         help=f"the user's question as asked; cut to {QUESTION_MAX} characters, "
         "kept in the git-ignored raw log only",
+    )
+    sp.add_argument(
+        "--question-file",
+        metavar="PATH",
+        help="read the question from PATH, or from stdin with `-` (a quoted "
+        "heredoc keeps $, backticks and quotes literal); --question wins",
     )
     sp.add_argument("--pages", metavar="N", help="search pages read for this answer")
     sp.add_argument("--bytes", metavar="N", help="bytes read for this answer, all levels")

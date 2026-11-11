@@ -52,13 +52,21 @@ body you open, and the size of any fallback output.
    - **`3`** — at least one name is ambiguous: each such name's deciding tier
      is listed with slug, kind and title, and no rows were printed, so no page
      was spent. Settle each from the question's context and run the same
-     single call again with the slugs; when the context does not settle it,
-     ask the user rather than pick.
+     single call again with the chosen slugs (a slug passed as listed always
+     resolves to its own entity); when the context does not settle it, ask the
+     user rather than pick.
    - **`4`** — a name was not found, or there is no roster; no page was spent.
-     Read `knowledge/entities/roster.tsv` whole, once, and resolve there
-     (`../_shared/entity-resolution.md`); when the roster is absent,
-     `knowledge/entities/index.md` instead, as that file prescribes. Log
-     `roster` as a level, then run the single call again with the slugs.
+     Read `knowledge/entities/roster.tsv` whole, once, and match the name
+     there by title and aliases, in context (`../_shared/entity-resolution.md`'s
+     matching rules; this mode is read-only, so never run `build-index.py`
+     here); when the roster is absent, `rg -i '<name>'
+     knowledge/entities/index.md` instead. Log `roster` as a level, then run
+     the single call again with each entity's path
+     (`/entities/<kind>/<slug>.md`), the form that resolves with or without a
+     roster. A name that still has no entity after that read has none: drop it
+     from the `--entity` flags, run the single call with the names that did
+     resolve, and look for the missing one by its words (`--text "<name>"`,
+     level 2). Say in the answer that it has no entity of its own.
 
 2. **Themes with no entity.** When the question names a topic rather than an
    entity, find entities by description with `rg -i '<term>'
@@ -79,15 +87,27 @@ body you open, and the size of any fallback output.
      the past, refine by date rather than paging toward it**: the footer's
      `cut at <date>: N more behind it, none newer than <date>` says how many
      matches the page did not reach and that every one of them is dated on or
-     before `<date>` (the newest row left behind, in either ordering);
+     before `<date>` (the newest row left behind, in either ordering). The
+     facet's `undated N` rows carry no date, so no `--since`/`--until` reaches
+     them: refine those by `--text` or a tag;
    - words the answer must contain: `--text "<words>"`.
 
    The next page of the same list is `--page N`, the exact suffix the footer's
    `next:` line prints. **At most 4 search pages per query, across every
    `search.py` call**, level 1's included (each call that prints rows prints
    one page; a call that exits 3 or 4 prints none). After the fourth, do not
-   read a fifth: answer from what you have, or fall back (level 5) and record
-   it.
+   read a fifth: answer from what you have, with the cut line below.
+
+   **Say what the cut left unread.** When the last page you read still had
+   matches behind it (its footer says `cut at <date>: N more behind it`), the
+   answer ends with one short line, in the bundle's `conversation_language`,
+   in this shape:
+
+   > N more facts on this, dated <date> or earlier, were not read; ask about the period before <date> to see them.
+
+   N and `<date>` come from that footer, as printed. A last page that says
+   `nothing behind the cut` needs no line, and a cut at `undated` says the N
+   facts left carry no date.
 
 4. **Bodies.** Open the fact or loop files the answer will cite or must check,
    and only those: **at most 20**. The `desc` lines already printed are the
@@ -113,9 +133,17 @@ body you open, and the size of any fallback output.
 
    ```bash
    python3 scripts/recall.py log --mode query --item <path>… --entity <slug>… \
-     --question "<the user's question, verbatim>" --pages <search pages read> \
-     --bytes <the running total> --level <level>… --fallback <name>
+     --pages <search pages read> --bytes <the running total> \
+     --level <level>… --fallback <name> --question-file - <<'ELEPHANT_Q'
+   <the user's question, verbatim>
+   ELEPHANT_Q
    ```
+
+   The question goes in on stdin, between the two `ELEPHANT_Q` lines (the
+   closing one alone on its line, unindented), never as a double-quoted
+   argument: inside double quotes the shell expands `$` and backticks and a
+   `"` breaks the command, while the quoted heredoc keeps every character as
+   the user typed it.
 
    `--level` once per level you used: `names`, `roster`, `catalog-rg`,
    `search`, `body`, `archive`, `facts-rg`, `whole-field`. `--fallback` is

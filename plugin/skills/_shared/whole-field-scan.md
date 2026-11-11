@@ -47,9 +47,14 @@ makes the call, in the context that knows what was cited:
 
 ```bash
 python3 scripts/recall.py log --mode whole-field --item <path>… --entity <slug>… \
-  --question "<the question, verbatim>" --pages <search pages read> \
-  --bytes <bytes read> --level <level>…
+  --pages <search pages read> --bytes <bytes read> --level <level>… \
+  --question-file - <<'ELEPHANT_Q'
+<the question, verbatim>
+ELEPHANT_Q
 ```
+
+The question rides on stdin through that quoted heredoc, never inside double
+quotes, where the shell would expand its `$` and backticks.
 
 See `core.md`'s Consumption log section. One `--item` per path the scan
 deep-read and actually used, one `--entity` per entity the answer was about;
