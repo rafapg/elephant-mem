@@ -61,14 +61,34 @@ What differs is the consumer: a loop is a claim about the future that can die,
 so recall feeds its expiry; a fact is a claim about the past that silence
 cannot falsify, so recall may only ever feed its ranking.
 
+**What a read cost rides on the same line.** `log` also takes the question as
+asked (`--question`, cut to 500 characters; or `--question-file -`, read from
+stdin, which is how the procedures pass it: a quoted heredoc keeps `$`,
+backticks and quotes literal, where a double-quoted argument would expand
+them), the search pages read (`--pages`),
+the bytes read (`--bytes`), each retrieval level used (`--level`, repeatable)
+and the fallback taken (`--fallback`, `none` by default once any of these is
+given). It guesses who ran the read, `caller` (`human`, `routine` or
+`unknown`), and records the signal it went by in `caller_basis`, verbatim, so a
+wrong guess can be audited and corrected from the log itself. Every one of
+these keys is optional and additive: `roll` reads `ts`, `facts_cited` and
+`entities` and nothing else, so old and new lines fold alike. The question
+stays in the git-ignored raw log; it never reaches `state/recall.json`, and
+`show` never prints it.
+
 Subcommands:
   log --mode <mode> [--item <bundle path>]... [--entity <slug>]...
+      [--question <text> | --question-file <path|->] [--pages N] [--bytes N]
+      [--level <name>]...
+      [--fallback <name>]
                             append one line to the consumption log. Silent,
-                            always exits 0. `--item` and `--entity` repeat;
-                            both are normalized and de-duplicated here so the
-                            caller never has to. Confirms the bundle ignores
-                            the log before appending to it, and skips the line
-                            rather than write one the next commit would take.
+                            always exits 0. `--item`, `--entity` and `--level`
+                            repeat; they are normalized and de-duplicated here
+                            so the caller never has to. A `--pages` or
+                            `--bytes` that is not a whole number is dropped,
+                            never an error. Confirms the bundle ignores the log
+                            before appending to it, and skips the line rather
+                            than write one the next commit would take.
   roll                      fold the consumption log into `state/recall.json`'s
                             pyramid, coarsen the aged buckets, and drop items
                             whose file is gone. Idempotent: `rolled_through`
@@ -93,6 +113,7 @@ which is not parseable ISO 8601.
 import argparse
 import calendar
 import json
+import os
 import posixpath
 import re
 import sys
@@ -132,6 +153,16 @@ LOG = STATE / "consumption-log.jsonl"
 RECALL = STATE / "recall.json"
 
 SCHEMA = 1
+
+# The question is kept for a truthful replay next phase, not for reading back:
+# long enough to carry any real question, short enough that a pasted document
+# does not ride into the log with it.
+QUESTION_MAX = 500
+
+# The read-cost keys `log` adds once any of them is given. `fallback` defaults
+# to `none` there, so a line that carries the instrumentation also says that no
+# fallback was taken, rather than leaving it to be inferred from an absence.
+COST_FLAGS = ("question", "question_file", "pages", "bytes", "level", "fallback")
 
 # The pyramid's three steps, in days of age. Inside DAY_SPAN a citation keeps
 # its own date; past it the day folds into its ISO week, past WEEK_SPAN the week
@@ -820,6 +851,82 @@ def cmd_score(args):
     return 0
 
 
+def guess_caller(env=None):
+    """`(caller, basis)`: who ran this read, guessed, and the signal it used.
+
+    `CLAUDE_CODE_ENTRYPOINT=cli` is an interactive session, a `human`; an
+    entrypoint starting with `sdk` is `claude -p` and the SDK, the shape a
+    scheduled run takes, a `routine`; anything else, or nothing, is `unknown`.
+    The signal is weak (a spec session reported `cli` with a non-tty stdin),
+    which is why the basis is written next to the guess, verbatim: a wrong
+    mapping is corrected later from the log itself, not argued from memory.
+    """
+    env = os.environ if env is None else env
+    value = env.get("CLAUDE_CODE_ENTRYPOINT")
+    if value is None:
+        return "unknown", "CLAUDE_CODE_ENTRYPOINT unset"
+    value = str(value)[:100]
+    basis = f"CLAUDE_CODE_ENTRYPOINT={value}"
+    if value == "cli":
+        return "human", basis
+    if value.startswith("sdk"):
+        return "routine", basis
+    return "unknown", basis
+
+
+def whole_number(raw):
+    """A non-negative int from a flag's text, or None. Never raises."""
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
+def read_question_file(source):
+    """The text of `--question-file`: stdin for `-`, else that file. Never raises.
+
+    stdin is the form the procedures use, fed by a heredoc whose delimiter is
+    quoted (`<<'ELEPHANT_Q'`), so the shell expands nothing in the question.
+    A terminal on stdin means nothing was piped, and is not waited on.
+    """
+    try:
+        if source == "-":
+            if sys.stdin is None or sys.stdin.isatty():
+                return ""
+            return sys.stdin.read(QUESTION_MAX * 8)
+        with open(source, encoding="utf-8", errors="replace") as fh:
+            return fh.read(QUESTION_MAX * 8)
+    except (OSError, ValueError):
+        return ""
+
+
+def cost_fields(args):
+    """The optional read-cost keys, or {} when the caller passed none of them."""
+    if all(getattr(args, flag, None) in (None, []) for flag in COST_FLAGS):
+        return {}
+    out = {}
+    raw = args.question
+    if raw is None and getattr(args, "question_file", None):
+        raw = read_question_file(args.question_file)
+    question = " ".join(str(raw or "").split())
+    if question:
+        out["question"] = question[:QUESTION_MAX]
+    for key in ("pages", "bytes"):
+        n = whole_number(getattr(args, key))
+        if n is not None:
+            out[key] = n
+    levels = []
+    for level in args.level or []:
+        name = str(level or "").strip().lower()
+        if name and name not in levels:
+            levels.append(name)
+    if levels:
+        out["levels"] = levels
+    out["fallback"] = str(args.fallback or "").strip().lower() or "none"
+    return out
+
+
 def cmd_log(args):
     mode = (args.mode or "").strip()
     if not mode:
@@ -850,14 +957,15 @@ def cmd_log(args):
             file=sys.stderr,
         )
         return 0
-    append(
-        {
-            "ts": now_iso(args.at),
-            "mode": mode,
-            "entities": dedupe(args.entity, normalize_entity),
-            "facts_cited": dedupe(args.item, normalize_item),
-        }
-    )
+    record = {
+        "ts": now_iso(args.at),
+        "mode": mode,
+        "entities": dedupe(args.entity, normalize_entity),
+        "facts_cited": dedupe(args.item, normalize_item),
+    }
+    record.update(cost_fields(args))
+    record["caller"], record["caller_basis"] = guess_caller()
+    append(record)
     return 0
 
 
@@ -889,6 +997,31 @@ def build_parser():
         default=[],
         metavar="SLUG",
         help="an entity slug the answer was about; repeat per entity",
+    )
+    sp.add_argument(
+        "--question",
+        metavar="TEXT",
+        help=f"the user's question as asked; cut to {QUESTION_MAX} characters, "
+        "kept in the git-ignored raw log only",
+    )
+    sp.add_argument(
+        "--question-file",
+        metavar="PATH",
+        help="read the question from PATH, or from stdin with `-` (a quoted "
+        "heredoc keeps $, backticks and quotes literal); --question wins",
+    )
+    sp.add_argument("--pages", metavar="N", help="search pages read for this answer")
+    sp.add_argument("--bytes", metavar="N", help="bytes read for this answer, all levels")
+    sp.add_argument(
+        "--level",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="a retrieval level used (names, roster, catalog-rg, search, body, "
+        "archive, facts-rg, whole-field); repeat per level",
+    )
+    sp.add_argument(
+        "--fallback", metavar="NAME", help="the fallback taken; `none` when absent"
     )
     sp.add_argument("--at", help="override 'now' with an ISO timestamp")
     sp.set_defaults(func=cmd_log)

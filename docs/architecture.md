@@ -88,9 +88,13 @@ There is **no flat global list of facts**. Retrieval is entity-centric:
   mentions with bundle-absolute markdown links (`/entities/person/jane-doe.md`).
   `build-index.py` walks those links and writes a backlinks block onto each entity
   hub, so an entity page *is* the live aggregation of everything known about it.
-- **`query` walks the entity, not a search index.** Ask "what do we know about the
-  billing rewrite" and it resolves the entity, reads its backlinks, and answers
-  with provenance — every claim cites the fact file and the source it came from.
+- **`query` walks the entity through the manifest.** Ask "what do we know about
+  the billing rewrite" and it resolves the entity with `scripts/search.py`, which
+  pages the manifest rows that link to it (the same set a hub's backlinks list)
+  inside a fixed 32 KB budget, newest first, and answers with provenance — every
+  claim cites the fact file and the source it came from. The catalog and the
+  hubs stay for human navigation; reading them whole cost ~208 KB per query on a
+  mature bundle before any fact body.
 
 ### the owner lens
 
@@ -196,7 +200,8 @@ The workflow after any write batch is fixed: run `build-index.py`, then
 | `briefing.py` | time-first digest (`--days` / `--since` / `--until` / `--channel` / `--tag` / `--entity` / `--kind`) |
 | `state.py` | catch-up cursor bookkeeping (advance live/backfill, mark seen ids, render watermarks) |
 | `backlog.py` | catch-up's deferred-work ledger — findings the unattended routine may not fix on its own, filed once and counted, never re-narrated in `log.md` |
-| `recall.py` | the consumption log and its pyramid — `log` appends one citation line per answered read, `roll` folds the log into `state/recall.json`'s day/week/month buckets and keeps the bundle's `.gitignore` covering both files, refusing to write at all when it cannot, `score` is the citation date `decay` reads |
+| `search.py` | `query`'s navigation — a read-only faceted search over `manifest.jsonl` (`--entity` by slug, path or name resolved fuzzily against `roster.tsv`, `--any`, `--tag`, `--text`, `--since`/`--until`, `--status`), one page inside a 32 KB budget, newest first, with the facets of the whole matched set and the exact `bytes:` printed |
+| `recall.py` | the consumption log and its pyramid — `log` appends one citation line per answered read, with what it cost (question, pages, bytes, levels, fallback) and a guessed caller, `roll` folds the log into `state/recall.json`'s day/week/month buckets and keeps the bundle's `.gitignore` covering both files, refusing to write at all when it cannot, `score` is the citation date `decay` reads |
 | `close-loops.py` | read-only proposal for the `close-loops` routine — the bounded two-band queue over `tracking/loops/`, each queued loop's closure criterion and up to 10 ranked evidence candidates |
 | `snapshot-drift.py` | flag `snapshot` rollups whose underlying facts became newer than the snapshot's last-tended date |
 | `ingest-audio.py` | pull a transferred voice recording and transcribe it locally (WhisperX, diarized) for `ingest-audio` |

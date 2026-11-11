@@ -4,6 +4,130 @@ All notable changes to elephant-mem are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.4] - 2026-11-10
+
+`query` paid most of its context to navigate the bundle before it read a single
+fact it would cite, and the bill grew with the bundle. Its procedure read
+`knowledge/entities/index.md` whole (155 KB on the owner's bundle, 773
+entities), then opened one hub per entity, each inlining its 50 newest facts:
+a median of 208 KB per query when the change was planned, ~52k tokens, before
+any fact body, and 1,040 KB once the archives were followed. Replayed over the
+88 `query` lines of the owner's consumption log, that path showed 0.56 of the
+facts the answers went on to cite. The escape hatch said the manifest "can run tens of thousands of
+tokens" and fits a subagent; at 4.8 MB, ~1.2 million tokens, it no longer did.
+And nothing recorded what a read cost, so the next retrieval change could only
+be argued, not measured.
+
+### Added
+
+- **`scripts/search.py`**, a read-only faceted search over
+  `knowledge/manifest.jsonl` that replaces the catalog and the hubs in
+  `query`'s path. It prints one page inside a 32 KB budget (header and footer
+  included), newest first with ties on `path`, and a footer with the cut (the
+  newest date among the rows left behind, so it holds under `--any`'s
+  interleave too, where the last row printed is no date bound) and the count
+  behind it, the exact `next: --page N`, the facets of the whole matched set
+  (co-occurring entities without the owner, months, tags) and `bytes: <n>`,
+  the exact size printed. There is no default date cutoff: the
+  budget is the window, and the footer always says where it cut. `--entity`
+  repeated intersects; `--any` makes it a union interleaved per entity.
+  `--entity` takes a slug, a path or a name as written, resolved against
+  `roster.tsv` case- and accent-folded in tiers (exact, whole word, `difflib`
+  similarity within a margin of the best match). One entity in the deciding
+  tier resolves, saying so when it was by similarity and naming the whole-word
+  matches an exact match hid; several print the candidates and exit 3; none,
+  or no roster, exit 4. On the owner's 773-entity roster a first name, a
+  surname, a project and a one-letter typo of it resolve, while a first name
+  four people share comes back as candidates. A roster slug passed as written
+  always resolves to its own entity: in review, 11 of the owner's 775
+  entities did not, because another entity's title or alias spelled the same
+  words, so the slug the candidates list handed back came back ambiguous
+  again (exit 3) and the agent looped. Those 11 carried 952 mentions in the
+  manifest and sat in 9 of the 102 logged queries; now all 775 resolve. A slug the manifest
+  carries and the roster does not now resolves to itself rather than to a
+  look-alike by similarity, and the months facet counts rows with no date as
+  `undated` instead of `older`, which had sent the agent after them with a
+  `--until` that can never reach them.
+- **`tests/eval_recall.py --bundle <path>`**, the acceptance replay: each
+  `query` line of the log, as of its own date, against the current path and
+  the search, read-only and aggregate-only. On the owner's bundle the search
+  with `--any` over the logged entities sees 0.42, 0.52, 0.58 and 0.63 of the
+  968 cited facts at 1 to 4 fixed pages of 32 KB, against 0.56 for the current
+  path. At the procedure's ceiling of 4 pages it reads 120 KB per query on
+  average (~31k tokens), 50% of the current path's 239 KB. The acceptance
+  first gated bytes on an oracle stop (read until every cited fact has been
+  shown) at half the current path, which passed at 71 KB, 30%. That stop uses
+  the answer key, which no agent holds before it reads, and the rule the
+  agent does run, 4 fixed pages, measured 50.3% and failed the half. The
+  owner kept the 4-page ceiling and set the bytes gate at 60%: both gates are
+  now measured on 4 fixed pages and pass, and the oracle stays in the report
+  as a lower bound that decides nothing. The report's Caveats state what the
+  numbers do not measure: the current path costed at today's catalog and hub
+  sizes, the logged entities standing in for the question's names (4.86 per
+  line on average, the owner in 55 of 88 lines), and the 364 of 1,332 logged
+  citations (27%) no longer in the manifest. With no line replayed it says
+  "nothing to judge" instead of passing, and it no longer leaves a
+  `__pycache__/` in the checkout.
+- `tests/test_search.py` (98 checks): the page and its budget, the pages tiling
+  the matched set, every filter, the facets, a future `occurred`, an empty
+  result naming the filter that emptied it, unparseable and missing manifests,
+  every tier of name resolution and its exit code, the checkout guard, that
+  neither script writes a byte, and the replay on a throwaway bundle whose log
+  has a known answer. Review mutated `search.py` one control at a time and
+  found a dozen controls no check noticed, among them the path tie-break
+  (hidden by a manifest written in path order), the future-date clamp, the
+  similarity cutoff and a name that resolves beside one that does not; each
+  now has a check that fails without it. Every search runs under a 60-second
+  timeout, so a page that never advances fails CI instead of hanging it. It
+  has its own `- run:` line in CI.
+
+### Changed
+
+- **`recall.py log` records what a read cost.** Optional `--question` (cut to
+  500 characters, kept in the git-ignored raw log only, never in
+  `state/recall.json` nor printed by `show`), `--pages`, `--bytes`, `--level`
+  (repeatable) and `--fallback` (`none` by default once any is given). Every
+  line now also carries `caller` (`human`, `routine` or `unknown`), guessed
+  from `CLAUDE_CODE_ENTRYPOINT`, and `caller_basis`, the signal verbatim, so a
+  wrong guess is corrected from the log itself. `roll` reads three keys and
+  folds old and new lines alike. The procedures pass the question through
+  `--question-file -`, from a heredoc whose delimiter is quoted: copied into a
+  double-quoted `--question "…"`, a question with `$500` reached the log as
+  `00`, a backticked word ran as a command, and a `"` broke the call. A
+  `"$(cat <<'Q' …)"` substitution was no fix either, since bash 3.2 (macOS's
+  `/bin/bash` and `/bin/sh`) mis-parses an unbalanced `)` inside it.
+  `tests/test_recall.py` grew to 156 checks, one of them running that form
+  through the shell.
+- **`query/procedure.md`** resolves names and navigates through `search.py`,
+  in levels with ceilings: every name of the question goes to one call, whose
+  output is the first `--any` page when they all resolve and spends no page
+  when one does not; at most 4 search pages and 20 fact bodies per query,
+  refinement by the footer's facets, `--text` and `--since`/`--until` instead of
+  paging, then the `rg` and whole-field fallbacks, each recorded. It never reads
+  `entities/index.md` whole nor opens a hub, except to follow an archive for a
+  question that explicitly asks for history. A name the roster does not carry
+  is dropped from the call and looked for by `--text`, instead of blocking
+  every other name's rows, and the call is repeated with entity paths, the
+  form that resolves with or without a roster (the old text sent a rosterless
+  run to `entity-resolution.md`, which prescribes `build-index.py`, a write,
+  in a read-only mode). When the last page read still had matches behind it,
+  the answer ends with one line saying how many facts went unread, up to
+  which date, and how to ask for the rest: with 78 of 88 replayed unions
+  longer than the 4-page ceiling, the cut is the common case, and only the
+  agent used to see it. `query/SKILL.md` passes the question through to the
+  log.
+- **`_shared/whole-field-scan.md`** states the real size of a mature manifest
+  and makes pre-filtering mandatory: `search.py` first, `rg` over the manifest
+  for axes it lacks, triage of the filtered lines only. `_shared/core.md`'s
+  Consumption log section names the new flags, `briefing/procedure.md`'s
+  paragraph on hubs points at the search, and `docs/architecture.md` lists the
+  script.
+- `tests/test_templates.py` grew to 38 checks: `search.py` is driven over the
+  manifest and roster `build-index.py` derives from the four templates, and
+  `--status open` and `--status active` each return exactly the template that
+  ships that status. The cut line of `query/procedure.md` is pinned word for
+  word.
+
 ## [1.0.0-rc.3] - 2026-11-09
 
 `elephant-trunk` 0.1.0-beta.2 shipped on its own, and `/elephant-mem:update` did

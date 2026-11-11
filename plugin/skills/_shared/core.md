@@ -267,10 +267,35 @@ python3 scripts/recall.py log --mode query \
   tool printed); `recall.py` normalizes and de-duplicates them.
 - `--entity` — repeat once per entity the answer was about. A slug or an entity
   file path, either way.
+- **What the read cost, optional and recorded only.** `query` and the
+  whole-field scan also pass the user's question, verbatim, on stdin through
+  a quoted heredoc, the last thing on the command line:
+
+  ```bash
+  … --question-file - <<'ELEPHANT_Q'
+  <the user's question, verbatim>
+  ELEPHANT_Q
+  ```
+
+  Never as a double-quoted argument, where the shell expands `$` and
+  backticks and a `"` breaks the command. The question is cut to 500
+  characters, kept in the git-ignored raw log only, never in
+  `state/recall.json` nor printed by `show`. Then `--pages N` (search pages read),
+  `--bytes N` (the sum of every `search.py` `bytes:` line, the fact bodies
+  opened and any fallback output), `--level <name>` once per retrieval level
+  used (`names`, `roster`, `catalog-rg`, `search`, `body`, `archive`,
+  `facts-rg`, `whole-field`) and `--fallback <name>` (`none` when omitted).
+  The other modes may omit them all. Nothing reads these fields yet: they
+  exist so the next retrieval change is decided from data.
+- **The caller is guessed by the script, never passed.** `log` writes
+  `caller` (`human`, `routine` or `unknown`) and `caller_basis`, the signal it
+  went by (`CLAUDE_CODE_ENTRYPOINT`), on every line.
 - **The model never types the line.** `recall.py log` writes it, which is why
   neither the JSON shape nor the field names appear in any procedure. It
   appends one line to `<bundle>/state/consumption-log.jsonl`, shaped
-  `{"ts": …, "mode": …, "entities": […], "facts_cited": […]}`.
+  `{"ts": …, "mode": …, "entities": […], "facts_cited": […]}` plus the
+  optional keys above and the guessed caller. `roll` reads `ts`, `entities`
+  and `facts_cited` only, so lines with and without the new keys fold alike.
 - **The write is non-fatal and never delays an answer.** A missing or
   unwritable `state/` makes `log` write nothing, print nothing and exit 0. So
   the call needs no error handling and no mention in the answer: run it, ignore

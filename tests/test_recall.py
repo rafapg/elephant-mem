@@ -39,7 +39,14 @@ lookup over it. This suite covers the storage and the `log` writer:
       swallowed by it, and "0 line(s) folded" no longer covers "nothing new",
       "a citation arrived behind the watermark" and "unreadable" with one
       number. The drop count is what THIS run dropped, so a quiet run reports
-      none at all rather than re-counting what earlier runs folded.
+      none at all rather than re-counting what earlier runs folded;
+  (j) **what a read cost rides on the same line, and stays there** — the
+      question (cut to 500 characters), pages, bytes, levels and fallback are
+      written only when passed, `fallback` defaults to `none` once any is, a
+      malformed number is dropped rather than failing the read, and the caller
+      is guessed from `CLAUDE_CODE_ENTRYPOINT` with its basis recorded. `roll`
+      folds a mixed old/new log exactly like the same log stripped of the new
+      keys, and the question never reaches `recall.json` or `show`.
 
 Pure stdlib, Python 3.10+, mirroring `tests/test_backlog.py`'s conventions: a
 throwaway bundle in a tempdir, subprocess calls into a copy of the real
@@ -784,6 +791,194 @@ def not_committed(tmp):
     record(labels[2], tracked == [], repr(tracked))
 
 
+def run_env(bundle, args, env_overrides):
+    """`run()` with a controlled CLAUDE_CODE_ENTRYPOINT (None removes it)."""
+    import os
+    env = dict(os.environ)
+    for key, value in env_overrides.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    return subprocess.run(
+        [sys.executable, str(bundle / "scripts" / "recall.py")] + [str(a) for a in args],
+        cwd=str(bundle), capture_output=True, text=True, encoding="utf-8", env=env,
+    )
+
+
+# The form the three procedures that log a question hand the shell. Copied
+# literally into a double-quoted `--question "…"`, a question with `$500` or
+# backticks was expanded by the shell (`$500` became `00`, a backticked word
+# ran as a command) and a `"` broke the command. A heredoc whose delimiter is
+# quoted expands nothing; reading it from stdin, rather than through
+# `"$(cat <<'Q' … Q)"`, also survives an unbalanced `)`, which bash 3.2 (macOS's
+# /bin/bash and /bin/sh) mis-parses inside a command substitution.
+HEREDOC_OPEN = "--question-file - <<'ELEPHANT_Q'"
+HEREDOC_CLOSE = "\nELEPHANT_Q\n"
+QUESTION_DOCS = (
+    REPO_ROOT / "plugin" / "skills" / "query" / "procedure.md",
+    REPO_ROOT / "plugin" / "skills" / "_shared" / "whole-field-scan.md",
+    REPO_ROOT / "plugin" / "skills" / "_shared" / "core.md",
+)
+
+
+def question_through_heredoc(tmp):
+    """(j) — the question reaches the log as typed, through the documented form."""
+    import os
+    docs = {p.relative_to(REPO_ROOT).as_posix(): p.read_text(encoding="utf-8")
+            for p in QUESTION_DOCS}
+    # A list item indents its code block; the closing line is checked stripped.
+    wrong = [name for name, text in docs.items()
+             if HEREDOC_OPEN not in text
+             or HEREDOC_CLOSE.strip() not in [ln.strip() for ln in text.splitlines()]
+             or '--question "' in text]
+    record("query, the whole-field scan and core.md pass the question through a "
+           "quoted heredoc on stdin, never inside double quotes", not wrong, repr(wrong))
+
+    question = ('Quanto custou o "plano" de $500 e o `whoami` que o $(id) '
+                "citou? 1) primeiro, $HOME e 'aspas' \\n no fim")
+    bundle = make_bundle(tmp, name="heredoc")
+    shell = shutil.which("bash") or shutil.which("sh")
+    if os.name != "nt" and shell:
+        script = ('"$PY" "$RECALL" log --mode query --item /facts/a.md '
+                  f"{HEREDOC_OPEN}\n{question}{HEREDOC_CLOSE}")
+        env = dict(os.environ, PY=sys.executable, RECALL=str(bundle / "scripts" / "recall.py"))
+        result = subprocess.run([shell, "-c", script], cwd=str(bundle), env=env,
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        how = f"run through {Path(shell).name}"
+    else:
+        # No POSIX shell to trust on Windows runners: hand the script the bytes
+        # the heredoc would deliver, so the stdin read is still exercised.
+        result = subprocess.run(
+            [sys.executable, str(bundle / "scripts" / "recall.py"), "log", "--mode", "query",
+             "--item", "/facts/a.md", "--question-file", "-"],
+            cwd=str(bundle), input=question + "\n", capture_output=True, text=True,
+            encoding="utf-8", timeout=60)
+        how = "fed on stdin"
+    lines = log_lines(bundle)
+    row = json.loads(lines[-1]) if lines else {}
+    record(f"a question with \", $, backticks and an unbalanced ) lands in the log "
+           f"exactly as typed ({how})",
+           result.returncode == 0 and row.get("question") == question,
+           f"exit={result.returncode}\n{result.stderr}\n{row.get('question')!r}")
+    result = run(bundle, ["log", "--mode", "query", "--question-file",
+                          str(Path(tmp) / "no-such-question.txt")])
+    record("an unreadable --question-file is dropped, silently, exit 0",
+           result.returncode == 0 and silent(result)
+           and "question" not in json.loads(log_lines(bundle)[-1]),
+           f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+
+
+def read_cost_fields(tmp):
+    """(j) — the optional read-cost keys, the caller guess, and their compatibility."""
+    bundle = make_bundle(tmp, name="costed")
+
+    long_q = "Qual é o status do " + "x" * 600
+    result = run_env(bundle, [
+        "log", "--mode", "query", "--item", "/facts/a.md", "--entity", "angelo",
+        "--question", long_q, "--pages", "2", "--bytes", "70123",
+        "--level", "names", "--level", "search", "--level", "Search", "--level", "body",
+    ], {"CLAUDE_CODE_ENTRYPOINT": "cli"})
+    record("log with every cost flag still exits 0 and prints nothing",
+           result.returncode == 0 and silent(result),
+           f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+    row = json.loads(log_lines(bundle)[-1])
+    record("the question is kept, cut to 500 characters (E15)",
+           row.get("question", "").startswith("Qual é o status do ")
+           and len(row.get("question", "")) == 500, repr(row.get("question", ""))[:80])
+    record("pages and bytes land as numbers",
+           row.get("pages") == 2 and row.get("bytes") == 70123, repr(row))
+    record("levels are normalized and de-duplicated in first-seen order",
+           row.get("levels") == ["names", "search", "body"], repr(row.get("levels")))
+    record("fallback defaults to `none` once any cost flag is given",
+           row.get("fallback") == "none", repr(row))
+    record("CLAUDE_CODE_ENTRYPOINT=cli is guessed human, with its basis verbatim",
+           row.get("caller") == "human"
+           and row.get("caller_basis") == "CLAUDE_CODE_ENTRYPOINT=cli", repr(row))
+
+    run_env(bundle, ["log", "--mode", "query", "--fallback", "facts-rg",
+                     "--pages", "two", "--bytes", "-5"],
+            {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"})
+    row = json.loads(log_lines(bundle)[-1])
+    record("an explicit --fallback is recorded",
+           row.get("fallback") == "facts-rg", repr(row))
+    record("a --pages or --bytes that is not a whole number is dropped, not an error",
+           "pages" not in row and "bytes" not in row, repr(row))
+    record("an sdk entrypoint is guessed routine",
+           row.get("caller") == "routine"
+           and row.get("caller_basis") == "CLAUDE_CODE_ENTRYPOINT=sdk-cli", repr(row))
+
+    run_env(bundle, ["log", "--mode", "query"], {"CLAUDE_CODE_ENTRYPOINT": None})
+    row = json.loads(log_lines(bundle)[-1])
+    record("an unset entrypoint is unknown, and the basis says it was unset (E17)",
+           row.get("caller") == "unknown"
+           and row.get("caller_basis") == "CLAUDE_CODE_ENTRYPOINT unset", repr(row))
+    run_env(bundle, ["log", "--mode", "query"], {"CLAUDE_CODE_ENTRYPOINT": "mystery"})
+    row = json.loads(log_lines(bundle)[-1])
+    record("an unrecognized entrypoint is unknown, with that value as its basis (E17)",
+           row.get("caller") == "unknown"
+           and row.get("caller_basis") == "CLAUDE_CODE_ENTRYPOINT=mystery", repr(row))
+    record("a line with no cost flag carries no cost key (E14)",
+           not {"question", "pages", "bytes", "levels", "fallback"} & set(row), repr(row))
+
+    # E18: an unconfirmable .gitignore skips the line, new fields and all.
+    blocked = make_bundle(tmp, name="costed-blocked")
+    (blocked / ".gitignore").mkdir()
+    result = run_env(blocked, ["log", "--mode", "query", "--question", "secret?",
+                               "--pages", "1"], {"CLAUDE_CODE_ENTRYPOINT": "cli"})
+    record("an unconfirmable .gitignore skips a line with a question too, exit 0 (E18)",
+           result.returncode == 0 and log_lines(blocked) == []
+           and "secret?" not in result.stdout + result.stderr,
+           f"exit={result.returncode}\n{result.stdout}\n{result.stderr}")
+
+    # E16: roll over a mixed old/new log == roll over the same log, stripped.
+    mixed = make_bundle(tmp, name="mixed")
+    stripped = make_bundle(tmp, name="stripped")
+    for b in (mixed, stripped):
+        (b / "knowledge" / "facts" / "a.md").write_text("x\n", encoding="utf-8")
+        (b / "knowledge" / "facts" / "b.md").write_text("x\n", encoding="utf-8")
+    lines = [
+        {"ts": "2026-11-01T10:00:00-03:00", "mode": "query",
+         "entities": ["angelo"], "facts_cited": ["/facts/a.md"]},
+        {"ts": "2026-11-02T10:00:00-03:00", "mode": "query",
+         "entities": ["angelo", "acme"], "facts_cited": ["/facts/a.md", "/facts/b.md"],
+         "question": "o que sabemos do angelo?", "pages": 2, "bytes": 65000,
+         "levels": ["names", "search", "body"], "fallback": "none",
+         "caller": "human", "caller_basis": "CLAUDE_CODE_ENTRYPOINT=cli"},
+        {"ts": "2026-11-03T10:00:00-03:00", "mode": "start-day",
+         "entities": [], "facts_cited": ["/facts/b.md"],
+         "caller": "routine", "caller_basis": "CLAUDE_CODE_ENTRYPOINT=sdk-cli"},
+    ]
+    keep = {"ts", "mode", "entities", "facts_cited"}
+    (mixed / "state" / "consumption-log.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in lines), encoding="utf-8")
+    (stripped / "state" / "consumption-log.jsonl").write_text(
+        "".join(json.dumps({k: v for k, v in r.items() if k in keep}) + "\n"
+                for r in lines), encoding="utf-8")
+    at = "2026-11-10T12:00:00-03:00"
+    r1 = run(mixed, ["roll", "--at", at])
+    r2 = run(stripped, ["roll", "--at", at])
+    a, b = recall_json(mixed), recall_json(stripped)
+    record("roll folds a mixed old/new log exactly like the stripped log (E16)",
+           r1.returncode == 0 and r2.returncode == 0 and a is not None
+           and a["items"] == b["items"] and a["entities"] == b["entities"]
+           and a["rolled_through"] == b["rolled_through"],
+           f"{r1.stdout}{r1.stderr}\n{r2.stdout}{r2.stderr}\n{a}\n{b}")
+    raw = (mixed / "state" / "recall.json").read_text(encoding="utf-8")
+    shown = run(mixed, ["show"]).stdout + run(mixed, ["score"]).stdout
+    record("the question never reaches recall.json, show or score (E15)",
+           "angelo?" not in raw and "o que sabemos" not in shown
+           and "question" not in raw, raw[:200])
+
+    question_through_heredoc(tmp)
+
+    mod = import_copy(bundle, "recall_cost_under_test")
+    record("guess_caller is pure over the env it is handed",
+           mod.guess_caller({}) == ("unknown", "CLAUDE_CODE_ENTRYPOINT unset")
+           and mod.guess_caller({"CLAUDE_CODE_ENTRYPOINT": "sdk-ts"})[0] == "routine"
+           and mod.guess_caller({"CLAUDE_CODE_ENTRYPOINT": "cli"})[0] == "human")
+
+
 def guarded(fn, tmp):
     """Run one check group so a break in it costs its own checks and no others.
 
@@ -848,8 +1043,10 @@ def main():
         try:
             row = json.loads(lines[0])
             record(
-                "the line carries core.md's four keys",
-                set(row) == {"ts", "mode", "entities", "facts_cited"},
+                "with none of the cost flags, the line carries core.md's four keys "
+                "plus the guessed caller (E14)",
+                set(row) == {"ts", "mode", "entities", "facts_cited",
+                             "caller", "caller_basis"},
                 repr(row),
             )
             record(
@@ -863,7 +1060,8 @@ def main():
             record("ts is parseable ISO with a real UTC offset",
                    parsed.utcoffset() is not None, repr(row["ts"]))
         except (json.JSONDecodeError, KeyError, ValueError) as exc:
-            for label in ("the line carries core.md's four keys",
+            for label in ("with none of the cost flags, the line carries core.md's four keys "
+                          "plus the guessed caller (E14)",
                           "mode, entities and facts_cited round-trip",
                           "ts is parseable ISO with a real UTC offset"):
                 record(label, False, str(exc))
@@ -998,7 +1196,7 @@ def main():
 
         for group in (roll_and_score, gitignore_guarantee,
                       partial_write_and_report, rotated_log_silence,
-                      not_committed):
+                      not_committed, read_cost_fields):
             guarded(group, tmp)
 
         # --- (a) E1: state/ absent, then unwritable -------------------------
